@@ -1362,6 +1362,48 @@ vkr_internal void vkr_renderer_prepare_tiled_sun(VkrRenderer *rf,
 #endif
 }
 
+/* Frames between tiled texture demand frames (ADR-024). Writing demand
+   costs the opaque pass about 1 ms on the M1 Pro, so one frame in this many
+   measures every pixel instead of every frame measuring one pixel of each
+   4x4 block. */
+#define VKR_TILED_TEXTURE_DEMAND_INTERVAL 8u
+
+/* Sets whether a tiled frame (ADR-087) measures texture demand: one frame in
+   VKR_TILED_TEXTURE_DEMAND_INTERVAL while the world asks for it, outside the
+   overdraw view. The first request for a sun variant starts building the
+   backend's variants that write demand; until they are ready, frames go
+   without it. Runs after vkr_renderer_prepare_tiled_sun, whose sun variant
+   it takes. */
+vkr_internal void vkr_renderer_prepare_tiled_demand(VkrRenderer *rf,
+                                                    const VkrFrameInput *packet,
+                                                    VkrPreparedFrame *frame) {
+  frame->tiled_texture_demand = false_v;
+  if (!frame->tiled_pipeline || !frame->scene_rendering || !packet->world ||
+      !packet->world->texture_demand_requested ||
+      packet->globals.render_mode == VKR_RENDER_MODE_OVERDRAW ||
+      packet->frame.frame_index % VKR_TILED_TEXTURE_DEMAND_INTERVAL != 0u)
+    return;
+#if defined(PLATFORM_APPLE)
+  frame->tiled_texture_demand =
+      rf->metal_renderer &&
+      vkr_metal_packet_renderer_tiled_texture_demand(
+          rf->metal_renderer, frame->tiled_sun_contact || frame->tiled_sun_sdf);
+#else
+  (void)rf;
+#endif
+}
+
+/* Sets the tiled frame's features that take backend shading variants: sun
+   contact and SDF sun shadows, then texture demand in the sun variant they
+   chose. */
+vkr_internal void vkr_renderer_prepare_variants(VkrRenderer *rf,
+                                                const VkrFrameInput *packet,
+                                                VkrPreparedFrame *frame,
+                                                bool8_t orthographic) {
+  vkr_renderer_prepare_tiled_sun(rf, packet, frame, orthographic);
+  vkr_renderer_prepare_tiled_demand(rf, packet, frame);
+}
+
 /* The sun's elevation sine above which its shafts take their full strength;
    they fade to nothing at the horizon (ADR-132). */
 #define VKR_SUN_SHAFTS_HORIZON_FADE 0.05f
@@ -1560,7 +1602,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.tiled_temporal_enabled =
       rf->tiled_temporal_enabled && tiled && !orthographic && default_output &&
       vkr_renderer_metal_tiled_temporal(rf);
-  vkr_renderer_prepare_tiled_sun(rf, packet, &prepared->frame, orthographic);
+  vkr_renderer_prepare_variants(rf, packet, &prepared->frame, orthographic);
   vkr_renderer_prepare_tiled_sun_shafts(packet, &prepared->frame, orthographic);
   const bool8_t temporal_frame =
       prepared->frame.tiled_temporal_enabled ||
@@ -2792,10 +2834,11 @@ uint32_t vkr_renderer_take_texture_demand(VkrRenderer *renderer,
                                           VkrTextureDemand *out,
                                           uint32_t capacity) {
 #if defined(PLATFORM_APPLE)
-  (void)renderer;
-  (void)out;
-  (void)capacity;
-  return 0u;
+  if (!renderer || !renderer->metal_renderer || !out)
+    return 0u;
+  vkr_renderer_join_render_thread(renderer);
+  return vkr_metal_packet_renderer_take_texture_demand(renderer->metal_renderer,
+                                                       out, capacity);
 #else
   if (!renderer || !renderer->vulkan_renderer || !out)
     return 0u;

@@ -53,6 +53,11 @@ typedef struct VkrPreparedFrame {
   /** Signed-distance-field sun shadows on the tiled pipeline, under the same
       conditions, past the near cascades (VkrShadowSdfMode). */
   bool8_t tiled_sun_sdf;
+  /** A texture demand frame on the tiled pipeline (ADR-024): the world asks
+      for demand, one frame in VKR_TILED_TEXTURE_DEMAND_INTERVAL, outside
+      the overdraw view, and the backend's shading variants that write it
+      are ready for the frame's sun variant. */
+  bool8_t tiled_texture_demand;
   /** Screen-space sun shafts on the tiled pipeline (ADR-132): the scene's
       volumetric fog is on, a perspective frame in the default render mode
       has a shining sun above the horizon, and the sun stands in or near the

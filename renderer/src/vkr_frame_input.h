@@ -375,6 +375,10 @@ typedef struct VkrWorldPassPayload {
    */
   uint32_t opaque_material_features;
   bool8_t opaque_material_features_valid;
+  /** The texture budget binds, so GPU texture demand (ADR-024) can change
+   * what it lowers. The tiled pipeline measures demand only then; the
+   * desktop pipeline measures it every frame. */
+  bool8_t texture_demand_requested;
   const VkrWorldDrawCandidate *gpu_candidates;
   uint32_t gpu_candidate_count;
   /** The camera's multiplier of the candidates' draw distances and divisor

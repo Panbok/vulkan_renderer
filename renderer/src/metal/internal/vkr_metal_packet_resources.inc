@@ -2565,7 +2565,7 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
     renderer->standard_kind_mask =
         packet->scene_rendering && packet->input.world
             ? vkr_metal_packet_standard_kind_mask(
-                  renderer, renderer->prepared_frame.tiled_sun_light,
+                  renderer, vkr_metal_packet_tiled_frame_variant(renderer),
                   renderer->tiled_brdf_draws)
             : 0u;
     const uint32_t custom_cells = renderer->custom_graph_count ||

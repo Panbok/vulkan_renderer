@@ -423,6 +423,13 @@ bool8_t vkr_metal_packet_renderer_tiled_temporal(
  * until they are READY, and for good after a failure. Render thread only. */
 bool8_t
 vkr_metal_packet_renderer_tiled_sun_light(VkrMetalPacketRenderer *renderer);
+/** Whether the tiled pipeline's texture demand variants (ADR-024) of sun
+ * variant `sun_light` are ready to draw. The first call for a sun variant
+ * starts building them in the background, and every call returns false
+ * until they are READY. */
+bool8_t
+vkr_metal_packet_renderer_tiled_texture_demand(VkrMetalPacketRenderer *renderer,
+                                               bool8_t sun_light);
 /** The SDF sun shadow field's revision (vkr_renderer_sun_field_revision);
  * any thread. */
 uint64_t vkr_metal_packet_renderer_sun_field_revision(
@@ -519,6 +526,11 @@ void vkr_metal_packet_renderer_frame_counters(
  * which the next completed census overwrites. */
 const struct VkrDrawCensusStore *
 vkr_metal_packet_renderer_draw_census(const VkrMetalPacketRenderer *renderer);
+/** Render thread (the frontend joins it): copies the texture demand of the
+ * newest completed frame not yet taken (ADR-024), at most `capacity`
+ * entries, and returns their count (vkr_renderer_take_texture_demand). */
+uint32_t vkr_metal_packet_renderer_take_texture_demand(
+    VkrMetalPacketRenderer *renderer, VkrTextureDemand *out, uint32_t capacity);
 /** Render thread (the frontend joins it): the graph of the last submitted
  * packet, valid until the next submit; NULL before the graph exists. */
 const VkrRenderGraph *

@@ -1221,11 +1221,9 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
         upload, sizeof(VkrMetalCustomCompaction), &gpu_address);
     if (!compaction)
       return;
-    /* A sun contact frame shades with the sun variants; a slot whose sun
-       variant is not ready yet draws its fallback. */
-    const uint32_t sun = renderer->prepared_frame.tiled_sun_light
-                             ? VKR_METAL_TILED_SUN_VARIANT
-                             : 0u;
+    /* A sun contact or texture demand frame shades with those variants; a
+       slot whose variant is not ready yet draws its fallback. */
+    const uint32_t sun = vkr_metal_packet_tiled_frame_variant(renderer);
     renderer->custom_ready_mask = vkr_metal_packet_custom_state_mask(
         renderer, VKR_METAL_CUSTOM_GRAPH_READY, sun);
     compaction->ready_mask = renderer->custom_ready_mask;
@@ -2505,6 +2503,54 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
   return true_v;
 }
 
+/* Makes the opaque pass's texture demand target match the pass's extent and
+   sample count. A replaced target stays alive until the last submission that
+   drew into it completes; a second resize before then waits for it. */
+vkr_internal bool8_t vkr_metal_packet_tiled_ensure_demand_target(
+    VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
+    API_AVAILABLE(macos(26.0)) {
+  if (renderer->tiled_retired_demand &&
+      vkr_metal_packet_completed(renderer) >=
+          renderer->tiled_retired_demand_submit_value) {
+    [renderer->tiled_retired_demand release];
+    renderer->tiled_retired_demand = nil;
+  }
+  if (renderer->tiled_demand_target && renderer->tiled_demand_width == width &&
+      renderer->tiled_demand_height == height)
+    return true_v;
+  if (renderer->tiled_demand_target) {
+    if (renderer->tiled_retired_demand) {
+      if (!vkr_metal_packet_wait(renderer,
+                                 renderer->tiled_retired_demand_submit_value))
+        return false_v;
+      [renderer->tiled_retired_demand release];
+    }
+    renderer->tiled_retired_demand = renderer->tiled_demand_target;
+    renderer->tiled_retired_demand_submit_value = renderer->submit_value;
+    renderer->tiled_demand_target = nil;
+  }
+  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+  descriptor.textureType = renderer->tiled_sample_count > 1u
+                               ? MTLTextureType2DMultisample
+                               : MTLTextureType2D;
+  descriptor.pixelFormat = VKR_METAL_TILED_DEMAND_FORMAT;
+  descriptor.width = width;
+  descriptor.height = height;
+  descriptor.sampleCount = renderer->tiled_sample_count;
+  descriptor.usage = MTLTextureUsageRenderTarget;
+  descriptor.storageMode = MTLStorageModeMemoryless;
+  renderer->tiled_demand_target =
+      [renderer->device newTextureWithDescriptor:descriptor];
+  [descriptor release];
+  if (!renderer->tiled_demand_target) {
+    log_error("Metal tiled texture demand target unavailable");
+    return false_v;
+  }
+  renderer->tiled_demand_width = width;
+  renderer->tiled_demand_height = height;
+  return true_v;
+}
+
 /* The sky draws' root: the frame, the sky-view lookup at `sky_view_binding`
    and the sky mode. The sky's view directions come from the camera-relative
    `view_rays`; the world inverse only places resolved surfaces. Its sun
@@ -2668,7 +2714,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   /* Frames that correct the sun's light take the variants that also write
      it (the graph's attachment 1). */
   const bool8_t sun_light = renderer->prepared_frame.tiled_sun_light;
-  const uint32_t sun = sun_light ? VKR_METAL_TILED_SUN_VARIANT : 0u;
+  /* Texture demand frames take the variants that also write demand words
+     (attachment 2, ADR-024). */
+  const bool8_t demand = renderer->prepared_frame.tiled_texture_demand;
+  const uint32_t sun = vkr_metal_packet_tiled_frame_variant(renderer);
   if (sun_light && pass->desc.color_attachments.length < 2u)
     return false_v;
   /* Standard draws take the base BRDF variant; slot 0's extended ones take
@@ -2733,14 +2782,38 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
     /* Reversed depth: the largest sample is the nearest surface's. */
     depth.depthResolveFilter = MTLMultisampleDepthResolveFilterMax;
   }
+  /* Texture demand frames (ADR-024): the forward shading writes its words
+     into a memoryless target, and the pass's tile kernel maxes every pixel's
+     into the frame's readback. Other frames' passes have no such target. */
+  MTLRenderPassColorAttachmentDescriptor *demand_target =
+      descriptor.colorAttachments[VKR_METAL_TILED_DEMAND_ATTACHMENT];
+  demand_target.texture = nil;
+  uint64_t demand_root = 0u;
+  if (demand) {
+    if (!vkr_metal_packet_tiled_ensure_demand_target(renderer, width, height))
+      return false_v;
+    demand_target.texture = renderer->tiled_demand_target;
+    demand_target.loadAction = MTLLoadActionClear;
+    demand_target.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    demand_target.storeAction = MTLStoreActionDontCare;
+    if (upload->texture_demand_gpu != 0u) {
+      VkrMetalTiledDemandRoot *root =
+          vkr_metal_packet_next_root(upload, sizeof(*root), &demand_root);
+      if (!root)
+        return false_v;
+      *root = (VkrMetalTiledDemandRoot){.words = upload->texture_demand_gpu};
+    }
+  }
   descriptor.tileWidth = VKR_METAL_TILED_TILE_WIDTH;
   descriptor.tileHeight = VKR_METAL_TILED_TILE_HEIGHT;
   prepared->tiled.draws = draws;
   prepared->tiled.sky_root = sky_root;
+  prepared->tiled.demand_root = demand_root;
   prepared->tiled.decals = decals;
   prepared->tiled.probes = probes;
   prepared->tiled.lighting = lighting;
-  prepared->tiled.sun = sun;
+  prepared->tiled.sun = sun & VKR_METAL_TILED_SUN_VARIANT;
+  prepared->tiled.demand = demand ? VKR_METAL_TILED_DEMAND_VARIANT : 0u;
   prepared->tiled.overdraw = overdraw;
   prepared->tiled.finish = finish;
   prepared->active = true_v;
@@ -4046,11 +4119,16 @@ vkr_internal void vkr_metal_packet_plan_frame_submission(
               renderer->gpu_draw_census_pipeline
           ? packet->input.world->gpu_candidate_count
           : 0u;
+  /* Texture demand frames read back one word per material table row. */
   submission->readback_layout = vkr_metal_packet_readback_layout(
       submission->deferred_diagnostics,
       renderer->prepared_frame.exposure_automatic,
       vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame),
-      census_candidates);
+      census_candidates,
+      submission->deferred_diagnostics &&
+              renderer->prepared_frame.tiled_texture_demand
+          ? renderer->max_materials
+          : 0u);
 }
 
 /* Plans capture copies after the readback prefix and reserves their capture
@@ -4126,6 +4204,11 @@ vkr_internal VkrRendererError vkr_metal_packet_acquire_frame_readback(
                : vkr_metal_packet_allocation_error(readback_status);
   }
   MemZero(submission->readback.cpu_address, submission->capture_size);
+  submission->frame_upload.texture_demand_gpu =
+      submission->readback_layout.texture_demand_words > 0u
+          ? submission->readback.gpu_address +
+                submission->readback_layout.texture_demand
+          : 0u;
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -4888,6 +4971,12 @@ vkr_internal void vkr_metal_packet_record_slot_readbacks(
       submission->readback_layout.exposure_size > 0u
           ? (const uint8_t *)submission->readback.cpu_address +
                 submission->readback_layout.exposure
+          : NULL;
+  command_slot->texture_demand_readback =
+      submission->readback_layout.texture_demand_words > 0u
+          ? (const uint32_t *)((const uint8_t *)
+                                   submission->readback.cpu_address +
+                               submission->readback_layout.texture_demand)
           : NULL;
   if (submission->census_count > 0u) {
     const VkrRenderGraphFrameInfo *frame = &renderer->prepared_frame;

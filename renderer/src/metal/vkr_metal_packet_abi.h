@@ -880,6 +880,16 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTiledMotionRoot {
 _Static_assert(sizeof(VkrMetalTiledMotionRoot) == 96u,
                "Metal tiled motion root ABI drift");
 
+/** The tiled opaque pass's texture demand tile kernel (ADR-024): the
+    demand frame's words, one per material table row. */
+typedef struct VKR_SIMD_ALIGN VkrMetalTiledDemandRoot {
+  uint64_t words;
+  uint32_t reserved[2];
+} VkrMetalTiledDemandRoot;
+
+_Static_assert(sizeof(VkrMetalTiledDemandRoot) == 16u,
+               "Metal tiled texture demand root ABI drift");
+
 /** Per-frame sky-view lookup and aerial-perspective volume builders. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkyBuildRoot {
   uint64_t sky;

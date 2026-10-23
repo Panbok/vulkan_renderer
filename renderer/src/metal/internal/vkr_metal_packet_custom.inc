@@ -176,6 +176,9 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
   const MTLPixelFormat sun_format = (variant & VKR_METAL_TILED_SUN_VARIANT)
                                         ? VKR_METAL_TILED_SUN_LIGHT_FORMAT
                                         : MTLPixelFormatInvalid;
+  const MTLPixelFormat demand_format =
+      (variant & VKR_METAL_TILED_DEMAND_VARIANT) ? VKR_METAL_TILED_DEMAND_FORMAT
+                                                 : MTLPixelFormatInvalid;
   @autoreleasepool {
     const float64_t start = vkr_platform_get_absolute_time();
     bool8_t ok = renderer->custom_library != nil;
@@ -197,7 +200,7 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
               vkr_metal_packet_create_pipeline_with_targets(
                   renderer, renderer->custom_library, "vkr_metal_tiled_vertex",
                   renderer->custom_library, name, MTLPixelFormatRGBA16Float,
-                  sun_format, VKR_METAL_PACKET_BLEND_NONE,
+                  sun_format, demand_format, VKR_METAL_PACKET_BLEND_NONE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
                   renderer->tiled_sample_count, constants, label);
@@ -207,7 +210,7 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
               vkr_metal_packet_create_pipeline_with_targets(
                   renderer, renderer->custom_library, "vkr_metal_tiled_vertex",
                   renderer->custom_library, name, MTLPixelFormatRGBA16Float,
-                  sun_format, VKR_METAL_PACKET_BLEND_COVERAGE,
+                  sun_format, demand_format, VKR_METAL_PACKET_BLEND_COVERAGE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
                   renderer->tiled_sample_count, constants, label);
@@ -222,10 +225,16 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
                                : VKR_METAL_CUSTOM_GRAPH_FAILED,
                             VKR_MEMORY_ORDER_RELEASE);
     if (ok)
-      log_info("Metal: Custom graph %s%s%s ready in %.1f ms (slot %u)",
+      log_info("Metal: Custom graph %s%s%s%s ready in %.1f ms (slot %u)",
                graph->function, (variant & 1u) ? " BRDF extension variant" : "",
                (variant & VKR_METAL_TILED_SUN_VARIANT) ? " sun variant" : "",
+               (variant & VKR_METAL_TILED_DEMAND_VARIANT) ? " demand variant"
+                                                          : "",
                graph->create_seconds * 1.0e3, slot);
+    else if (variant & VKR_METAL_TILED_DEMAND_VARIANT)
+      log_warn("Metal: Custom graph %s has no texture demand pipelines; its "
+               "materials draw their Standard fallback in those frames",
+               graph->function);
     else if (variant & VKR_METAL_TILED_SUN_VARIANT)
       log_warn("Metal: Custom graph %s has no sun contact pipelines; its "
                "materials draw their Standard fallback in those frames",
@@ -263,10 +272,14 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
   const MTLPixelFormat sun_format = (variant & VKR_METAL_TILED_SUN_VARIANT)
                                         ? VKR_METAL_TILED_SUN_LIGHT_FORMAT
                                         : MTLPixelFormatInvalid;
+  const MTLPixelFormat demand_format =
+      (variant & VKR_METAL_TILED_DEMAND_VARIANT) ? VKR_METAL_TILED_DEMAND_FORMAT
+                                                 : MTLPixelFormatInvalid;
   @autoreleasepool {
     const float64_t start = vkr_platform_get_absolute_time();
     const bool8_t extension = (variant & 1u) != 0u;
     const bool8_t sun = (variant & VKR_METAL_TILED_SUN_VARIANT) != 0u;
+    const bool8_t demand = (variant & VKR_METAL_TILED_DEMAND_VARIANT) != 0u;
     const bool8_t no_lightmap = true_v;
     const bool8_t no_terrain = kind != VKR_METAL_STANDARD_KIND_TERRAIN;
     MTLFunctionConstantValues *constants =
@@ -275,6 +288,7 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
     [constants setConstantValue:&sun type:MTLDataTypeBool atIndex:1];
     [constants setConstantValue:&no_lightmap type:MTLDataTypeBool atIndex:2];
     [constants setConstantValue:&no_terrain type:MTLDataTypeBool atIndex:3];
+    [constants setConstantValue:&demand type:MTLDataTypeBool atIndex:5];
     static NSString *const labels[VKR_METAL_STANDARD_KIND_COUNT] = {
         @"VKR tiled forward, unlightmapped kind",
         @"VKR tiled forward, unlightmapped terrain kind",
@@ -290,7 +304,7 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
                   renderer, renderer->fragment_library,
                   "vkr_metal_tiled_vertex", renderer->fragment_library,
                   tiled_lighting[i].forward[decals][probes],
-                  MTLPixelFormatRGBA16Float, sun_format,
+                  MTLPixelFormatRGBA16Float, sun_format, demand_format,
                   VKR_METAL_PACKET_BLEND_NONE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
@@ -300,7 +314,7 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
                   renderer, renderer->fragment_library,
                   "vkr_metal_tiled_vertex", renderer->fragment_library,
                   tiled_lighting[i].coverage[decals][probes],
-                  MTLPixelFormatRGBA16Float, sun_format,
+                  MTLPixelFormatRGBA16Float, sun_format, demand_format,
                   VKR_METAL_PACKET_BLEND_COVERAGE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
@@ -329,7 +343,8 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
 /* One background pipeline creation: Custom graph `slot` in shading variant
    `variant`; Standard kind `slot - VKR_METAL_CUSTOM_GRAPH_SLOTS` past the
    Custom slots; or when `slot` is 0 the tiled BRDF extension variant
-   (variant 1) or the tiled sun variants (VKR_METAL_TILED_SUN_VARIANT). */
+   (variant 1), the tiled sun variants (VKR_METAL_TILED_SUN_VARIANT) or the
+   tiled demand variants of a sun variant (VKR_METAL_TILED_DEMAND_VARIANT). */
 typedef struct VkrMetalBackgroundBuild {
   VkrMetalPacketRenderer *renderer;
   uint32_t slot;
@@ -352,6 +367,12 @@ vkr_metal_packet_background_run(const VkrMetalBackgroundBuild *build)
     vkr_metal_packet_custom_create(renderer, build->slot, build->variant);
     subject = renderer->custom_graphs[build->slot].function;
     state = &renderer->custom_graphs[build->slot].state[build->variant];
+  } else if (build->variant & VKR_METAL_TILED_DEMAND_VARIANT) {
+    const uint32_t sun =
+        (build->variant & VKR_METAL_TILED_SUN_VARIANT) != 0u ? 1u : 0u;
+    vkr_metal_packet_build_tiled_demand_pipelines(renderer, sun);
+    subject = "tiled.demand";
+    state = &renderer->tiled_demand_state[sun];
   } else if (build->variant & VKR_METAL_TILED_SUN_VARIANT) {
     vkr_metal_packet_build_tiled_sun_pipelines(renderer);
     subject = "tiled.sun";
@@ -430,19 +451,21 @@ vkr_metal_packet_background_wait(VkrMetalPacketRenderer *renderer)
   }
   (void)vkr_job_wait(renderer->job_system, renderer->tiled_brdf_job);
   (void)vkr_job_wait(renderer->job_system, renderer->tiled_sun_job);
+  for (uint32_t sun = 0u; sun < 2u; ++sun)
+    (void)vkr_job_wait(renderer->job_system, renderer->tiled_demand_jobs[sun]);
   (void)vkr_job_wait(renderer->job_system, renderer->custom_compile_job);
 }
 
 /* This frame's ready Standard kinds (ADR-129), bit
-   plane * VKR_METAL_STANDARD_KIND_COUNT + kind, for the frame's sun
-   variant in plane 0 and, when it buckets extended draws, plane 1. A kind
+   plane * VKR_METAL_STANDARD_KIND_COUNT + kind, for the frame's sun and
+   demand variant bits `frame_variant` in plane 0 and, when it buckets
+   extended draws, plane 1. A kind
    variant a frame first asks for starts creating in the background; its
    draws keep the general pipelines until it is READY. The
    VKR_STANDARD_KINDS_DISABLED diagnostic keeps every draw on them. */
-vkr_internal uint32_t
-vkr_metal_packet_standard_kind_mask(VkrMetalPacketRenderer *renderer,
-                                    bool8_t sun, bool8_t brdf_frame)
-    API_AVAILABLE(macos(26.0)) {
+vkr_internal uint32_t vkr_metal_packet_standard_kind_mask(
+    VkrMetalPacketRenderer *renderer, uint32_t frame_variant,
+    bool8_t brdf_frame) API_AVAILABLE(macos(26.0)) {
   static int32_t disabled = -1;
   if (disabled < 0)
     disabled =
@@ -452,7 +475,7 @@ vkr_metal_packet_standard_kind_mask(VkrMetalPacketRenderer *renderer,
 
   uint32_t mask = 0u;
   for (uint32_t plane = 0u; plane < (brdf_frame ? 2u : 1u); ++plane) {
-    const uint32_t variant = plane | (sun ? VKR_METAL_TILED_SUN_VARIANT : 0u);
+    const uint32_t variant = plane | frame_variant;
     for (uint32_t kind = 0u; kind < VKR_METAL_STANDARD_KIND_COUNT; ++kind) {
       VkrMetalCustomGraph *graph = &renderer->standard_kinds[kind];
       const uint32_t state = vkr_atomic_uint32_load(&graph->state[variant],
@@ -515,6 +538,25 @@ vkr_metal_packet_custom_request_sun(VkrMetalPacketRenderer *renderer,
   }
 }
 
+/* Starts creating slot `slot`'s demand variants of the variants it has
+   asked for, in each sun variant frames have asked texture demand for. */
+vkr_internal void
+vkr_metal_packet_custom_request_demand(VkrMetalPacketRenderer *renderer,
+                                       uint32_t slot)
+    API_AVAILABLE(macos(26.0)) {
+  for (uint32_t variant = 0u; variant < VKR_METAL_TILED_DEMAND_VARIANT;
+       ++variant) {
+    const uint32_t sun =
+        (variant & VKR_METAL_TILED_SUN_VARIANT) != 0u ? 1u : 0u;
+    if (renderer->tiled_demand_requested[sun] &&
+        vkr_atomic_uint32_load(&renderer->custom_graphs[slot].state[variant],
+                               VKR_MEMORY_ORDER_ACQUIRE) !=
+            VKR_METAL_CUSTOM_GRAPH_EMPTY)
+      vkr_metal_packet_custom_request_variant(
+          renderer, slot, variant | VKR_METAL_TILED_DEMAND_VARIANT);
+  }
+}
+
 /* The slot of Custom function `function`, given and built the first time a
    material names it; 0 for a Standard material or past the budget. */
 vkr_internal uint32_t vkr_metal_packet_custom_slot(
@@ -544,6 +586,7 @@ vkr_internal uint32_t vkr_metal_packet_custom_slot(
                           VKR_MEMORY_ORDER_RELEASE);
   vkr_metal_packet_custom_build(renderer, free_slot, 0u);
   vkr_metal_packet_custom_request_sun(renderer, free_slot);
+  vkr_metal_packet_custom_request_demand(renderer, free_slot);
   return free_slot;
 }
 
@@ -554,8 +597,10 @@ vkr_internal void
 vkr_metal_packet_custom_request_brdf(VkrMetalPacketRenderer *renderer,
                                      uint32_t slot) API_AVAILABLE(macos(26.0)) {
   vkr_metal_packet_custom_request_variant(renderer, slot, 1u);
-  if (slot != 0u && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS)
+  if (slot != 0u && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS) {
     vkr_metal_packet_custom_request_sun(renderer, slot);
+    vkr_metal_packet_custom_request_demand(renderer, slot);
+  }
 }
 
 bool8_t
@@ -571,11 +616,41 @@ vkr_metal_packet_renderer_tiled_sun_light(VkrMetalPacketRenderer *renderer) {
       log_info("Metal: creating the tiled sun contact pipelines");
       vkr_metal_packet_background_build(
           renderer, 0u, VKR_METAL_TILED_SUN_VARIANT, &renderer->tiled_sun_job);
-      for (uint32_t slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot)
+      for (uint32_t slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
         vkr_metal_packet_custom_request_sun(renderer, slot);
+        vkr_metal_packet_custom_request_demand(renderer, slot);
+      }
     }
   }
   return vkr_atomic_uint32_load(&renderer->tiled_sun_state,
+                                VKR_MEMORY_ORDER_ACQUIRE) ==
+         VKR_METAL_CUSTOM_GRAPH_READY;
+}
+
+bool8_t
+vkr_metal_packet_renderer_tiled_texture_demand(VkrMetalPacketRenderer *renderer,
+                                               bool8_t sun_light) {
+  if (!renderer)
+    return false_v;
+  const uint32_t sun = sun_light ? 1u : 0u;
+  if (@available(macOS 26.0, *)) {
+    if (!renderer->tiled_demand_requested[sun] && renderer->fragment_library) {
+      renderer->tiled_demand_requested[sun] = true_v;
+      vkr_atomic_uint32_store(&renderer->tiled_demand_state[sun],
+                              VKR_METAL_CUSTOM_GRAPH_PENDING,
+                              VKR_MEMORY_ORDER_RELAXED);
+      log_info("Metal: creating the tiled texture demand pipelines%s",
+               sun ? " with sun light" : "");
+      vkr_metal_packet_background_build(
+          renderer, 0u,
+          VKR_METAL_TILED_DEMAND_VARIANT |
+              (sun ? VKR_METAL_TILED_SUN_VARIANT : 0u),
+          &renderer->tiled_demand_jobs[sun]);
+      for (uint32_t slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot)
+        vkr_metal_packet_custom_request_demand(renderer, slot);
+    }
+  }
+  return vkr_atomic_uint32_load(&renderer->tiled_demand_state[sun],
                                 VKR_MEMORY_ORDER_ACQUIRE) ==
          VKR_METAL_CUSTOM_GRAPH_READY;
 }
@@ -628,13 +703,17 @@ void vkr_metal_packet_renderer_pipeline_stats(
     }
   }
   /* The tiled BRDF extension variant counts as one graph (ADR-113), and so
-     do the tiled sun variants. */
+     do the tiled sun variants and each sun variant's demand variants. */
   pending += vkr_atomic_uint32_load(&renderer->tiled_brdf_state,
                                     VKR_MEMORY_ORDER_ACQUIRE) ==
              VKR_METAL_CUSTOM_GRAPH_PENDING;
   pending += vkr_atomic_uint32_load(&renderer->tiled_sun_state,
                                     VKR_MEMORY_ORDER_ACQUIRE) ==
              VKR_METAL_CUSTOM_GRAPH_PENDING;
+  for (uint32_t sun = 0u; sun < 2u; ++sun)
+    pending += vkr_atomic_uint32_load(&renderer->tiled_demand_state[sun],
+                                      VKR_MEMORY_ORDER_ACQUIRE) ==
+               VKR_METAL_CUSTOM_GRAPH_PENDING;
   /* So does each Standard kind variant (ADR-129). */
   for (uint32_t kind = 0u; kind < VKR_METAL_STANDARD_KIND_COUNT; ++kind) {
     for (uint32_t variant = 0u; variant < VKR_METAL_TILED_SHADING_VARIANT_COUNT;

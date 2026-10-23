@@ -885,8 +885,11 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
     [renderer->tiled_shading_constants[variant] release];
   }
   for (uint32_t sun = 0; sun < 2u; ++sun) {
-    [renderer->tiled_sky_pipelines[sun] release];
-    [renderer->tiled_resolve_pipelines[sun] release];
+    for (uint32_t demand = 0u; demand < 2u; ++demand) {
+      [renderer->tiled_sky_pipelines[sun][demand] release];
+      [renderer->tiled_resolve_pipelines[sun][demand] release];
+    }
+    [renderer->tiled_demand_pipelines[sun] release];
     [renderer->tiled_atmosphere_pipelines[sun][0] release];
     [renderer->tiled_atmosphere_pipelines[sun][1] release];
     [renderer->tiled_overdraw_pipelines[sun] release];
@@ -900,6 +903,8 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->tiled_msaa_color release];
   [renderer->tiled_msaa_depth release];
   [renderer->tiled_msaa_sun release];
+  [renderer->tiled_demand_target release];
+  [renderer->tiled_retired_demand release];
   [renderer->tiled_retired_color release];
   [renderer->tiled_retired_depth release];
   [renderer->tiled_retired_sun release];

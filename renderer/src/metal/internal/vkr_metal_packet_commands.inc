@@ -322,6 +322,35 @@ vkr_metal_packet_publish_draw_census(VkrMetalPacketRenderer *renderer,
       slot->census_ids_readback);
 }
 
+/* Replaces the renderer's texture demand with a completed frame's, unless a
+   newer frame's is already there. A material republished since the frame
+   reads the word of its new row, which that frame did not draw: demand is a
+   hint the next frames correct. */
+vkr_internal void
+vkr_metal_packet_decode_texture_demand(VkrMetalPacketRenderer *renderer,
+                                       const VkrMetalPacketCommandSlot *slot) {
+  if (!slot->texture_demand_readback ||
+      slot->submit_value <= renderer->texture_demand_submit_value)
+    return;
+  const uint32_t *words = slot->texture_demand_readback;
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < renderer->max_materials; ++i) {
+    const VkrMetalPacketMaterial *material = &renderer->packet_materials[i];
+    if (!material->live || material->row_index >= renderer->max_materials)
+      continue;
+    const uint32_t word = words[material->row_index];
+    if (word == 0u)
+      continue;
+    renderer->texture_demand[count++] = (VkrTextureDemand){
+        .material_id = i + 1u,
+        .material_generation = material->generation,
+        .extent_log2 = word - 1u,
+    };
+  }
+  renderer->texture_demand_count = count;
+  renderer->texture_demand_submit_value = slot->submit_value;
+}
+
 vkr_internal void
 vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
                                    VkrMetalPacketCommandSlot *slot) {
@@ -337,6 +366,7 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
     vkr_metal_packet_gpu_draw_pool_feedback(renderer, slot);
     vkr_metal_packet_publish_draw_census(renderer, slot);
   }
+  vkr_metal_packet_decode_texture_demand(renderer, slot);
   if (slot->custom_late_readback) {
     slot->pending_result.custom_late_count = *slot->custom_late_readback;
     vkr_atomic_uint64_fetch_add(&renderer->custom_late_draws,
@@ -460,6 +490,7 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->census_ids_readback = NULL;
   slot->census_count = 0u;
   slot->census_flags = 0u;
+  slot->texture_demand_readback = NULL;
   slot->shadow_cascade_count = 0u;
   slot->shadow_cascade_dynamic_render_mask = 0u;
   slot->gpu_draw_view_count = 0u;

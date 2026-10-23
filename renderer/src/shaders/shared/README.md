@@ -23,8 +23,11 @@ terrain vertices, and `draw.metalh` mirrors both for the native Metal library.
 
 `texture_demand_kernel.slangh` owns the texture extent a material's pixel
 needs from its UV derivatives and the rotating one-in-sixteen pixel sample
-(ADR-024). The Vulkan G-buffer resolve consumes it; the Metal tiled fragment
-path does not report demand yet.
+(ADR-024). The Vulkan G-buffer resolve and the Metal tiled forward shading
+consume it; the tiled pipeline passes it UV differences across the pixel
+quad and its own texture LOD bias, only in its texture demand frames, and a
+tile kernel reads every pixel of those frames instead of the rotating
+sample.
 
 `sharpen_kernel.slangh` owns neighborhood-limited detail recovery in post-tonemap
 linear RGB. Both final presentation shaders consume it after optional SMAA;

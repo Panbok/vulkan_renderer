@@ -260,8 +260,7 @@ epoch the budget first lowers mips beyond that need, the largest surplus
 first, and only then every texture by size; a raise stops at the need, and
 without pressure nothing changes (owner decisions, 2026-10-22). Materials no
 frame measured recently, such as those only shadows, reflections or probes
-draw, keep the epoch and size order. The tiled pipeline measures no demand
-yet. The same need orders reloads, local and remote (ADR-012), and
+draw, keep the epoch and size order. The same need orders reloads, local and remote (ADR-012), and
 `asset.material.texture_demand.below_need` counts resident texture slots
 whose texture holds fewer mips than their material's measured need within
 the material limit; Bistro's pressure case at
@@ -269,6 +268,46 @@ the material limit; Bistro's pressure case at
 (2026-10-23), the driver's budget on the 1440p orbit with none.
 `asset.material.texture_demand.materials` counts the materials the last
 folded frame measured.
+
+The tiled pipeline measures the same value only while the texture budget
+binds (`VkrWorldPassPayload.texture_demand_requested`), in one frame of every
+`VKR_TILED_TEXTURE_DEMAND_INTERVAL` (8) outside the overdraw view
+(`VkrPreparedFrame.tiled_texture_demand`), and that frame measures every
+pixel. Its opaque passes take shading variants with
+`VKR_METAL_TILED_DEMAND_VARIANT`, whose forward entries pass the kernel the
+UV differences across the pixel quad and the frame's texture LOD bias, and
+write the material row and encoded demand into a memoryless R32Uint colour
+target. A tile kernel after each opaque pass's draws
+(`vkr_metal_tiled_demand_tile`) maxes every pixel's word into the frame's
+readback slice, one word per material table row, which the CPU zeroes when
+it takes the slice; the completed slot's decode returns them as on the
+desktop pipeline. The variants, with the sky, resolve and tile pipelines of
+those passes, build in the background on the first request in each sun
+variant; until they are READY, and for Custom graphs and Standard kinds
+whose demand variant is not, frames go without demand or draw their
+fallback. The first lowering under new pressure therefore takes the epoch
+and size order.
+
+The tiled class cannot afford the desktop design (owner decision
+2026-10-23, measured on the M1 Pro in Release with Bistro). A device atomic
+in the forward fragment made `Tiled.Opaque` take 245 to 251 ms instead of
+6.8 ms at 800x600, even where the atomic never ran; a plain store took
+20.6 ms. Every frame writing the demand target and running the tile kernel
+added 1.5 ms on `tiled_bistro_native` (2560x1440, 4x MSAA; 15.93 to
+17.42 ms at the median, `performance-windowed-gpu`, authoritative,
+alternating runs) and 1.0 ms at the production default
+(`tiled_bistro_plaza_windowed_sun_contact`, MetalFX at 0.6; 8.34 to
+9.35 ms in two local single-child pairs). The target itself cost about
+0.95 ms whether R32Uint or R8Uint, and `dfdx`/`dfdy` about 0.3 ms more than
+the quad differences, because the material samples then reused them. With demand frames only under pressure,
+`tiled_bistro_native` without pressure matched its base (15.96 and
+15.98 ms against 16.02 ms, the same workload fingerprint). Under
+`VKR_TEXTURE_STREAM_BUDGET_MB=1200` after a 2400-frame warmup at the
+production default, `Tiled.Opaque` went from 8.35 to 8.47 ms on average and
+8.68 to 9.48 ms at p95, and `frame.wall` p95 from 17.29 to 18.05 ms
+(`local-windowed-gpu-single`, one child each). The pressure case measured
+51 materials, against 48 to 50 on the desktop pipeline, and one Metal API
+validation run of it reported no error.
 
 Evidence for measured demand (2026-10-22, RX 6700 XT, Release): the texture
 pressure case measured 48 to 50 materials a frame. At

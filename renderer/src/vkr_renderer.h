@@ -1563,8 +1563,7 @@ typedef struct VkrTextureDemand {
 
 /** Copies the texture demand of the newest completed frame not yet taken, at
  * most `capacity` entries, and returns their count. Zero when no frame
- * completed since the last call or the backend measures none (the tiled
- * pipeline). */
+ * completed since the last call. */
 uint32_t vkr_renderer_take_texture_demand(VkrRenderer *renderer,
                                           VkrTextureDemand *out,
                                           uint32_t capacity);

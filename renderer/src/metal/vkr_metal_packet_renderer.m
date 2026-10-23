@@ -435,6 +435,9 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t lightmap_gpu;
   /* This frame's VkrMetalPacketDecals; zero without decals (ADR-092). */
   uint64_t decals_gpu;
+  /* This frame's texture demand words in its readback slice, which the
+     camera views' frame roots carry (ADR-024); zero without them. */
+  uint64_t texture_demand_gpu;
   uint64_t ltc_gpu;
   uint64_t sheen_gpu;
   uint64_t fog_gpu;
@@ -521,12 +524,18 @@ typedef struct VkrMetalPacketReadbackLayout {
   uint64_t census_states;
   uint64_t census_ids;
   uint32_t census_candidates;
+  /* The texture demand words, one per material table row, which the
+     camera's forward shading maxes into (ADR-024); zero words without a
+     world. */
+  uint64_t texture_demand;
+  uint32_t texture_demand_words;
   uint64_t prefix_size;
 } VkrMetalPacketReadbackLayout;
 
 vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
     bool8_t deferred_diagnostics, bool8_t exposure,
-    uint32_t gpu_draw_view_count, uint32_t census_candidates) {
+    uint32_t gpu_draw_view_count, uint32_t census_candidates,
+    uint32_t texture_demand_words) {
   /* The final target can be RGBA8 or RGBA16F. Reserve an eight-byte pixel
      before the fixed diagnostic fields so the transfer stays valid across an
      extended-linear target transition. */
@@ -558,10 +567,16 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
           (uint64_t)vkr_gpu_draw_census_word_count(census_candidates) *
               sizeof(uint32_t),
       16u);
-  const uint64_t prefix_size =
+  const uint64_t census_end =
       census_candidates > 0u
           ? census_ids_offset + (uint64_t)census_candidates * sizeof(uint32_t)
           : diagnostics_end;
+  const uint64_t texture_demand_offset = vkr_align_up_u64(census_end, 16u);
+  const uint64_t prefix_size =
+      texture_demand_words > 0u
+          ? texture_demand_offset +
+                (uint64_t)texture_demand_words * sizeof(uint32_t)
+          : census_end;
   return (VkrMetalPacketReadbackLayout){
       .shadow_depth = shadow_depth_offset,
       .picking = picking_offset,
@@ -574,6 +589,8 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
       .census_states = census_states_offset,
       .census_ids = census_ids_offset,
       .census_candidates = census_candidates,
+      .texture_demand = texture_demand_offset,
+      .texture_demand_words = texture_demand_words,
       .prefix_size = prefix_size,
   };
 }
@@ -689,6 +706,10 @@ typedef struct VkrMetalPacketCommandSlot {
   const uint32_t *census_ids_readback;
   uint32_t census_count;
   uint32_t census_flags;
+  /* The frame's texture demand words in the readback slice, one per
+     material table row, which its camera views' forward shading maxed into;
+     NULL when no view recorded them. */
+  const uint32_t *texture_demand_readback;
   uint32_t shadow_cascade_count;
   /** Cascades whose dynamic-caster view drew over a copied layer. */
   uint32_t shadow_cascade_dynamic_render_mask;
@@ -784,9 +805,19 @@ typedef enum VkrMetalTiledLighting {
    draw's correction (VkrPreparedFrame.tiled_sun_contact). The sun variants
    are created in the background when a frame first asks for them. */
 #define VKR_METAL_TILED_SUN_VARIANT 2u
-#define VKR_METAL_TILED_SHADING_VARIANT_COUNT 4u
+/* Plus VKR_METAL_TILED_DEMAND_VARIANT in texture demand frames
+   (VkrPreparedFrame.tiled_texture_demand, ADR-024), whose entries also write
+   their demand words to a third target; created in the background when a
+   frame first asks for them, by sun variant. */
+#define VKR_METAL_TILED_DEMAND_VARIANT 4u
+#define VKR_METAL_TILED_SHADING_VARIANT_COUNT 8u
 /* The sun light target: the unshadowed light and the cascade visibility. */
 #define VKR_METAL_TILED_SUN_LIGHT_FORMAT MTLPixelFormatRGBA16Float
+/* The tiled opaque pass's texture demand words (ADR-024), a memoryless
+   target the forward shading writes and vkr_metal_tiled_demand_tile reads
+   (VkrMetalTiledForwardOutput.texture_demand). */
+#define VKR_METAL_TILED_DEMAND_ATTACHMENT 2u
+#define VKR_METAL_TILED_DEMAND_FORMAT MTLPixelFormatR32Uint
 
 #define VKR_METAL_CUSTOM_LIBRARY_PATH 4096u
 
@@ -1063,11 +1094,15 @@ struct VkrMetalPacketRenderer {
                               [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                               [VKR_METAL_TILED_LIGHTING_COUNT];
   /* The sky, the tone-mapped multisample resolve at the end of the opaque
-     pass and the atmosphere draw; index 1 in frames with sun contact
+     pass and the atmosphere draw; first index 1 in frames with sun contact
      shadows, whose opaque pass has the sun's light target and whose
-     atmosphere draw corrects the sun's light. */
-  id<MTLRenderPipelineState> tiled_sky_pipelines[2];
-  id<MTLRenderPipelineState> tiled_resolve_pipelines[2];
+     atmosphere draw corrects the sun's light, second index 1 in texture
+     demand frames, whose opaque pass has the demand target. */
+  id<MTLRenderPipelineState> tiled_sky_pipelines[2][2];
+  id<MTLRenderPipelineState> tiled_resolve_pipelines[2][2];
+  /* The demand frames' texture demand tile kernel, by sun variant
+     (ADR-024). */
+  id<MTLRenderPipelineState> tiled_demand_pipelines[2];
   id<MTLRenderPipelineState> tiled_atmosphere_pipelines[2][2];
   /* The overdraw view (ADR-127): every opaque and alpha-tested draw adds a
      layer in the opaque pass, by sun variant, and every blended draw one in
@@ -1097,6 +1132,12 @@ struct VkrMetalPacketRenderer {
   VkrAtomicUint32 tiled_sun_state;
   VkrJobHandle tiled_sun_job;
   bool8_t tiled_sun_requested;
+  /* The same for the demand variants of both BRDF variants and the sky,
+     resolve and demand tile pipelines of texture demand frames, by sun
+     variant: EMPTY until a frame first asks for demand in that variant. */
+  VkrAtomicUint32 tiled_demand_state[2];
+  VkrJobHandle tiled_demand_jobs[2];
+  bool8_t tiled_demand_requested[2];
   id<MTLRenderPipelineState> tiled_text_pipeline;
   /* Custom material graphs (ADR-096): the project library, each slot's
      pipelines (slot 0 stays empty) and the jobs creating them. */
@@ -1145,6 +1186,13 @@ struct VkrMetalPacketRenderer {
   /* The newest completed draw census, copied from its frame's readback
      when the frame's result is decoded; storage from `allocator`. */
   VkrDrawCensusStore draw_census;
+  /* The newest completed frame's texture demand (ADR-024), one entry per
+     live material its camera drew, until
+     vkr_metal_packet_renderer_take_texture_demand takes it; max_materials
+     entries, and the submission it came from. */
+  VkrTextureDemand *texture_demand;
+  uint32_t texture_demand_count;
+  uint64_t texture_demand_submit_value;
   /* Native work the render thread recorded since the last frame commit,
      the counts of that commit's frame (backend.* metrics), and the
      pipeline the current encoder last bound, which tells a bind that
@@ -1191,6 +1239,14 @@ struct VkrMetalPacketRenderer {
   id<MTLTexture> tiled_retired_depth;
   id<MTLTexture> tiled_retired_sun;
   uint64_t tiled_retired_submit_value;
+  /* The opaque pass's memoryless texture demand target at every sample
+     count, its extent, and the one a resize replaced, released once the GPU
+     completes `tiled_retired_demand_submit_value`. */
+  id<MTLTexture> tiled_demand_target;
+  uint32_t tiled_demand_width;
+  uint32_t tiled_demand_height;
+  id<MTLTexture> tiled_retired_demand;
+  uint64_t tiled_retired_demand_submit_value;
   /* The opaque pass's sample count, fixed at creation: four with the spatial
      upscale, one with MetalFX, which draws into the graph's targets. */
   uint32_t tiled_sample_count;
@@ -1506,6 +1562,8 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_meshes_bytes, meshes,
                              renderer->max_meshes)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_materials_bytes, packet_materials,
                              renderer->max_materials)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_texture_demand_bytes,
+                             texture_demand, renderer->max_materials)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_textures_bytes, textures,
                              renderer->max_textures)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_samplers_bytes, samplers,
@@ -1774,6 +1832,18 @@ vkr_metal_packet_renderer_graph(const VkrMetalPacketRenderer *renderer) {
 const VkrDrawCensusStore *
 vkr_metal_packet_renderer_draw_census(const VkrMetalPacketRenderer *renderer) {
   return renderer ? &renderer->draw_census : NULL;
+}
+
+uint32_t
+vkr_metal_packet_renderer_take_texture_demand(VkrMetalPacketRenderer *renderer,
+                                              VkrTextureDemand *out,
+                                              uint32_t capacity) {
+  if (!renderer || !out || !renderer->texture_demand)
+    return 0u;
+  const uint32_t count = Min(renderer->texture_demand_count, capacity);
+  MemCopy(out, renderer->texture_demand, (uint64_t)count * sizeof(*out));
+  renderer->texture_demand_count = 0u;
+  return count;
 }
 
 void vkr_metal_packet_renderer_frame_counters(

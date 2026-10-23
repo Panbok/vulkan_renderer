@@ -185,6 +185,12 @@ typedef struct VkrMetalPacketPreparedPass {
     struct {
       VkrMetalPacketIndirectPass draws;
       uint64_t sky_root;
+      /* VkrMetalTiledDemandRoot of the pass's texture demand tile kernel;
+         zero when the frame reads back none. */
+      uint64_t demand_root;
+      /* VKR_METAL_TILED_DEMAND_VARIANT in a texture demand frame, else 0:
+         the pass has the demand target and draws the demand variants. */
+      uint32_t demand;
       /* The forward variant, which picks each Custom graph's pipelines. */
       uint32_t decals;
       uint32_t probes;

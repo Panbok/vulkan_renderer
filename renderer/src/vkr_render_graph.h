@@ -741,6 +741,9 @@ typedef struct VkrRenderGraphFrameInfo {
       sun's light by sun contact shadows, SDF sun shadows or both
       (VkrPreparedFrame). */
   bool8_t tiled_sun_light;
+  /** The tiled opaque passes write texture demand, which their tile kernel
+      reads back (ADR-024, VkrPreparedFrame). */
+  bool8_t tiled_texture_demand;
   /** `Tiled.SunShadow` traces SDF sun shadows into `tiled_sun_shadow`. */
   bool8_t tiled_sun_sdf;
   /** `Tiled.SunShafts` blurs the sky toward the sun into `tiled_sun_shafts`,

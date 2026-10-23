@@ -47,9 +47,9 @@ owns fetching bytes from a remote depot and their transport order, and
   [vkr_scene_frame.c](../../runtime/src/renderer/systems/vkr_scene_frame.c)).
   That epoch means "published to the world", not "seen by the camera": a
   texture behind the camera has the same epoch as one in front of it. The
-  desktop G-buffer resolve also measures the extent each material's pixels
-  need ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)); the tiled
-  pipeline measures nothing.
+  desktop G-buffer resolve and the tiled forward shading also measure the
+  extent each material's pixels need
+  ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)).
 - **Eviction.** Under a residency budget the material system first lowers
   textures' top mips by halving a per-slot extent cap, oldest demand epoch
   first and largest first within an epoch, down to a 128 floor, through the
@@ -59,12 +59,12 @@ owns fetching bytes from a remote depot and their transport order, and
   [vkr_material_system.c](../../runtime/src/renderer/systems/vkr_material_system.c)).
   Caps grow back when the budget allows. A demanded eviction requeues after a
   real budget increase or a Scene memory-relief generation
-  ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). On Vulkan the
-  G-buffer resolve measures each material's required extent and the budget
-  lowers mips beyond it first; Metal orders by demand epoch and size. On
-  Vulkan a step's reload copies the levels the replaced texture holds on the
-  GPU and reads and uploads only the levels it adds, none for a shrink
-  (ADR-012); Metal reloads every kept level.
+  ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). On both pipelines
+  the budget lowers mips beyond each material's measured extent first; the
+  tiled pipeline measures it only while the budget binds. On Vulkan a step's
+  reload copies the levels the replaced texture holds on the GPU and reads
+  and uploads only the levels it adds, none for a shrink (ADR-012); Metal
+  reloads every kept level.
 - **Budget owner.** The automatic policy derives the texture allowance from
   the heaps' usage and budget: pressure starts at 90% of the budget, ends below
   75% and targets 80%; under Metal's cap the allowance never drops below the
@@ -119,35 +119,34 @@ every material sample for a workflow id itself abandoned.
 
 ## Proposed work
 
-1. **Tiled demand.** The desktop G-buffer resolve measures each material's
-   required texture extent and the budget lowers surplus mips first
-   (ADR-024). Report the same `texture_demand_kernel.slangh` value from the
-   tiled pipeline's fragment shaders, which have the derivatives, so Metal
-   orders lowering by need instead of draw epoch and size. Passes outside the
-   camera view (shadows, probe captures, planar reflections, bakes) still
-   read what the camera's demand keeps resident.
-2. **Trim without pressure.** Lower textures to their measured need with no
+Both pipelines measure each material's required texture extent, and the
+budget lowers surplus mips first (ADR-024). Passes outside the camera view
+(shadows, probe captures, planar reflections, bakes) read what the camera's
+demand keeps resident.
+
+1. **Trim without pressure.** Lower textures to their measured need with no
    budget pressure, so only the mips the camera needs stay resident
    (deferred by the owner on 2026-10-22 because each step republishes the
    texture). On Vulkan a step now copies the kept levels and reads only
-   added ones (item 3), but still publishes a new texture.
-3. **Grow and shrink on Metal.** Vulkan reloads copy the levels the replaced
+   added ones (item 2), but still publishes a new texture.
+2. **Grow and shrink on Metal.** Vulkan reloads copy the levels the replaced
    texture holds and read and upload only the added ones (ADR-012, ADR-024).
    Metal reports no `supports_texture_level_copy`; its adapter would copy
    the levels with a blit encoder, retain the source until that command
    buffer completes, and then report the capability.
-4. **Floor first.** Load each new texture first at its 128-texel floor, so
+3. **Floor first.** Load each new texture first at its 128-texel floor, so
    it appears at once at low detail. Done as a second full load it took
    Bistro's full detail from 27 to 35 s on the RX 6700 XT, and the owner
    deferred it on 2026-10-22 (ADR-012). The second step now uploads only the
    levels above the floor, but each texture still publishes twice, which
    that cost came from; it needs a measurement before it returns.
-5. **One priority for local and remote loads.** Done for ordering: local
+4. **One priority for local and remote loads.** Done for ordering: local
    reloads and remote whole-file downloads follow one order from the
    measured demand (ADR-012). A remote texture still downloads whole once
    drawn; fetching only the mips its need holds would trim without pressure
-   (item 2), which the owner kept deferred on 2026-10-23. The tiled pipeline
-   orders by epoch until item 1 lands. Not yet measured over a depot.
+   (item 1), which the owner kept deferred on 2026-10-23. The tiled pipeline
+   measures demand only while the texture budget binds (ADR-024), and orders
+   by epoch otherwise. Not yet measured over a depot.
 
 **Lifetime.** The texture system owns images, levels and slots; the material
 system owns streams and demand; each backend adapter owns native images, copy

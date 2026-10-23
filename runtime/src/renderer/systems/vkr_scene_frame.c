@@ -833,6 +833,8 @@ VkrRendererError vkr_scene_build_world_draws(
       .skinning_count = skinning_count,
       .opaque_material_features = totals.opaque_material_features,
       .opaque_material_features_valid = true_v,
+      .texture_demand_requested =
+          materials->texture_stream_budget_bytes != UINT64_MAX,
       .gpu_candidates = gpu_candidates,
       .gpu_candidate_count = gpu_candidate_count,
       .draw_distance_scale = draw_distance_scale,

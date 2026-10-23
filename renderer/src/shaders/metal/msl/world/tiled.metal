@@ -19,6 +19,13 @@
 // entries specializes it.
 constant bool vkr_tiled_sun_output [[function_constant(1)]];
 
+// Texture demand frames (VkrPreparedFrame.tiled_texture_demand, ADR-024)
+// take the opaque pass's variants with this constant set: its draws also
+// write their demand words to a third target, which
+// vkr_metal_tiled_demand_tile reads. Every pipeline that reaches these
+// entries specializes it.
+constant bool vkr_tiled_demand_output [[function_constant(5)]];
+
 // Sun shaft frames (VkrPreparedFrame.tiled_sun_shafts, ADR-132) take the
 // atmosphere variant with this constant set, which adds the shafts; other
 // pipelines leave it undefined or false, so their registers carry none of it.
@@ -43,9 +50,19 @@ constant bool vkr_tiled_kind_no_terrain =
 
 // The opaque pass's outputs: the lit colour and, in sun contact frames, the
 // sun's light within it, after its cascades and cloud shadow.
+// Texture demand (ADR-024) leaves the opaque pass as a colour target, a
+// memoryless word per sample that vkr_metal_tiled_demand_tile reads: the
+// material row above VKR_METAL_TILED_DEMAND_SHIFT bits of encoded demand
+// (texture_demand_kernel.slangh), zero for none. A device write from these
+// entries, even one that never runs, made the opaque pass take about 245 ms
+// instead of 16 ms on Bistro (M1 Pro, 2026-10-23); the target costs it about
+// 1 ms, so only demand frames have it.
+#define VKR_METAL_TILED_DEMAND_SHIFT 5u
+
 struct VkrMetalTiledForwardOutput {
   float4 color [[color(0)]];
   half4 sun_light [[color(1), function_constant(vkr_tiled_sun_output)]];
+  uint texture_demand [[color(2), function_constant(vkr_tiled_demand_output)]];
 };
 
 // The forward vertex. It transforms like the Slang vkr_metal_packet_vertex,
@@ -217,10 +234,10 @@ fragment VkrMetalTiledForwardOutput vkr_metal_tiled_sky_fragment(
   if (root.frame->render_mode == 9u || root.frame->render_mode == 12u ||
       vkr_editor_data_view(root.frame->render_mode) ||
       root.frame->shadow_debug_mode != 0u)
-    return {float4(0.0f), half4(0.0h)};
+    return {float4(0.0f), half4(0.0h), 0u};
   return {float4(vkr_metal_tiled_sky_background(root, uint2(input.position.xy)),
                  0.0f),
-          half4(0.0h)};
+          half4(0.0h), 0u};
 }
 
 // The media over the resolved opaque image, as the desktop pipeline's
@@ -1584,6 +1601,26 @@ static bool vkr_metal_tiled_inspect(
   return true;
 }
 
+// A surface's texture demand word (VkrMetalTiledForwardOutput): its material
+// row and the encoded demand at the bias the material samples take. Every
+// pixel of a demand frame computes it, and the tile kernel reads it. The UV
+// differences to the quad's horizontal and vertical neighbours are the
+// derivatives the kernel takes by length: dfdx and dfdy cost the opaque pass
+// about 0.3 ms more on Bistro at 800x600 (M1 Pro, 2026-10-23), as the
+// material samples then reuse them.
+static uint
+vkr_metal_tiled_demand_word(thread const VkrMetalTiledVertexOutput &input,
+                            constant VkrMetalPacketFrameRoot *frame,
+                            const device VkrGpuVisibleDrawRow &visible) {
+  const float2 uv_dx = quad_shuffle_xor(input.texcoord, 1u) - input.texcoord;
+  const float2 uv_dy = quad_shuffle_xor(input.texcoord, 2u) - input.texcoord;
+  const uint demand =
+      vkr_texture_demand_encode(uv_dx, uv_dy, frame->texture_lod_bias);
+  return demand != 0u
+             ? (visible.material_index << VKR_METAL_TILED_DEMAND_SHIFT) | demand
+             : 0u;
+}
+
 // Shades the opaque pass. Opaque draws never discard, so hidden-surface
 // removal keeps its fast path. With Coverage, alpha-tested draws return their
 // alpha sharpened about the material's cut-off to a transition about one
@@ -1602,6 +1639,13 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
       root->visible_rows[input.visible_row_index];
   const device VkrMetalPacketMaterial &material =
       frame->materials[visible.material_index];
+  // Texture demand: alpha-tested variants take it before their discard and
+  // keep only the word live; opaque ones never discard, so they take it as
+  // they return and keep nothing live across the shading.
+  const uint early_demand =
+      Coverage && vkr_tiled_demand_output
+          ? vkr_metal_tiled_demand_word(input, frame, visible)
+          : 0u;
   float coverage = 1.0f;
   VkrMetalTiledSurface surface = Surface::template shade<Coverage>(
       input, frame, material, visible.material_index, coverage);
@@ -1615,7 +1659,10 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
                                 front_facing, visible.state_flags, inspected))
-      return {float4(inspected, coverage), half4(0.0h)};
+      return {float4(inspected, coverage), half4(0.0h),
+              Coverage || !vkr_tiled_demand_output
+                  ? early_demand
+                  : vkr_metal_tiled_demand_word(input, frame, visible)};
   }
   uint probe = Probes ? (visible.state_flags >> VKR_GPU_DRAW_PROBE_SHIFT) &
                            VKR_GPU_DRAW_PROBE_MASK
@@ -1629,7 +1676,10 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
       input, frame, material, surface, front_facing, probe,
       visible.instance_index);
   return {float4(light.diffuse + light.specular + light.emissive, coverage),
-          vkr_metal_tiled_unpack_sun(light.sun)};
+          vkr_metal_tiled_unpack_sun(light.sun),
+          Coverage || !vkr_tiled_demand_output
+              ? early_demand
+              : vkr_metal_tiled_demand_word(input, frame, visible)};
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_fragment(
@@ -1920,7 +1970,7 @@ fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_coverage_probes_
 // and the blend pass every blended one with the next, each adding one layer
 // under the pixels it covers, hidden or not. The tonemap colours the sum.
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_overdraw_fragment() {
-  return {float4(float3(VKR_EDITOR_OVERDRAW_LAYER), 1.0f), half4(0.0h)};
+  return {float4(float3(VKR_EDITOR_OVERDRAW_LAYER), 1.0f), half4(0.0h), 0u};
 }
 
 fragment float4 vkr_metal_tiled_overdraw_blend_fragment() {
@@ -1955,6 +2005,35 @@ kernel void vkr_metal_tiled_resolve_tile(
   VkrMetalTiledResolvePixel pixel;
   pixel.color = half4(sum / weight_sum);
   block.write(pixel, coord, ushort((1u << sample_count) - 1u));
+}
+
+// A demand frame's texture demand (ADR-024), dispatched after each opaque
+// pass's draws: the first sample of every pixel maxes its word into the
+// frame's demand words, one per material row (VkrMetalTiledDemandRoot).
+// Demand frames are one in several, so each reads every pixel rather than
+// the rotating one of each 4x4 block. The load skips the atomic where the
+// row already holds as much.
+struct VkrMetalTiledDemandPixel {
+  uint texture_demand [[color(2)]];
+};
+
+struct VkrMetalTiledDemandRoot {
+  device atomic_uint *words;
+  uint2 reserved;
+};
+
+kernel void vkr_metal_tiled_demand_tile(
+    imageblock<VkrMetalTiledDemandPixel, imageblock_layout_implicit> block,
+    constant VkrMetalTiledDemandRoot &root [[buffer(1)]],
+    ushort2 coord [[thread_position_in_threadgroup]]) {
+  const uint word =
+      block.read(coord, 0, imageblock_data_rate::sample).texture_demand;
+  const uint demand = word & ((1u << VKR_METAL_TILED_DEMAND_SHIFT) - 1u);
+  if (demand == 0u)
+    return;
+  device atomic_uint *row = root.words + (word >> VKR_METAL_TILED_DEMAND_SHIFT);
+  if (demand > atomic_load_explicit(row, memory_order_relaxed))
+    atomic_fetch_max_explicit(row, demand, memory_order_relaxed);
 }
 
 // The MetalFX upscaler's camera motion (VkrMetalTiledMotionRoot): the
