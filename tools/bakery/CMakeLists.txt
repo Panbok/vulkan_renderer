@@ -203,6 +203,19 @@ if(VKR_BUILD_TOOLS)
         "${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_surface.c"
         ${VKR_BAKERY_COOKING_SOURCES})
     set(VKR_BAKERY_IDENTITY_LIGHTMAP_EXTRA "lightmap ktx ${VKR_BAKERY_KTX_COMMIT}")
+    # The diffuse-volume baker, for `bake diffuse`'s recipe fingerprint.
+    list(APPEND VKR_BAKERY_IDENTITY_GROUPS DIFFUSE)
+    set(VKR_BAKERY_IDENTITY_DIFFUSE_FILES
+        ${VKR_BAKERY_LIGHTMAP_SOURCES}
+        "${CMAKE_SOURCE_DIR}/tools/vkr_diffuse_baker.cpp"
+        "${CMAKE_SOURCE_DIR}/renderer/src/vkr_dfg_lut.c"
+        "${CMAKE_SOURCE_DIR}/renderer/src/vkr_atmosphere.c"
+        "${CMAKE_SOURCE_DIR}/renderer/src/vkr_clouds.c"
+        "${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_blockout.c"
+        "${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_brush.c"
+        "${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_surface.c"
+        ${VKR_BAKERY_COOKING_SOURCES})
+    set(VKR_BAKERY_IDENTITY_DIFFUSE_EXTRA "diffuse")
 endif()
 
 set(VKR_BAKERY_IDENTITY_SPEC "${CMAKE_CURRENT_BINARY_DIR}/vkr_bakery_identity_spec.cmake")

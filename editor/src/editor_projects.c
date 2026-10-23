@@ -290,8 +290,9 @@ struct VkrEditorProjects {
   /* Lightmap samples per texel a Cmd bake asks for; zero keeps the
      settings' count. */
   uint32_t bake_lightmap_samples;
-  /* The next bake_scene job rebakes every lightmap instead of relighting
-     only what edits reach; one job only, never saved. */
+  /* The next bake_scene job rebakes every lightmap and the diffuse volume
+     instead of relighting or keeping what edits do not reach; one job only,
+     never saved. */
   bool8_t bake_lightmap_full;
   /* The Bake settings window's values every bake sends (ADR-100). */
   VkrEditorBakeSettings bake_settings;
@@ -2039,8 +2040,10 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
          vkr_json_writer_end_object(writer);
     ok = ok && vkr_editor_bake_settings_write(writer, &projects->bake_settings,
                                               projects->bake_lightmap_samples);
+    /* `full` rebakes the lightmaps and the diffuse volume from scratch
+       instead of keeping or relighting what did not change. */
     if (projects->bake_lightmap_full) {
-      ok = ok && project_json_bool(writer, "lightmap_full", true_v);
+      ok = ok && project_json_bool(writer, "full", true_v);
     }
   }
   if (projects->operation[0]) {

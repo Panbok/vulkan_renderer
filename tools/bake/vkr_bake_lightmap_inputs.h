@@ -34,14 +34,34 @@ extern "C" {
 
 using VkrBakeDigest = std::array<uint8_t, 32>;
 
-/* One source instance: its key, the digest of its world-space triangles
-   (corners, normals, texture and lightmap UVs, colors, tangents, flags) and
-   of their materials with their textures' content, its world bounds, and
-   for a lightmapped instance the size of its rectangles on the set's pages
-   and its lamp-direct pages (zero when it has none). */
+/*
+ * Floating-point inputs compare within a tolerance, not by digest: an editor
+ * save rewrites a rotation it derives from angles, so a brush or prop that
+ * did not move comes back a few ulps off and its world-space corners with it
+ * (73 of 6,384 Level Design Test instances after one save, 2026-10-23). A
+ * value matches when it differs by at most kVkrBakeInputTolerance plus
+ * kVkrBakeInputRelativeTolerance of its magnitude: 0.1 mm at the origin,
+ * about 1.3 mm 600 m away, far below a texel and far above float drift.
+ */
+constexpr float32_t kVkrBakeInputTolerance = 1.0e-4f;
+constexpr float32_t kVkrBakeInputRelativeTolerance = 2.0e-6f;
+
+/* Area-weighted moments of an instance's world-space triangles: area,
+   centroid, covariance, and the means of the corners' normals, texture
+   UVs and their squares, lightmap UVs and their squares, colors and
+   tangents. A move, rotation, reshape or remap changes some of them. */
+constexpr uint32_t kVkrBakeInstanceMoments = 28u;
+
+/* One source instance: its key, the digest of what it is made of exactly
+   (its triangle count, each triangle's flags and material, and the
+   materials with their textures' content), the moments of its geometry,
+   its world bounds, and for a lightmapped instance the size of its
+   rectangles on the set's pages and its lamp-direct pages (zero when it
+   has none). */
 struct VkrBakeLightmapInputInstance {
   VkrBakeSceneInstance key;
   VkrBakeDigest digest = {};
+  float32_t moments[kVkrBakeInstanceMoments] = {};
   Vec3 bounds_min = {};
   Vec3 bounds_max = {};
   uint32_t width = 0u;
@@ -50,12 +70,19 @@ struct VkrBakeLightmapInputInstance {
   uint32_t direct_height = 0u;
 };
 
+/* Light fields compared within the tolerance: position, direction, right,
+   up, color, intensity, range, attenuation, cones, rectangle size,
+   radiance and emitter radius. */
+constexpr uint32_t kVkrBakeLightFields = 26u;
+
 /* One lamp (a point, spot or rectangle light; directional lights are
-   global): the digest of every field the bake reads, and where it lights
-   directly, the sphere of its range about its position, unbounded for a
-   rectangle or a lamp without a range. */
+   global): the digest of its exact fields (kind, group, shadow and enabled
+   flags), its other fields, and where it lights directly, the sphere of
+   its range about its position, unbounded for a rectangle or a lamp
+   without a range. */
 struct VkrBakeLightmapInputLight {
   VkrBakeDigest digest = {};
+  float32_t fields[kVkrBakeLightFields] = {};
   Vec3 position = {};
   float32_t range = 0.0f;
   float32_t source_radius = 0.0f;
@@ -65,14 +92,29 @@ struct VkrBakeLightmapInputLight {
 };
 
 struct VkrBakeLightmapInputs {
+  /* Of the settings, page size, atmosphere, environment, subsurface
+     profiles, sun keys, directional lights and layer table, their floats
+     rounded to 1e-5. */
   VkrBakeDigest globals = {};
   /* By source instance index. */
   std::vector<VkrBakeLightmapInputInstance> instances;
   /* By scene light index; directional lights are in `globals`. */
   std::vector<VkrBakeLightmapInputLight> lights;
-  /* Of everything above: equal digests bake equal sets. */
-  VkrBakeDigest digest = {};
 };
+
+/* Whether two instances' geometry matches within the tolerance. */
+bool vkr_bake_lightmap_instance_same(const VkrBakeLightmapInputInstance &a,
+                                     const VkrBakeLightmapInputInstance &b);
+
+/* Whether two lamps match within the tolerance. */
+bool vkr_bake_lightmap_light_same(const VkrBakeLightmapInputLight &a,
+                                  const VkrBakeLightmapInputLight &b);
+
+/* Whether `current` matches `previous` everywhere: equal globals, the same
+   instances by key, each matching with its rectangle sizes, and the same
+   lamps; a bake of `current` would publish the previous set again. */
+bool vkr_bake_lightmap_inputs_match(const VkrBakeLightmapInputs &previous,
+                                    const VkrBakeLightmapInputs &current);
 
 /*
  * Describes `scene`'s inputs. `settings` holds every bake option that
@@ -89,11 +131,8 @@ bool vkr_bake_lightmap_inputs_build(const VkrBakeScene &scene,
                                     uint32_t threads,
                                     VkrBakeLightmapInputs *out_inputs);
 
-/* Lowercase hex of a digest. */
-std::string vkr_bake_digest_hex(const VkrBakeDigest &digest);
-
 /*
- * The input index file (VKLI): the inputs and the payload checksum and size
+ * The input index file (VKLI v2): the inputs and the payload checksum and size
  * of the set they describe, so a later bake checks that the set beside the
  * index is the one it was written with. Little-endian, CRC-checked.
  */

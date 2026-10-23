@@ -392,6 +392,10 @@ typedef struct VkrBakeDiffuse {
   /* Probes bake on the CPU integrator even where the GPU probe gather is
      available. */
   bool8_t cpu;
+  /* A volume baked before that may still be current (the output itself
+     when it exists and none is named); `full` bakes again regardless. */
+  const char *previous;
+  bool8_t full;
 } VkrBakeDiffuse;
 
 typedef struct VkrBakeArguments {
@@ -1041,11 +1045,121 @@ vkr_internal bool8_t vkr_bake_publish(VkrBake *bake,
   return true_v;
 }
 
+/* Whether every closure file still has the size and digest recorded before
+   the bake, so the published set describes the files it read. Hashing the
+   recorded closure replaces a second scene load. */
+vkr_internal bool8_t vkr_bake_closure_unchanged(VkrBake *bake,
+                                                const VkrBakeryJson *records) {
+  for (const VkrBakeryJson *record = records->first; record;
+       record = record->next) {
+    const char *path = vkr_bake_text(record, "path");
+    int64_t bytes = -1;
+    VkrBakeryStat info;
+    char digest[72];
+    if (!path || !vkr_bakery_stat(path, &info) || !info.exists ||
+        !vkr_bake_int(vkr_bakery_json_get(record, "bytes"), &bytes) ||
+        bytes != (int64_t)info.size || !vkr_bake_digest(bake, path, digest) ||
+        !vkr_bakery_json_is_string(vkr_bakery_json_get(record, "sha256"),
+                                   digest)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* The input index beside a bake output (vkr_bake_lightmap_inputs.h):
+   `<name>.vkli` for `<name>.vklm` or `<name>.vkdv`. */
+vkr_internal const char *vkr_bake_index_path(VkrBake *bake,
+                                             const char *output) {
+  const uint64_t length = strlen(output);
+  const uint64_t stem =
+      length >= 5u && (strcmp(output + length - 5u, ".vklm") == 0 ||
+                       strcmp(output + length - 5u, ".vkdv") == 0)
+          ? length - 5u
+          : length;
+  return vkr_bake_printf(bake, "%.*s.vkli", (int)stem, output);
+}
+
+/* The sidecar of `previous`, a bake output, when it records this
+   fingerprint: the same baker, output format and recipe made the output.
+   NULL otherwise; any doubt counts as a mismatch. */
+vkr_internal VkrBakeryJson *
+vkr_bake_previous_metadata(VkrBake *bake, const char *previous,
+                           const char *fingerprint) {
+  char sidecar[VKR_BAKE_PATH];
+  (void)snprintf(sidecar, sizeof(sidecar), "%s.bake.json", previous);
+  if (!vkr_bakery_is_file(previous) || !vkr_bakery_is_file(sidecar)) {
+    return NULL;
+  }
+  const bool8_t failed_before = bake->failed;
+  VkrBakeryJson *metadata = vkr_bake_load(bake, sidecar, "metadata");
+  bake->failed = failed_before;
+  const bool8_t same =
+      metadata &&
+      vkr_bakery_json_is_string(
+          vkr_bakery_json_get(metadata, "input_fingerprint"), fingerprint);
+  return same ? metadata : NULL;
+}
+
+/* Whether `previous`, a bake output, was baked with this fingerprint and is
+   still the file its sidecar describes. Reads nothing but the sidecar and
+   the output; any doubt means it is not current. */
+vkr_internal bool8_t vkr_bake_previous_current(VkrBake *bake,
+                                               const char *previous,
+                                               const char *fingerprint,
+                                               char out_sha256[72]) {
+  const VkrBakeryJson *metadata =
+      vkr_bake_previous_metadata(bake, previous, fingerprint);
+  const bool8_t failed_before = bake->failed;
+  const bool8_t current =
+      metadata && vkr_bake_digest(bake, previous, out_sha256) &&
+      vkr_bakery_json_is_string(vkr_bakery_json_get(metadata, "output_sha256"),
+                                out_sha256);
+  bake->failed = failed_before;
+  return current;
+}
+
+/* The fingerprint of how a bake output is made: its baker's identity, the
+   output format's version and the recipe, under `kind`. With an inspection
+   that finds the inputs matching the previous output's input index, a
+   previous output with this fingerprint is current. */
+vkr_internal bool8_t vkr_bake_recipe_fingerprint(
+    VkrBake *bake, const char *kind, const char *identity, uint32_t format,
+    const VkrBakeryJson *recipe, char out[72]) {
+  String8 recipe_text = {0};
+  if (!vkr_bakery_json_write(bake->arena, vkr_bake_sorted(bake->arena, recipe),
+                             VKR_BAKERY_JSON_COMPACT, &recipe_text)) {
+    return vkr_bake_fail(bake, "Cannot write the bake recipe");
+  }
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  const char *head =
+      vkr_bake_printf(bake, "vkr-%s-recipe 2\nbaker %s\nformat %u\nrecipe ",
+                      kind, identity, format);
+  vkr_sha256_update(&hash, head, strlen(head));
+  vkr_sha256_update(&hash, recipe_text.str, recipe_text.length);
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256_final(&hash, digest);
+  char hex[VKR_SHA256_HEX_SIZE];
+  vkr_sha256_hex(digest, hex);
+  (void)snprintf(out, 72, "sha256:%s", hex);
+  return true_v;
+}
+
+/* Whether an inspection manifest says its inputs match the previous
+   output's input index. */
+vkr_internal bool8_t vkr_bake_matches_previous(const VkrBakeryJson *manifest) {
+  const VkrBakeryJson *matches =
+      vkr_bakery_json_get(manifest, "matches_previous");
+  return matches && matches->type == VKR_BAKERY_JSON_BOOL && matches->boolean;
+}
+
 vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                                       const char *output, const char *sidecar,
                                       const char *manifest_destination,
                                       bool8_t *out_no_volume,
-                                      bool8_t *out_too_large) {
+                                      bool8_t *out_too_large,
+                                      bool8_t *out_unchanged) {
   char scene[VKR_BAKE_PATH];
   char job[VKR_BAKE_PATH];
   char inspect_path[VKR_BAKE_PATH];
@@ -1053,7 +1167,28 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   VKR_BAKE_TRY(vkr_bake_existing_file(bake, args->scene, "--scene", scene));
   VKR_BAKE_TRY(vkr_bake_job_directory(bake, args->workspace_root, "diffuse_",
                                       "diffuse_volume_bake", job));
-  if (!vkr_bake_run_inspect(bake, args, scene, job, "inspect", inspect_path)) {
+  /* The previous volume, whose input index the inspection compares with
+     this bake's inputs. */
+  char previous[VKR_BAKE_PATH] = {0};
+  if (args->previous) {
+    (void)vkr_bake_resolve(args->previous, previous);
+  } else if (vkr_bakery_is_file(output)) {
+    (void)snprintf(previous, sizeof(previous), "%s", output);
+  }
+  const char *previous_index =
+      previous[0] ? vkr_bake_index_path(bake, previous) : NULL;
+  const bool8_t indexed = !args->full && previous_index &&
+                          vkr_bakery_is_file(previous) &&
+                          vkr_bakery_is_file(previous_index);
+  VkrBakeArguments inspection = {0};
+  VKR_BAKE_TRY(
+      vkr_bake_recipe_arguments(bake, args, scene, false_v, &inspection));
+  if (indexed) {
+    vkr_bake_push(&inspection, "--previous-index");
+    vkr_bake_push(&inspection, previous_index);
+  }
+  if (!vkr_bake_run_recipe_inspect(bake, &inspection, job, "inspect",
+                                   inspect_path)) {
     /* Bounds too large for the brick budget at this spacing leave the scene
        without a volume, as a scene without geometry does. */
     *out_too_large = bake->baker_code == VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT;
@@ -1090,6 +1225,29 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                          "lighting. Inspection: %s",
                          job);
   }
+  /* A previous volume baked with this fingerprint from inputs the
+     inspection found matching is current: the bake would publish it
+     again. */
+  float64_t photon_radius = args->photon_radius;
+  if (!args->has_photon_radius) {
+    float64_t spacing = 0.0;
+    VKR_BAKE_TRY(vkr_bake_manifest_spacing(bake, inspect, args, &spacing));
+    photon_radius = spacing * 0.25;
+  }
+  VkrBakeryJson *recipe = vkr_bake_recipe_record(bake, args, photon_radius);
+  char fingerprint[72];
+  VKR_BAKE_TRY(vkr_bake_recipe_fingerprint(
+      bake, "diffuse", VKR_BAKERY_IDENTITY_DIFFUSE, VKR_DIFFUSE_VOLUME_VERSION,
+      recipe, fingerprint));
+  char previous_sha256[72];
+  if (indexed && vkr_bake_matches_previous(inspect) &&
+      vkr_bake_previous_current(bake, previous, fingerprint, previous_sha256)) {
+    *out_unchanged = strcmp(previous, output) != 0;
+    printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":\"%s\","
+           "\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
+           previous, previous_sha256, fingerprint, job);
+    return true_v;
+  }
   char output_directory[VKR_BAKE_PATH];
   vkr_bakery_path_parent(output_directory, sizeof(output_directory), output);
   if (!vkr_bakery_make_directories(output_directory)) {
@@ -1098,6 +1256,9 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   char id[33];
   vkr_bake_hex_id(id);
   const char *temporary = vkr_bake_printf(bake, "%s.%.8s.vkdv", output, id);
+  const char *index = vkr_bake_index_path(bake, output);
+  const char *temporary_index =
+      vkr_bake_printf(bake, "%s.%.8s.vkli", index, id);
   const char *bake_manifest =
       vkr_bake_printf(bake, "%s/bake.manifest.json", job);
   VkrBakeArguments arguments = {0};
@@ -1107,6 +1268,8 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   vkr_bake_push(&arguments, temporary);
   vkr_bake_push(&arguments, "--manifest");
   vkr_bake_push(&arguments, bake_manifest);
+  vkr_bake_push(&arguments, "--index");
+  vkr_bake_push(&arguments, temporary_index);
   VKR_BAKE_TRY(vkr_bake_write_command(
       bake, vkr_bake_printf(bake, "%s/bake.command.json", job), &arguments));
   bool8_t ok = vkr_bake_run_baker(bake, &arguments,
@@ -1121,28 +1284,17 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                              "prepared");
   }
   ok = ok && (dvol = vkr_bake_verify_dvol(bake, temporary)) != NULL;
-  char final_inspect[VKR_BAKE_PATH];
-  VkrBakeryJson *final_manifest = NULL;
-  VkrBakeryJson *final_dependencies = NULL;
-  ok = ok &&
-       vkr_bake_run_inspect(bake, args, scene, job, "inspect_after",
-                            final_inspect) &&
-       vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind, final_inspect,
-                                 scene, &final_manifest, &final_dependencies);
-  if (ok && !vkr_bakery_json_equal(dependencies, final_dependencies)) {
+  if (ok && !vkr_bake_closure_unchanged(bake, dependencies)) {
     ok = vkr_bake_fail(bake, "Bake source closure changed before publication");
   }
-  float64_t photon_radius = args->photon_radius;
-  if (ok && !args->has_photon_radius) {
-    float64_t spacing = 0.0;
-    ok = vkr_bake_manifest_spacing(bake, baked, args, &spacing);
-    photon_radius = spacing * 0.25;
+  if (ok && !vkr_bakery_is_file(temporary_index)) {
+    ok = vkr_bake_fail(bake, "The diffuse baker wrote no input index");
   }
   if (ok) {
     const VkrBakePublication publication = {
         .scene_source = args->scene,
         .scene = scene,
-        .recipe = vkr_bake_recipe_record(bake, args, photon_radius),
+        .recipe = recipe,
         .dependencies = dependencies,
         .baked = baked,
         .output_record = dvol,
@@ -1152,10 +1304,15 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
         .bake_manifest = bake_manifest,
         .manifest_destination = manifest_destination,
         .job = job,
+        .input_fingerprint = fingerprint,
     };
-    ok = vkr_bake_publish(bake, &publication);
+    /* The index goes into place first: a volume without its index bakes
+       again next time, never the other way round. */
+    ok = vkr_bakery_rename(temporary_index, index, true_v) &&
+         vkr_bake_publish(bake, &publication);
   }
   (void)vkr_bakery_remove_file(temporary);
+  (void)vkr_bakery_remove_file(temporary_index);
   return ok;
 }
 
@@ -1374,6 +1531,10 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
           vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.photon_radius);
     } else if (!strcmp(flag, "--cpu")) {
       args.cpu = true_v;
+    } else if (!strcmp(flag, "--previous")) {
+      ok = (args.previous = vkr_bake_value(argv, argc, &i)) != NULL;
+    } else if (!strcmp(flag, "--full")) {
+      args.full = true_v;
     } else {
       ok = false_v;
     }
@@ -1430,12 +1591,13 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
   }
   bool8_t no_volume = false_v;
   bool8_t too_large = false_v;
-  const bool8_t ok = args.inspect
-                         ? vkr_bake_diffuse_inspect(bake, &args, manifest)
-                         : vkr_bake_diffuse(bake, &args, output, sidecar,
-                                            manifest, &no_volume, &too_large);
+  bool8_t unchanged = false_v;
+  const bool8_t ok =
+      args.inspect ? vkr_bake_diffuse_inspect(bake, &args, manifest)
+                   : vkr_bake_diffuse(bake, &args, output, sidecar, manifest,
+                                      &no_volume, &too_large, &unchanged);
   if (ok) {
-    return 0;
+    return unchanged ? VKR_BAKERY_BAKE_UNCHANGED : 0;
   }
   if (no_volume || too_large) {
     fprintf(stderr, "Diffuse-volume bake skipped: %s\n", bake->error);
@@ -1620,106 +1782,6 @@ cleanup:
   return result;
 }
 
-/* Version of the lightmap input fingerprint's own layout. */
-#define VKR_BAKE_LIGHTMAP_FINGERPRINT_VERSION 1
-
-/*
- * The content fingerprint of a lightmap bake's inputs: the lightmap baker's
- * identity (its sources and codecs, VKR_BAKERY_IDENTITY_LIGHTMAP), the
- * recipe, and the digest the baker's inspection reports of everything it
- * read (`content_digest`, vkr_bake_lightmap_inputs.h): geometry, materials
- * and their textures' content, lights, sky and layers, never a path, so a
- * project bake's effective scene, written to a new job directory each time,
- * and edits the bake does not read leave it unchanged. Two bakes with one
- * fingerprint publish the same set, so a later bake with the previous set's
- * fingerprint keeps that set.
- */
-vkr_internal bool8_t
-vkr_bake_lightmap_fingerprint(VkrBake *bake, const VkrBakeryJson *recipe,
-                              const VkrBakeryJson *manifest, char out[72]) {
-  const char *content = vkr_bake_text(manifest, "content_digest");
-  if (!content || !content[0]) {
-    return vkr_bake_fail(bake, "Lightmap inspect manifest lacks the content "
-                               "digest of its inputs");
-  }
-  String8 recipe_text = {0};
-  if (!vkr_bakery_json_write(bake->arena, vkr_bake_sorted(bake->arena, recipe),
-                             VKR_BAKERY_JSON_COMPACT, &recipe_text)) {
-    return vkr_bake_fail(bake, "Cannot write the lightmap recipe");
-  }
-  VkrSha256 hash;
-  vkr_sha256_init(&hash);
-  const char *head = vkr_bake_printf(
-      bake, "vkr-lightmap-inputs %d\nbaker %s\nformat %u\ncontent %s\nrecipe ",
-      VKR_BAKE_LIGHTMAP_FINGERPRINT_VERSION, VKR_BAKERY_IDENTITY_LIGHTMAP,
-      VKR_LIGHTMAP_SET_VERSION, content);
-  vkr_sha256_update(&hash, head, strlen(head));
-  vkr_sha256_update(&hash, recipe_text.str, recipe_text.length);
-  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
-  vkr_sha256_final(&hash, digest);
-  char hex[VKR_SHA256_HEX_SIZE];
-  vkr_sha256_hex(digest, hex);
-  (void)snprintf(out, 72, "sha256:%s", hex);
-  return true_v;
-}
-
-/* Whether every closure file still has the size and digest recorded before
-   the bake, so the published set describes the files it read. Hashing the
-   recorded closure replaces a second scene load. */
-vkr_internal bool8_t vkr_bake_closure_unchanged(VkrBake *bake,
-                                                const VkrBakeryJson *records) {
-  for (const VkrBakeryJson *record = records->first; record;
-       record = record->next) {
-    const char *path = vkr_bake_text(record, "path");
-    int64_t bytes = -1;
-    VkrBakeryStat info;
-    char digest[72];
-    if (!path || !vkr_bakery_stat(path, &info) || !info.exists ||
-        !vkr_bake_int(vkr_bakery_json_get(record, "bytes"), &bytes) ||
-        bytes != (int64_t)info.size || !vkr_bake_digest(bake, path, digest) ||
-        !vkr_bakery_json_is_string(vkr_bakery_json_get(record, "sha256"),
-                                   digest)) {
-      return false_v;
-    }
-  }
-  return true_v;
-}
-
-/* Whether `previous`, a set baked before, was baked from inputs with this
-   fingerprint and is still the file its sidecar describes. Reads nothing
-   but the sidecar and the set; any doubt means it is not current. */
-vkr_internal bool8_t vkr_bake_lightmap_previous_current(VkrBake *bake,
-                                                        const char *previous,
-                                                        const char *fingerprint,
-                                                        char out_sha256[72]) {
-  char sidecar[VKR_BAKE_PATH];
-  (void)snprintf(sidecar, sizeof(sidecar), "%s.bake.json", previous);
-  if (!vkr_bakery_is_file(previous) || !vkr_bakery_is_file(sidecar)) {
-    return false_v;
-  }
-  const bool8_t failed_before = bake->failed;
-  VkrBakeryJson *metadata = vkr_bake_load(bake, sidecar, "metadata");
-  bool8_t current =
-      metadata &&
-      vkr_bakery_json_is_string(
-          vkr_bakery_json_get(metadata, "input_fingerprint"), fingerprint) &&
-      vkr_bake_digest(bake, previous, out_sha256) &&
-      vkr_bakery_json_is_string(vkr_bakery_json_get(metadata, "output_sha256"),
-                                out_sha256);
-  bake->failed = failed_before;
-  return current;
-}
-
-/* The input index beside a set: `<name>.vkli` for `<name>.vklm`. */
-vkr_internal const char *vkr_bake_lightmap_index_path(VkrBake *bake,
-                                                      const char *set) {
-  const uint64_t length = strlen(set);
-  const uint64_t stem = length >= 5u && strcmp(set + length - 5u, ".vklm") == 0
-                            ? length - 5u
-                            : length;
-  return vkr_bake_printf(bake, "%.*s.vkli", (int)stem, set);
-}
-
 vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
                                        const VkrBakeLightmap *args,
                                        const char *output, const char *sidecar,
@@ -1735,8 +1797,35 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
                                       "lightmap_bake", job));
   VkrBakeArguments recipe = {0};
   vkr_bake_lightmap_arguments(bake, args, scene, &recipe);
-  VKR_BAKE_TRY(
-      vkr_bake_run_recipe_inspect(bake, &recipe, job, "inspect", inspect_path));
+  VkrBakeryJson *recipe_record = vkr_bake_lightmap_recipe(bake, args);
+  char fingerprint[72];
+  VKR_BAKE_TRY(vkr_bake_recipe_fingerprint(
+      bake, "lightmap", VKR_BAKERY_IDENTITY_LIGHTMAP, VKR_LIGHTMAP_SET_VERSION,
+      recipe_record, fingerprint));
+  /* The previous set, whose input index the inspection compares with this
+     bake's inputs. Only a set this baker made with this recipe is kept or
+     built on: another baker version's tiles may hold what a fix changed. */
+  char previous[VKR_BAKE_PATH] = {0};
+  if (args->previous) {
+    (void)vkr_bake_resolve(args->previous, previous);
+  } else if (vkr_bakery_is_file(output)) {
+    (void)snprintf(previous, sizeof(previous), "%s", output);
+  }
+  const char *previous_index =
+      previous[0] ? vkr_bake_index_path(bake, previous) : NULL;
+  const bool8_t has_previous = !args->full && previous_index &&
+                               vkr_bakery_is_file(previous) &&
+                               vkr_bakery_is_file(previous_index);
+  const bool8_t indexed =
+      has_previous &&
+      vkr_bake_previous_metadata(bake, previous, fingerprint) != NULL;
+  VkrBakeArguments inspection = recipe;
+  if (indexed) {
+    vkr_bake_push(&inspection, "--previous-index");
+    vkr_bake_push(&inspection, previous_index);
+  }
+  VKR_BAKE_TRY(vkr_bake_run_recipe_inspect(bake, &inspection, job, "inspect",
+                                           inspect_path));
   VkrBakeryJson *inspect = NULL;
   VkrBakeryJson *dependencies = NULL;
   VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind,
@@ -1781,22 +1870,11 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
                          job);
   }
 
-  /* A previous set baked from inputs with this fingerprint is current: the
-     bake would publish it again. */
-  VkrBakeryJson *recipe_record = vkr_bake_lightmap_recipe(bake, args);
-  char fingerprint[72];
-  VKR_BAKE_TRY(
-      vkr_bake_lightmap_fingerprint(bake, recipe_record, inspect, fingerprint));
-  char previous[VKR_BAKE_PATH] = {0};
-  if (args->previous) {
-    (void)vkr_bake_resolve(args->previous, previous);
-  } else if (vkr_bakery_is_file(output)) {
-    (void)snprintf(previous, sizeof(previous), "%s", output);
-  }
+  /* A previous set baked with this fingerprint from inputs the inspection
+     found matching is current: the bake would publish it again. */
   char previous_sha256[72];
-  if (!args->full && previous[0] &&
-      vkr_bake_lightmap_previous_current(bake, previous, fingerprint,
-                                         previous_sha256)) {
+  if (indexed && vkr_bake_matches_previous(inspect) &&
+      vkr_bake_previous_current(bake, previous, fingerprint, previous_sha256)) {
     *out_unchanged = strcmp(previous, output) != 0;
     printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":\"%s\","
            "\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
@@ -1812,7 +1890,7 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
   char id[33];
   vkr_bake_hex_id(id);
   const char *temporary = vkr_bake_printf(bake, "%s.%.8s.vklm", output, id);
-  const char *index = vkr_bake_lightmap_index_path(bake, output);
+  const char *index = vkr_bake_index_path(bake, output);
   const char *temporary_index =
       vkr_bake_printf(bake, "%s.%.8s.vkli", index, id);
   const char *bake_manifest =
@@ -1829,12 +1907,7 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
   vkr_bake_push(&arguments, report);
   /* Incremental by default: the previous set and its index let the baker
      relight only what the edits reach (vkr_bake_lightmap_inputs.h). */
-  const char *previous_index =
-      previous[0] ? vkr_bake_lightmap_index_path(bake, previous) : NULL;
-  const bool8_t incremental = !args->full && previous_index &&
-                              vkr_bakery_is_file(previous) &&
-                              vkr_bakery_is_file(previous_index);
-  if (incremental) {
+  if (indexed) {
     vkr_bake_push(&arguments, "--previous-set");
     vkr_bake_push(&arguments, vkr_bake_printf(bake, "%s", previous));
     vkr_bake_push(&arguments, "--previous-index");
@@ -1870,6 +1943,13 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
     VkrBakeryJson *production = vkr_bake_load(bake, report, "bake report");
     ok = production != NULL;
     const char *kind = ok ? vkr_bake_text(production, "kind") : NULL;
+    if (ok && has_previous && !indexed) {
+      vkr_bakery_json_set(
+          bake->arena, production, "full_reason",
+          vkr_bakery_json_cstr(bake->arena,
+                               "another lightmap baker version or recipe made "
+                               "the previous set"));
+    }
     if (ok && kind && strcmp(kind, "incremental") == 0) {
       char base_sha256[72];
       ok = vkr_bake_digest(bake, previous, base_sha256);
@@ -2056,7 +2136,7 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
                          : vkr_bake_lightmap(bake, &args, output, sidecar,
                                              manifest, &nothing, &unchanged);
   if (ok) {
-    return unchanged ? VKR_BAKERY_BAKE_LIGHTMAP_UNCHANGED : 0;
+    return unchanged ? VKR_BAKERY_BAKE_UNCHANGED : 0;
   }
   if (nothing) {
     fprintf(stderr, "Lightmap bake skipped: %s\n", bake->error);

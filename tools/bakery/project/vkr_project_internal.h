@@ -37,9 +37,10 @@
    lightmap UVs (ADR-087) or a desktop host's scene has no static lamps
    (ADR-104). */
 #define VKR_PROJECT_LIGHTMAP_NO_INSTANCES 4
-/* bake lightmap status: the previous set is current (its inputs have the
-   same content fingerprint), so the bake kept it and wrote nothing. */
-#define VKR_PROJECT_LIGHTMAP_UNCHANGED 6
+/* bake lightmap and bake diffuse status: the previous output is current
+   (same recipe and baker, inputs matching its input index), so the bake
+   kept it and wrote nothing. */
+#define VKR_PROJECT_BAKE_UNCHANGED 6
 /* An exit code a tool run accepts besides zero, as a bit of the `accepted`
    mask of vkr_project_run_tool and vkr_project_run_bakery. */
 #define VKR_PROJECT_ACCEPT(code) (1u << (uint32_t)(code))

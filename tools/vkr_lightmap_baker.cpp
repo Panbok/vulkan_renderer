@@ -414,10 +414,12 @@ bool parse(int argc, char **argv, Options *options) {
   if (options->output && options->gpu != GpuMode::Off) {
     return false;
   }
-  /* A previous set comes with its index, and both with an output. */
-  if ((options->previous_set != nullptr) !=
-          (options->previous_index != nullptr) ||
-      (options->previous_set && !options->output)) {
+  /* A previous set comes with its index and an output; an inspection
+     may take the index alone, to tell whether the inputs changed. */
+  if ((options->previous_set &&
+       (!options->previous_index || !options->output)) ||
+      (options->previous_index && !options->previous_set &&
+       !options->inspect)) {
     return false;
   }
   options->reach = std::max(options->reach, options->ao_radius);
@@ -1030,12 +1032,13 @@ bool host_bakes_layer(const VkrBakeScene &scene, const VkrBakeLayerPlan &plan,
   return false;
 }
 
-/* The manifest also names the host class's layer count and the digest of
-   the bake's inputs (vkr_bake_lightmap_inputs.h), from which `vkr_bakery
-   bake lightmap` tells whether a previous set is current. */
+/* The manifest also names the host class's layer count and, given a
+   previous set's input index, whether the inputs match it within the
+   tolerance (`matches_previous`, vkr_bake_lightmap_inputs_match), from
+   which `vkr_bakery bake lightmap` tells whether that set is current. */
 bool write_manifest(const Options &options, const VkrBakeScene &scene,
                     const VkrBakeLightmapLayout &layout, size_t baked_layers,
-                    const std::string &content_digest) {
+                    int matches_previous) {
   const bool desktop = options.pipeline == PipelineClass::Desktop;
   std::ostringstream manifest;
   manifest << "{\"version\":1,\"dependencies\":[";
@@ -1060,7 +1063,9 @@ bool write_manifest(const Options &options, const VkrBakeScene &scene,
            << ",\"lightmap_instances\":" << layout.rects.size()
            << ",\"pipeline\":\"" << (desktop ? "desktop" : "tiled") << '"'
            << ",\"baked_layers\":" << baked_layers
-           << ",\"content_digest\":" << json_string(content_digest)
+           << (matches_previous < 0 ? ""
+               : matches_previous   ? ",\"matches_previous\":true"
+                                    : ",\"matches_previous\":false")
            << ",\"pages\":" << layout.page_count
            << ",\"page_size\":" << layout.page_size << "}\n";
   return write_atomic(options.manifest, manifest.str());
@@ -3077,14 +3082,28 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
       std::fprintf(stderr, "Describing the bake's inputs failed\n");
       return 1;
     }
-    std::printf("inputs_s=%.2f content_digest=%s\n",
-                seconds_since(inputs_start),
-                vkr_bake_digest_hex(inputs.digest).c_str());
+    std::printf("inputs_s=%.2f\n", seconds_since(inputs_start));
+  }
+  /* Whether these inputs match the previous set's, so `vkr_bakery bake
+     lightmap` keeps that set; -1 without a previous index. */
+  int matches_previous = -1;
+  if (options.previous_index) {
+    VkrBakeLightmapInputs previous_inputs;
+    uint32_t crc = 0u;
+    uint64_t bytes = 0u;
+    matches_previous =
+        planned == 0 &&
+                vkr_bake_lightmap_index_read(options.previous_index,
+                                             &previous_inputs, &crc, &bytes) &&
+                vkr_bake_lightmap_inputs_match(previous_inputs, inputs)
+            ? 1
+            : 0;
+    std::printf("matches_previous=%d\n", matches_previous);
   }
   if (options.manifest &&
-      !write_manifest(
-          options, scene, layout, planned == 0 ? plan.layers.size() : 0u,
-          planned == 0 ? vkr_bake_digest_hex(inputs.digest) : std::string())) {
+      !write_manifest(options, scene, layout,
+                      planned == 0 ? plan.layers.size() : 0u,
+                      matches_previous)) {
     std::fprintf(stderr, "Writing the bake manifest failed\n");
     return 1;
   }

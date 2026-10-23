@@ -330,7 +330,8 @@ VkrBakeLightmapInputInstance input_box(uint32_t entity, float32_t x,
   return instance;
 }
 
-/* The incremental plan relights what an edit reaches and nothing else:
+/* The incremental plan relights what an edit reaches and nothing else, and
+   tells float drift from a move:
    moving an occluder relights the sun key's instances its shadow and
    bounce reach and the lamp layer's within the reach, and no lamp-direct
    texel of a lamp it does not shadow; editing a lamp relights its layer
@@ -396,6 +397,19 @@ void test_incremental_plan_relights_what_edits_reach() {
   assert(plan.layer_dirty[0][0] && plan.layer_dirty[1][0] &&
          plan.direct_dirty[1][0] && !plan.layer_dirty[0][1]);
 
+  /* A save that rewrites unmoved geometry a few ulps off changes nothing,
+     as one did for 73 Level Design Test instances; a 1 cm move does. */
+  VkrBakeLightmapInputs drifted = previous;
+  drifted.instances[6].bounds_min.x += 4.0e-6f;
+  drifted.instances[6].moments[1] += 4.0e-6f;
+  drifted.lights[0].fields[0] += 3.0e-6f;
+  assert(vkr_bake_lightmap_inputs_match(previous, drifted));
+  assert(vkr_bake_lightmap_plan_incremental(previous, drifted, layers, found,
+                                            found, 4.0f, &plan));
+  assert(plan.changed_boxes == 0u && plan.changed_lights == 0u);
+  drifted.instances[6].moments[1] += 0.01f;
+  assert(!vkr_bake_lightmap_inputs_match(previous, drifted));
+
   /* Plans need equal globals. */
   relit.globals[0] = 1u;
   assert(!vkr_bake_lightmap_plan_incremental(previous, relit, layers, found,
@@ -415,8 +429,8 @@ void test_lightmap_index_round_trip() {
   const char *path = PROJECT_SOURCE_DIR "tests/tmp/lightmap_index.vkli";
   VkrBakeLightmapInputs inputs;
   inputs.globals[3] = 7u;
-  inputs.digest[5] = 9u;
   inputs.instances.push_back(input_box(4u, 1.5f, 0.0f, true));
+  inputs.instances.back().moments[7] = 0.125f;
   inputs.instances.back().key.has_document_id = true;
   inputs.instances.back().key.document_id[2] = 0xabu;
   inputs.instances.push_back(input_box(5u, -2.0f, 2.0f, false));
@@ -426,6 +440,7 @@ void test_lightmap_index_round_trip() {
   light.position = vec3_new(1.0f, 2.0f, 3.0f);
   light.range = 6.0f;
   light.source_radius = 0.25f;
+  light.fields[25] = 0.25f;
   snprintf(light.group, sizeof(light.group), "%s", "street");
   inputs.lights.push_back(light);
   inputs.lights.push_back(VkrBakeLightmapInputLight{});
@@ -435,7 +450,7 @@ void test_lightmap_index_round_trip() {
   uint64_t bytes = 0u;
   assert(vkr_bake_lightmap_index_read(path, &read, &crc, &bytes));
   assert(crc == 0x12345678u && bytes == 4096u);
-  assert(read.globals == inputs.globals && read.digest == inputs.digest);
+  assert(read.globals == inputs.globals);
   assert(read.instances.size() == 2u && read.lights.size() == 2u);
   for (size_t i = 0u; i < 2u; ++i) {
     const VkrBakeLightmapInputInstance &a = inputs.instances[i];
@@ -445,8 +460,10 @@ void test_lightmap_index_round_trip() {
            a.key.entity_index == b.key.entity_index &&
            a.key.kind == b.key.kind && a.digest == b.digest &&
            a.bounds_max.y == b.bounds_max.y && a.width == b.width &&
-           a.direct_height == b.direct_height);
+           a.direct_height == b.direct_height && a.moments[7] == b.moments[7]);
   }
+  assert(read.lights[0].fields[25] == 0.25f);
+  assert(vkr_bake_lightmap_inputs_match(inputs, read));
   assert(read.lights[0].unbounded && read.lights[0].lamp &&
          read.lights[0].source_radius == 0.25f &&
          strcmp(read.lights[0].group, "street") == 0 && !read.lights[1].lamp);

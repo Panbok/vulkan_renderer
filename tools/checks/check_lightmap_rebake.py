@@ -7,7 +7,7 @@ static lamps and an atmosphere sun, this checks that:
 
 - a second bake of an unchanged scene keeps the set, its record and its build
   revision and writes no new revision;
-- `lightmap_full` bakes again although nothing changed;
+- the request's `full` bakes again although nothing changed;
 - after a lamp edit the bake is incremental: it builds on the previous set,
   which its record names as `previous_build`, and the revision before that
   goes while the current and previous revisions stay;
@@ -128,7 +128,7 @@ def main():
 
         # A full rebake bakes again though nothing changed; it names the set
         # it replaced as its previous build.
-        output, full_seconds = bake(lightmap_full=True)
+        output, full_seconds = bake(full=True)
         assert 'Lightmaps unchanged' not in output, output
         second = lightmap_record(scene_path)
         assert second['id'] == first['id'] and revision(second) != revision(first)

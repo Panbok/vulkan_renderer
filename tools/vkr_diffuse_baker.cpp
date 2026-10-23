@@ -9,6 +9,7 @@
 #include "bake/vkr_bake_gpu.h"
 #include "bake/vkr_bake_integrator.h"
 #include "bake/vkr_bake_layers.h"
+#include "bake/vkr_bake_lightmap_inputs.h"
 #include "bake/vkr_bake_scene.h"
 #include "bake/vkr_bake_sh.h"
 
@@ -62,6 +63,12 @@ struct Options {
   /* Instead of a volume, bake this many evenly spaced probes of every layer
      on both paths and compare them. */
   uint32_t gpu_parity = 0u;
+  /* The input index a bake writes beside its volume, and a previous
+     volume's index an inspection compares the scene's inputs with
+     (vkr_bake_lightmap_inputs.h), so `vkr_bakery bake diffuse` keeps a
+     volume nothing it reads changed for. */
+  const char *index = nullptr;
+  const char *previous_index = nullptr;
 };
 
 bool number(const char *text, float *out) {
@@ -88,7 +95,10 @@ void usage() {
                "[--photon-radius meters] [--threads 0]\n"
                "      [--cpu] probes on the CPU integrator, not the GPU\n"
                "Parity: --gpu-parity <probes> bakes that many probes of every "
-               "layer on the CPU and the GPU and compares them\n");
+               "layer on the CPU and the GPU and compares them\n"
+               "Rebakes: --index <inputs.vkli> writes the bake's input index; "
+               "--previous-index <inputs.vkli> reports whether the inputs "
+               "match it\n");
 }
 bool parse(int argc, char **argv, Options *out) {
   for (int i = 1; i < argc; ++i) {
@@ -144,6 +154,10 @@ bool parse(int argc, char **argv, Options *out) {
     } else if (std::strcmp(argv[i], "--photon-radius") == 0 && i + 1 < argc) {
       if (!number(argv[++i], &out->photon_radius) || out->photon_radius <= 0.0f)
         return false;
+    } else if (std::strcmp(argv[i], "--index") == 0 && i + 1 < argc) {
+      out->index = argv[++i];
+    } else if (std::strcmp(argv[i], "--previous-index") == 0 && i + 1 < argc) {
+      out->previous_index = argv[++i];
     } else
       return false;
   }
@@ -1216,6 +1230,36 @@ bool prepare_visibility(const Options &options, const VkrBakeBvh &bvh,
   return true;
 }
 
+/* Every option that changes a volume's bytes, in a fixed order, for its
+   input index. */
+std::string settings_text(const Options &options) {
+  char text[512];
+  std::snprintf(text, sizeof(text),
+                "diffuse bounds=%u:%.9g,%.9g,%.9g,%.9g,%.9g,%.9g spacing=%.9g "
+                "levels=%u margin=%.9g face_size=%u samples=%u max_depth=%u "
+                "seed=%u photons=%u photon_radius=%.9g cpu=%u",
+                options.explicit_bounds ? 1u : 0u, options.bounds.min.x,
+                options.bounds.min.y, options.bounds.min.z,
+                options.bounds.max.x, options.bounds.max.y,
+                options.bounds.max.z, options.spacing, options.levels,
+                options.margin, options.face_size, options.samples,
+                options.max_depth, options.seed, options.photons,
+                options.photon_radius, options.cpu ? 1u : 0u);
+  return std::string(text);
+}
+
+/* The scene's inputs as a volume bake reads them: geometry, materials,
+   lights and sky, without lightmap rectangles or layers. */
+bool volume_inputs(const Options &options, const VkrBakeScene &scene,
+                   VkrBakeLightmapInputs *out) {
+  const VkrBakeLightmapLayout none;
+  return vkr_bake_lightmap_inputs_build(
+      scene, settings_text(options), {}, {}, none, none,
+      options.threads ? options.threads
+                      : std::max(1u, std::thread::hardware_concurrency()),
+      out);
+}
+
 int inspect_scene(const Options &options, VkrAllocator *allocator,
                   Arena *arena) {
   VkrBakeScene scene(allocator);
@@ -1269,6 +1313,25 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
               levels[2], layout.probe_count,
               layout.brick_count * VKR_DIFFUSE_VOLUME_BRICK_PROBES,
               seconds_since(start));
+  VkrBakeLightmapInputs inputs;
+  if ((options.previous_index || options.index) &&
+      !volume_inputs(options, scene, &inputs)) {
+    std::fprintf(stderr, "Describing the bake's inputs failed\n");
+    return 1;
+  }
+  /* -1 without a previous index. */
+  int matches_previous = -1;
+  if (options.previous_index) {
+    VkrBakeLightmapInputs previous;
+    uint32_t crc = 0u;
+    uint64_t bytes = 0u;
+    matches_previous = vkr_bake_lightmap_index_read(options.previous_index,
+                                                    &previous, &crc, &bytes) &&
+                               vkr_bake_lightmap_inputs_match(previous, inputs)
+                           ? 1
+                           : 0;
+    std::printf("matches_previous=%d\n", matches_previous);
+  }
   if (options.manifest) {
     std::ostringstream manifest;
     manifest << "{\"version\":1,\"dependencies\":[";
@@ -1300,7 +1363,11 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
              << layout.origin.x << ',' << layout.origin.y << ','
              << layout.origin.z << "],\"dimensions\":[" << layout.dimensions[0]
              << ',' << layout.dimensions[1] << ',' << layout.dimensions[2]
-             << "]}\n";
+             << ']'
+             << (matches_previous < 0 ? ""
+                 : matches_previous   ? ",\"matches_previous\":true"
+                                      : ",\"matches_previous\":false")
+             << "}\n";
     const std::string value = manifest.str();
     if (!write_atomic(options.manifest, value.data(), value.size()))
       return 1;
@@ -1317,7 +1384,14 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
   if (options.gpu_parity) {
     return run_gpu_parity(options, scene, bvh, volume, arena);
   }
-  return bake_volume(options, scene, bvh, volume, arena);
+  const int baked = bake_volume(options, scene, bvh, volume, arena);
+  /* A volume's index needs no payload checksum: nothing copies from it. */
+  if (baked == 0 && options.index &&
+      !vkr_bake_lightmap_index_write(options.index, inputs, 0u, 0u)) {
+    std::fprintf(stderr, "Writing the input index failed: %s\n", options.index);
+    return 1;
+  }
+  return baked;
 }
 } // namespace
 

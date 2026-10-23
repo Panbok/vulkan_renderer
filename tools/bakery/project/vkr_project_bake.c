@@ -1153,10 +1153,12 @@ typedef struct VkrProjectBakeArtifact {
   /* The record the scene block referenced before this bake, if any; the
      new record keeps its id and replaces it. */
   VkrBakeryJson *previous;
-  /* A lightmap set's input index (role `lightmap_index`), which travels
-     with the set so a later bake on any machine relights only what changed;
-     NULL for other bakes. */
+  /* The artifact's input index (vkr_bake_lightmap_inputs.h) and its role
+     (`lightmap_index`, `volume_index`), which travels with the artifact so a
+     later bake on any machine keeps or relights only what changed; NULL
+     without one. */
   const char *index;
+  const char *index_role;
   /* How the bake produced the artifact (its sidecar's `production`), NULL
      when it does not say. */
   VkrBakeryJson *production;
@@ -1200,7 +1202,7 @@ vkr_project_record_bake_artifact(VkrProjectJob *job, const char *asset_root,
     VKR_PROJECT_TRY(vkr_project_digest(job, artifact->index, index_hash));
     VkrBakeryJson *index = vkr_bakery_json_object(arena);
     vkr_bakery_json_set(arena, index, "role",
-                        vkr_bakery_json_cstr(arena, "lightmap_index"));
+                        vkr_bakery_json_cstr(arena, artifact->index_role));
     vkr_bakery_json_set(arena, index, "path",
                         vkr_bakery_json_cstr(arena, index_reference));
     vkr_bakery_json_set(arena, index, "version", vkr_bakery_json_int(arena, 1));
@@ -1241,6 +1243,32 @@ vkr_project_record_bake_artifact(VkrProjectJob *job, const char *asset_root,
   return true_v;
 }
 
+/* The file of a record's artifact with `role` below `owner`, or NULL when
+   the record has none or it is not a regular file; a missing artifact is no
+   error here. */
+vkr_internal const char *
+vkr_project_record_artifact_file(VkrProjectJob *job,
+                                 const VkrBakeryJson *record, const char *role,
+                                 const char *owner) {
+  const VkrBakeryJson *artifacts = vkr_bakery_json_get(record, "artifacts");
+  for (const VkrBakeryJson *product = artifacts ? artifacts->first : NULL;
+       product; product = product->next) {
+    if (!vkr_bakery_json_is_string(vkr_bakery_json_get(product, "role"),
+                                   role)) {
+      continue;
+    }
+    char path[VKR_PROJECT_PATH];
+    const bool8_t failed_before = job->failed;
+    const bool8_t contained = vkr_project_contained(
+        job, owner, vkr_project_json_text(product, "path"), true_v, path);
+    vkr_project_forgive(job, failed_before);
+    if (contained && vkr_bakery_is_file(path)) {
+      return vkr_project_strdup(job, path);
+    }
+  }
+  return NULL;
+}
+
 vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
                                              VkrBakeryJson *scene,
                                              const char *asset_root) {
@@ -1261,6 +1289,7 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
   VKR_PROJECT_TRY(vkr_project_make_dirs(job, directory));
   const char *destination =
       vkr_project_printf(job, "%s/volume.vkdv", directory);
+  const char *index = vkr_project_printf(job, "%s/volume.vkli", directory);
   VkrProjectArguments arguments = {0};
   const char *fixed[] = {"bake",
                          "diffuse",
@@ -1311,6 +1340,22 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
     VKR_PROJECT_TRY(vkr_project_argument_push(
         job, &arguments, vkr_project_argument(job, value)));
   }
+  /* The previous volume lets the bake keep it when nothing it was baked
+     from changed; the request's `full` bakes again regardless. */
+  const VkrBakeryJson *previous_reference = vkr_bakery_json_get(
+      vkr_bakery_json_get(scene, "diffuse_volume"), "asset");
+  VkrBakeryJson *previous = vkr_project_record_by_id(
+      job->assets, vkr_project_json_text(previous_reference, "id"));
+  const char *previous_volume =
+      vkr_project_record_artifact_file(job, previous, "volume", asset_root);
+  if (previous_volume) {
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--previous"));
+    VKR_PROJECT_TRY(
+        vkr_project_argument_push(job, &arguments, previous_volume));
+  }
+  if (vkr_project_truthy(vkr_bakery_json_get(job->request, "full"))) {
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--full"));
+  }
   /* Both skips leave the scene without a volume; any other failure fails
      the bake. */
   const char *label = "Baking diffuse volume";
@@ -1323,15 +1368,17 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
                                           arguments.items, arguments.count,
                                           label, NULL, &code));
   if (code != 0 && code != VKR_PROJECT_DIFFUSE_NO_VOLUME &&
-      code != VKR_PROJECT_DIFFUSE_TOO_LARGE) {
+      code != VKR_PROJECT_DIFFUSE_TOO_LARGE &&
+      code != VKR_PROJECT_BAKE_UNCHANGED) {
     return vkr_project_fail(job, "%s failed (exit %d); see the job log", label,
                             code);
   }
-  const VkrBakeryJson *previous_reference = vkr_bakery_json_get(
-      vkr_bakery_json_get(scene, "diffuse_volume"), "asset");
-  VkrBakeryJson *previous = vkr_project_record_by_id(
-      job->assets, vkr_project_json_text(previous_reference, "id"));
-  if (code != 0) {
+  if (code == VKR_PROJECT_BAKE_UNCHANGED) {
+    /* The record, its revision and the scene's reference stay. */
+    (void)vkr_project_remove_tree(directory);
+    printf("Diffuse volume unchanged: kept the previous volume\n");
+    fflush(stdout);
+  } else if (code != 0) {
     /* A scene without geometry, or too large for a volume at this spacing,
        has no volume. A previous volume describes other geometry or
        settings, so it is dropped. */
@@ -1368,6 +1415,8 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
         .revision = revision,
         .settings = settings,
         .previous = previous,
+        .index = vkr_bakery_is_file(index) ? index : NULL,
+        .index_role = "volume_index",
     };
     VKR_PROJECT_TRY(
         vkr_project_record_bake_artifact(job, asset_root, &artifact));
@@ -1409,32 +1458,6 @@ vkr_internal bool8_t vkr_project_check_lightmap_class(VkrProjectJob *job,
                             VKR_PROJECT_LIGHTMAP_CLASS, path);
   }
   return true_v;
-}
-
-/* The file of a record's artifact with `role` below `owner`, or NULL when
-   the record has none or it is not a regular file; a missing artifact is no
-   error here. */
-vkr_internal const char *
-vkr_project_record_artifact_file(VkrProjectJob *job,
-                                 const VkrBakeryJson *record, const char *role,
-                                 const char *owner) {
-  const VkrBakeryJson *artifacts = vkr_bakery_json_get(record, "artifacts");
-  for (const VkrBakeryJson *product = artifacts ? artifacts->first : NULL;
-       product; product = product->next) {
-    if (!vkr_bakery_json_is_string(vkr_bakery_json_get(product, "role"),
-                                   role)) {
-      continue;
-    }
-    char path[VKR_PROJECT_PATH];
-    const bool8_t failed_before = job->failed;
-    const bool8_t contained = vkr_project_contained(
-        job, owner, vkr_project_json_text(product, "path"), true_v, path);
-    vkr_project_forgive(job, failed_before);
-    if (contained && vkr_bakery_is_file(path)) {
-      return vkr_project_strdup(job, path);
-    }
-  }
-  return NULL;
 }
 
 /* The record's account of how `bake lightmap` produced a set, from its
@@ -1564,23 +1587,23 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
     previous = NULL;
   }
   /* The previous set lets the bake keep it when nothing it was baked from
-     changed; `lightmap_full` bakes again regardless. */
+     changed; the request's `full` bakes again regardless. */
   const char *previous_set =
       vkr_project_record_artifact_file(job, previous, "lightmap", asset_root);
   if (previous_set) {
     VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--previous"));
     VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, previous_set));
   }
-  if (vkr_project_truthy(vkr_bakery_json_get(job->request, "lightmap_full"))) {
+  if (vkr_project_truthy(vkr_bakery_json_get(job->request, "full"))) {
     VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--full"));
   }
   int32_t code = 0;
   VKR_PROJECT_TRY(vkr_project_run_bakery(
       job, arguments.items, arguments.count, "Baking lightmaps", "lightmap",
       VKR_PROJECT_ACCEPT(VKR_PROJECT_LIGHTMAP_NO_INSTANCES) |
-          VKR_PROJECT_ACCEPT(VKR_PROJECT_LIGHTMAP_UNCHANGED),
+          VKR_PROJECT_ACCEPT(VKR_PROJECT_BAKE_UNCHANGED),
       &code));
-  if (code == VKR_PROJECT_LIGHTMAP_UNCHANGED) {
+  if (code == VKR_PROJECT_BAKE_UNCHANGED) {
     /* The record, its revision and the scene's reference stay. */
     (void)vkr_project_remove_tree(directory);
     printf("Lightmaps unchanged for the %s pipeline: kept the previous set\n",
@@ -1631,6 +1654,7 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
         .settings = settings,
         .previous = previous,
         .index = vkr_bakery_is_file(index) ? index : NULL,
+        .index_role = "lightmap_index",
         .production = production,
     };
     VKR_PROJECT_TRY(

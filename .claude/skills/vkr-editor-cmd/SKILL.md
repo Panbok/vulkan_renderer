@@ -118,7 +118,8 @@ unsaved-edits prompt does not hold the queue.
 To bake a project scene's lighting, run `scene.save` (or discard) and then
 `scene.bake lightmaps [samples] [full]` (without `lightmaps` it follows the
 Bakery option; the baker's 64 samples per texel unless given; lightmaps relight only what
-edits reach unless a trailing `full` rebakes every one);
+edits reach and an unchanged diffuse volume is kept, unless a trailing
+`full` rebakes both);
 after the settle line it prints the outcome, an `error:` line on failure.
 Mouse gestures such as dragging or right-clicking a Content item have no
 statement: use `content.place`, `content.drop`, `content.move` and

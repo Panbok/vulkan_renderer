@@ -376,7 +376,8 @@ void vkr_editor_bake_settings_window_build(VkrEditorUi *editor,
   full.icon = VKR_UI_ICON_REFRESH;
   full.icon_size_pt = 13.0f;
   vkr_editor_button_size(&full);
-  full.tooltip = string8_lit("Bake lightmaps again from scratch instead of "
+  full.tooltip = string8_lit("Bake the lightmaps and the diffuse volume "
+                             "again from scratch instead of keeping or "
                              "relighting only what changed");
   if (vkr_ui_button(ui, string8_lit("bake.run_full"),
                     string8_lit("Full rebake"), &full)) {

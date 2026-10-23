@@ -12,7 +12,6 @@ extern "C" {
 #include <fstream>
 #include <map>
 #include <new>
-#include <set>
 #include <system_error>
 #include <thread>
 
@@ -20,11 +19,15 @@ namespace {
 
 /* "VKLI" in little-endian. */
 constexpr uint32_t kIndexMagic = 0x494c4b56u;
-constexpr uint32_t kIndexVersion = 1u;
-constexpr uint32_t kIndexHeaderBytes = 96u;
-constexpr uint32_t kIndexInstanceBytes = 104u;
-constexpr uint32_t kIndexLightBytes =
-    32u + 12u + 4u + 4u + 4u + VKR_LIGHT_GROUP_NAME_BYTES;
+/* Version 2 compares floats within a tolerance (moments and light fields);
+   a version 1 index, whose digests covered exact corners, bakes in full. */
+constexpr uint32_t kIndexVersion = 2u;
+constexpr uint32_t kIndexHeaderBytes = 64u;
+constexpr uint32_t kIndexInstanceBytes = 104u + 4u * kVkrBakeInstanceMoments;
+constexpr uint32_t kIndexLightBytes = 32u + 4u * kVkrBakeLightFields + 12u +
+                                      4u + 4u + 4u + VKR_LIGHT_GROUP_NAME_BYTES;
+/* Global floats round to this grid before they are hashed. */
+constexpr float64_t kGlobalGrid = 1.0e5;
 /* Bounds on a file a later bake reads. */
 constexpr uint32_t kIndexMaxInstances = 1u << 24;
 constexpr uint32_t kIndexMaxLights = 1u << 20;
@@ -76,6 +79,20 @@ public:
   }
 
   void digest(const VkrBakeDigest &value) { bytes(value.data(), value.size()); }
+
+  /* A float rounded to the global grid, so a value an editor save
+     rewrites a few ulps off hashes the same. */
+  void rounded(float32_t value) {
+    const int64_t steps = (int64_t)std::llround((float64_t)value * kGlobalGrid);
+    u32((uint32_t)(uint64_t)steps);
+    u32((uint32_t)((uint64_t)steps >> 32));
+  }
+
+  void rounded3(Vec3 value) {
+    rounded(value.x);
+    rounded(value.y);
+    rounded(value.z);
+  }
 
   VkrBakeDigest finish() {
     VkrBakeDigest out = {};
@@ -149,35 +166,134 @@ VkrBakeDigest material_digest(const VkrBakeScene &scene,
   return w.finish();
 }
 
-void light_fields(DigestWriter *w, const VkrBakeSceneLight &light) {
+/* A light's fields the bake compares within the tolerance, in a fixed
+   order. */
+void light_floats(const VkrBakeSceneLight &light,
+                  float32_t out[kVkrBakeLightFields]) {
+  const Vec3 vectors[5] = {light.position, light.direction, light.right,
+                           light.up, light.color};
+  uint32_t at = 0u;
+  for (const Vec3 &vector : vectors) {
+    out[at++] = vector.x;
+    out[at++] = vector.y;
+    out[at++] = vector.z;
+  }
+  const float32_t scalars[11] = {
+      light.intensity,        light.range,        light.constant,
+      light.linear,           light.quadratic,    light.inner_cone_angle,
+      light.outer_cone_angle, light.half_width,   light.half_height,
+      light.radiance,         light.source_radius};
+  for (float32_t scalar : scalars) {
+    out[at++] = scalar;
+  }
+}
+
+/* A light's exact fields: kind, flags and group. */
+void light_exact(DigestWriter *w, const VkrBakeSceneLight &light) {
   w->u32((uint32_t)light.kind);
-  w->v3(light.position);
-  w->v3(light.direction);
-  w->v3(light.right);
-  w->v3(light.up);
-  w->v3(light.color);
-  w->f32(light.intensity);
-  w->f32(light.range);
-  w->f32(light.constant);
-  w->f32(light.linear);
-  w->f32(light.quadratic);
-  w->f32(light.inner_cone_angle);
-  w->f32(light.outer_cone_angle);
-  w->f32(light.half_width);
-  w->f32(light.half_height);
-  w->f32(light.radiance);
-  w->f32(light.source_radius);
   w->u32(light.casts_shadow ? 1u : 0u);
   w->u32(light.enabled ? 1u : 0u);
   w->text(light.group);
 }
 
-void instance_key(DigestWriter *w, const VkrBakeSceneInstance &key) {
-  w->u32(key.has_document_id ? 1u : 0u);
-  w->bytes(key.document_id.data(), key.document_id.size());
-  w->u32(key.entity_index);
-  w->u32(key.source_node_index);
-  w->u32((uint32_t)key.kind);
+/* A directional light into the globals, its floats rounded. */
+void light_rounded(DigestWriter *w, const VkrBakeSceneLight &light) {
+  light_exact(w, light);
+  float32_t fields[kVkrBakeLightFields];
+  light_floats(light, fields);
+  for (float32_t field : fields) {
+    w->rounded(field);
+  }
+}
+
+bool near(float32_t a, float32_t b) {
+  return std::fabs(a - b) <=
+         kVkrBakeInputTolerance + kVkrBakeInputRelativeTolerance *
+                                      std::max(std::fabs(a), std::fabs(b));
+}
+
+bool near3(Vec3 a, Vec3 b) {
+  return near(a.x, b.x) && near(a.y, b.y) && near(a.z, b.z);
+}
+
+/* Area-weighted sums of one instance's geometry, in double. */
+struct MomentSums {
+  float64_t area = 0.0;
+  float64_t centroid[3] = {};
+  float64_t second[6] = {};
+  float64_t corner_sums[18] = {};
+  uint64_t corners = 0u;
+};
+
+void add_triangle(MomentSums *sums, const VkrBakeTriangle &triangle) {
+  const Vec3 a = triangle.vertex[0].position;
+  const Vec3 e1 = vec3_sub(triangle.vertex[1].position, a);
+  const Vec3 e2 = vec3_sub(triangle.vertex[2].position, a);
+  const Vec3 n = vec3_cross(e1, e2);
+  const float64_t area =
+      0.5 * std::sqrt((float64_t)n.x * n.x + (float64_t)n.y * n.y +
+                      (float64_t)n.z * n.z);
+  float64_t c[3] = {0.0, 0.0, 0.0};
+  for (const VkrBakeVertex &vertex : triangle.vertex) {
+    c[0] += vertex.position.x / 3.0;
+    c[1] += vertex.position.y / 3.0;
+    c[2] += vertex.position.z / 3.0;
+    const float32_t corner[18] = {vertex.normal.x,
+                                  vertex.normal.y,
+                                  vertex.normal.z,
+                                  vertex.uv.x,
+                                  vertex.uv.y,
+                                  vertex.uv.x * vertex.uv.x,
+                                  vertex.uv.y * vertex.uv.y,
+                                  vertex.lightmap_uv.x,
+                                  vertex.lightmap_uv.y,
+                                  vertex.lightmap_uv.x * vertex.lightmap_uv.x,
+                                  vertex.lightmap_uv.y * vertex.lightmap_uv.y,
+                                  vertex.color.x,
+                                  vertex.color.y,
+                                  vertex.color.z,
+                                  vertex.color.w,
+                                  vertex.tangent.x,
+                                  vertex.tangent.y,
+                                  vertex.tangent.z};
+    for (uint32_t k = 0u; k < 18u; ++k) {
+      sums->corner_sums[k] += corner[k];
+    }
+    sums->corners += 1u;
+  }
+  sums->area += area;
+  for (uint32_t k = 0u; k < 3u; ++k) {
+    sums->centroid[k] += area * c[k];
+  }
+  sums->second[0] += area * c[0] * c[0];
+  sums->second[1] += area * c[1] * c[1];
+  sums->second[2] += area * c[2] * c[2];
+  sums->second[3] += area * c[0] * c[1];
+  sums->second[4] += area * c[0] * c[2];
+  sums->second[5] += area * c[1] * c[2];
+}
+
+/* The instance's moments: area, centroid, covariance about the centroid
+   and the corners' means. */
+void finish_moments(const MomentSums &sums,
+                    float32_t out[kVkrBakeInstanceMoments]) {
+  const float64_t area = sums.area > 0.0 ? sums.area : 1.0;
+  const float64_t c[3] = {sums.centroid[0] / area, sums.centroid[1] / area,
+                          sums.centroid[2] / area};
+  out[0] = (float32_t)sums.area;
+  out[1] = (float32_t)c[0];
+  out[2] = (float32_t)c[1];
+  out[3] = (float32_t)c[2];
+  out[4] = (float32_t)(sums.second[0] / area - c[0] * c[0]);
+  out[5] = (float32_t)(sums.second[1] / area - c[1] * c[1]);
+  out[6] = (float32_t)(sums.second[2] / area - c[2] * c[2]);
+  out[7] = (float32_t)(sums.second[3] / area - c[0] * c[1]);
+  out[8] = (float32_t)(sums.second[4] / area - c[0] * c[2]);
+  out[9] = (float32_t)(sums.second[5] / area - c[1] * c[2]);
+  const float64_t corners = sums.corners ? (float64_t)sums.corners : 1.0;
+  for (uint32_t k = 0u; k < 18u; ++k) {
+    out[10u + k] = (float32_t)(sums.corner_sums[k] / corners);
+  }
 }
 
 /* The key's identity: the document id when the entity has one, else its
@@ -331,10 +447,31 @@ struct ChangedBox {
 
 } // namespace
 
-std::string vkr_bake_digest_hex(const VkrBakeDigest &digest) {
-  char hex[VKR_SHA256_HEX_SIZE];
-  vkr_sha256_hex(digest.data(), hex);
-  return std::string(hex);
+bool vkr_bake_lightmap_instance_same(const VkrBakeLightmapInputInstance &a,
+                                     const VkrBakeLightmapInputInstance &b) {
+  if (a.digest != b.digest || !near3(a.bounds_min, b.bounds_min) ||
+      !near3(a.bounds_max, b.bounds_max)) {
+    return false;
+  }
+  for (uint32_t k = 0u; k < kVkrBakeInstanceMoments; ++k) {
+    if (!near(a.moments[k], b.moments[k])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool vkr_bake_lightmap_light_same(const VkrBakeLightmapInputLight &a,
+                                  const VkrBakeLightmapInputLight &b) {
+  if (a.lamp != b.lamp || a.digest != b.digest) {
+    return false;
+  }
+  for (uint32_t k = 0u; k < kVkrBakeLightFields; ++k) {
+    if (!near(a.fields[k], b.fields[k])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool vkr_bake_lightmap_inputs_build(const VkrBakeScene &scene,
@@ -385,15 +522,12 @@ bool vkr_bake_lightmap_inputs_build(const VkrBakeScene &scene,
         Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
         Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
         DigestWriter w;
+        MomentSums sums;
+        w.u32(first[i + 1u] - first[i]);
         for (uint32_t k = first[i]; k < first[i + 1u]; ++k) {
           const VkrBakeTriangle &triangle = scene.triangles[order[k]];
+          add_triangle(&sums, triangle);
           for (const VkrBakeVertex &vertex : triangle.vertex) {
-            w.v3(vertex.position);
-            w.v3(vertex.normal);
-            w.v2(vertex.uv);
-            w.v4(vertex.color);
-            w.v4(vertex.tangent);
-            w.v2(vertex.lightmap_uv);
             lo = vec3_new(std::min(lo.x, vertex.position.x),
                           std::min(lo.y, vertex.position.y),
                           std::min(lo.z, vertex.position.z));
@@ -405,6 +539,7 @@ bool vkr_bake_lightmap_inputs_build(const VkrBakeScene &scene,
           w.digest(materials[triangle.material_index]);
         }
         instance.digest = w.finish();
+        finish_moments(sums, instance.moments);
         if (first[i] == first[i + 1u]) {
           lo = hi = vec3_zero();
         }
@@ -442,7 +577,7 @@ bool vkr_bake_lightmap_inputs_build(const VkrBakeScene &scene,
     }
 
     DigestWriter globals;
-    globals.text("vkr-lightmap-globals 1");
+    globals.text("vkr-lightmap-globals 2");
     globals.text(settings.c_str());
     globals.u32(layout.page_size);
     globals.u32(scene.atmosphere.enabled ? 1u : 0u);
@@ -453,24 +588,24 @@ bool vkr_bake_lightmap_inputs_build(const VkrBakeScene &scene,
     }
     globals.u32((uint32_t)scene.environment.kind);
     globals.u32(scene.environment.enabled ? 1u : 0u);
-    globals.v3(scene.environment.constant_radiance);
-    globals.f32(scene.environment.intensity);
-    globals.f32(scene.environment.diffuse_intensity);
-    globals.f32(scene.environment.specular_intensity);
-    globals.f32(scene.environment.sh_deringing);
+    globals.rounded3(scene.environment.constant_radiance);
+    globals.rounded(scene.environment.intensity);
+    globals.rounded(scene.environment.diffuse_intensity);
+    globals.rounded(scene.environment.specular_intensity);
+    globals.rounded(scene.environment.sh_deringing);
     globals.u32(scene.subsurface_profile_count);
     for (uint32_t p = 0u; p < scene.subsurface_profile_count; ++p) {
-      globals.v3(scene.subsurface_profiles[p].diffusion_distance);
+      globals.rounded3(scene.subsurface_profiles[p].diffusion_distance);
     }
     globals.u32((uint32_t)sun_keys.size());
     for (const Vec3 &key : sun_keys) {
-      globals.v3(key);
+      globals.rounded3(key);
     }
     globals.u32((uint32_t)layers.size());
     for (const VkrLightLayer &layer : layers) {
       globals.u32(layer.kind);
       globals.u32(layer.index);
-      globals.v3(layer.sun_direction);
+      globals.rounded3(layer.sun_direction);
       globals.text(layer.name);
     }
     inputs.lights.resize(scene.lights.size());
@@ -479,12 +614,13 @@ bool vkr_bake_lightmap_inputs_build(const VkrBakeScene &scene,
       VkrBakeLightmapInputLight &input = inputs.lights[l];
       if (light.kind == VkrBakeSceneLightKind::Directional) {
         /* The sun and other directional lights reach everything. */
-        light_fields(&globals, light);
+        light_rounded(&globals, light);
         continue;
       }
       DigestWriter w;
-      light_fields(&w, light);
+      light_exact(&w, light);
       input.digest = w.finish();
+      light_floats(light, input.fields);
       input.lamp = true;
       input.position = light.position;
       input.range = light.range;
@@ -495,24 +631,6 @@ bool vkr_bake_lightmap_inputs_build(const VkrBakeScene &scene,
       std::memcpy(input.group, light.group, sizeof(input.group));
     }
     inputs.globals = globals.finish();
-
-    DigestWriter all;
-    all.digest(inputs.globals);
-    for (const VkrBakeLightmapInputInstance &instance : inputs.instances) {
-      instance_key(&all, instance.key);
-      all.digest(instance.digest);
-      all.u32(instance.width);
-      all.u32(instance.height);
-      all.u32(instance.direct_width);
-      all.u32(instance.direct_height);
-    }
-    for (const VkrBakeLightmapInputLight &light : inputs.lights) {
-      all.u32(light.lamp ? 1u : 0u);
-      if (light.lamp) {
-        all.digest(light.digest);
-      }
-    }
-    inputs.digest = all.finish();
     *out_inputs = std::move(inputs);
     return true;
   } catch (const std::bad_alloc &) {
@@ -536,7 +654,6 @@ bool vkr_bake_lightmap_index_write(const char *path,
     put_u32(&bytes, set_payload_crc);
     put_u64(&bytes, set_bytes);
     put_bytes(&bytes, inputs.globals.data(), inputs.globals.size());
-    put_bytes(&bytes, inputs.digest.data(), inputs.digest.size());
     bytes.resize(kIndexHeaderBytes, 0u);
     for (const VkrBakeLightmapInputInstance &instance : inputs.instances) {
       put_bytes(&bytes, instance.key.document_id.data(), 16u);
@@ -545,6 +662,9 @@ bool vkr_bake_lightmap_index_write(const char *path,
       put_u32(&bytes, instance.key.source_node_index);
       put_u32(&bytes, (uint32_t)instance.key.kind);
       put_bytes(&bytes, instance.digest.data(), instance.digest.size());
+      for (float32_t moment : instance.moments) {
+        put_f32(&bytes, moment);
+      }
       put_vec3(&bytes, instance.bounds_min);
       put_vec3(&bytes, instance.bounds_max);
       put_u32(&bytes, instance.width);
@@ -554,6 +674,9 @@ bool vkr_bake_lightmap_index_write(const char *path,
     }
     for (const VkrBakeLightmapInputLight &light : inputs.lights) {
       put_bytes(&bytes, light.digest.data(), light.digest.size());
+      for (float32_t field : light.fields) {
+        put_f32(&bytes, field);
+      }
       put_vec3(&bytes, light.position);
       put_f32(&bytes, light.range);
       put_f32(&bytes, light.source_radius);
@@ -599,7 +722,6 @@ bool vkr_bake_lightmap_index_read(const char *path,
     const uint32_t set_crc = r.u32();
     const uint64_t set_bytes = r.u64();
     r.copy(inputs.globals.data(), inputs.globals.size());
-    r.copy(inputs.digest.data(), inputs.digest.size());
     if (!r.ok || magic != kIndexMagic || version != kIndexVersion ||
         header_bytes != kIndexHeaderBytes ||
         instance_count > kIndexMaxInstances || light_count > kIndexMaxLights ||
@@ -621,6 +743,9 @@ bool vkr_bake_lightmap_index_read(const char *path,
       }
       instance.key.kind = (VkrBakeSceneInstanceKind)kind;
       r.copy(instance.digest.data(), instance.digest.size());
+      for (float32_t &moment : instance.moments) {
+        moment = r.f32();
+      }
       instance.bounds_min = read_vec3(&r);
       instance.bounds_max = read_vec3(&r);
       instance.width = r.u32();
@@ -631,6 +756,9 @@ bool vkr_bake_lightmap_index_read(const char *path,
     inputs.lights.resize(light_count);
     for (VkrBakeLightmapInputLight &light : inputs.lights) {
       r.copy(light.digest.data(), light.digest.size());
+      for (float32_t &field : light.fields) {
+        field = r.f32();
+      }
       light.position = read_vec3(&r);
       light.range = r.f32();
       light.source_radius = r.f32();
@@ -647,6 +775,71 @@ bool vkr_bake_lightmap_index_read(const char *path,
     *out_set_payload_crc = set_crc;
     *out_set_bytes = set_bytes;
     return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+namespace {
+
+/* Appends the lamps of `from` that no lamp of `to` matches, each lamp of
+   `to` matching once; the one at the same index is tried first. */
+void unmatched_lamps(const std::vector<VkrBakeLightmapInputLight> &from,
+                     const std::vector<VkrBakeLightmapInputLight> &to,
+                     std::vector<const VkrBakeLightmapInputLight *> *out) {
+  std::vector<uint8_t> used(to.size(), 0u);
+  for (size_t i = 0u; i < from.size(); ++i) {
+    if (!from[i].lamp) {
+      continue;
+    }
+    size_t match = to.size();
+    if (i < to.size() && vkr_bake_lightmap_light_same(from[i], to[i])) {
+      match = i;
+    }
+    for (size_t j = 0u; match == to.size() && j < to.size(); ++j) {
+      if (!used[j] && vkr_bake_lightmap_light_same(from[i], to[j])) {
+        match = j;
+      }
+    }
+    if (match == to.size() || used[match]) {
+      out->push_back(&from[i]);
+    } else {
+      used[match] = 1u;
+    }
+  }
+}
+
+} // namespace
+
+bool vkr_bake_lightmap_inputs_match(const VkrBakeLightmapInputs &previous,
+                                    const VkrBakeLightmapInputs &current) {
+  if (previous.globals != current.globals ||
+      previous.instances.size() != current.instances.size()) {
+    return false;
+  }
+  try {
+    std::map<std::string, uint32_t> previous_by_key;
+    for (uint32_t i = 0u; i < previous.instances.size(); ++i) {
+      previous_by_key[key_string(previous.instances[i].key)] = i;
+    }
+    for (const VkrBakeLightmapInputInstance &now : current.instances) {
+      const auto found = previous_by_key.find(key_string(now.key));
+      if (found == previous_by_key.end()) {
+        return false;
+      }
+      const VkrBakeLightmapInputInstance &before =
+          previous.instances[found->second];
+      if (!vkr_bake_lightmap_instance_same(before, now) ||
+          before.width != now.width || before.height != now.height ||
+          before.direct_width != now.direct_width ||
+          before.direct_height != now.direct_height) {
+        return false;
+      }
+    }
+    std::vector<const VkrBakeLightmapInputLight *> changed;
+    unmatched_lamps(previous.lights, current.lights, &changed);
+    unmatched_lamps(current.lights, previous.lights, &changed);
+    return changed.empty();
   } catch (const std::bad_alloc &) {
     return false;
   }
@@ -701,13 +894,7 @@ bool vkr_bake_lightmap_plan_incremental(
       matched[found->second] = 1u;
       const VkrBakeLightmapInputInstance &before =
           previous.instances[found->second];
-      const bool same_bounds = before.bounds_min.x == now.bounds_min.x &&
-                               before.bounds_min.y == now.bounds_min.y &&
-                               before.bounds_min.z == now.bounds_min.z &&
-                               before.bounds_max.x == now.bounds_max.x &&
-                               before.bounds_max.y == now.bounds_max.y &&
-                               before.bounds_max.z == now.bounds_max.z;
-      const bool same = before.digest == now.digest && same_bounds;
+      const bool same = vkr_bake_lightmap_instance_same(before, now);
       if (!same) {
         changed[i] = 1u;
         boxes.push_back({before.bounds_min, before.bounds_max});
@@ -737,47 +924,11 @@ bool vkr_bake_lightmap_plan_incremental(
       }
     }
 
-    /* Changed lamps: those of one input set whose digest the other lacks,
-       counted with multiplicity, each with its group. */
-    std::multiset<VkrBakeDigest> previous_lamps;
-    std::multiset<VkrBakeDigest> current_lamps;
-    for (const VkrBakeLightmapInputLight &light : previous.lights) {
-      if (light.lamp) {
-        previous_lamps.insert(light.digest);
-      }
-    }
-    for (const VkrBakeLightmapInputLight &light : current.lights) {
-      if (light.lamp) {
-        current_lamps.insert(light.digest);
-      }
-    }
+    /* Changed lamps: those of either input set the other has no matching
+       lamp for, each with its group. */
     std::vector<const VkrBakeLightmapInputLight *> lamps_changed;
-    {
-      std::multiset<VkrBakeDigest> remaining = current_lamps;
-      for (const VkrBakeLightmapInputLight &light : previous.lights) {
-        if (!light.lamp) {
-          continue;
-        }
-        const auto it = remaining.find(light.digest);
-        if (it == remaining.end()) {
-          lamps_changed.push_back(&light);
-        } else {
-          remaining.erase(it);
-        }
-      }
-      remaining = previous_lamps;
-      for (const VkrBakeLightmapInputLight &light : current.lights) {
-        if (!light.lamp) {
-          continue;
-        }
-        const auto it = remaining.find(light.digest);
-        if (it == remaining.end()) {
-          lamps_changed.push_back(&light);
-        } else {
-          remaining.erase(it);
-        }
-      }
-    }
+    unmatched_lamps(previous.lights, current.lights, &lamps_changed);
+    unmatched_lamps(current.lights, previous.lights, &lamps_changed);
     plan.changed_lights = (uint32_t)lamps_changed.size();
 
     const Vec3 extent = vec3_sub(scene_max, scene_min);

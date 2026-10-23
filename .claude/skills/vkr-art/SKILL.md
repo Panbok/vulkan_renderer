@@ -361,8 +361,9 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
   `lighting.bake` on a project scene. Its `lightmap_settings` and
   `diffuse_settings` hold only the values to change; 0 keeps Bakery's
   default. Lightmap bakes are incremental: they reuse the last set when
-  nothing changed and relight only what edits reach. `full: true` rebakes
-  every lightmap; use it when an incremental result looks wrong.
+  nothing changed and relight only what edits reach, and an unchanged
+  diffuse volume is kept. `full: true` rebakes both; use it when an
+  incremental result looks wrong and before shipping.
 - In a project scene, `probe.create` (`center`, half `extents`) adds a
   reflection probe for each room or street whose reflections should
   differ. Save the scene, then `lighting.bake` captures it; move or resize

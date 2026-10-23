@@ -2783,8 +2783,8 @@ static const CmdDef cmd_defs[] = {
      "lightmaps adds the lightmaps of this machine's pipeline class, "
      "keeping the other class's set, whatever the Bakery option, traced with "
      "samples per texel (1-4096; the baker's default is 64). Lightmaps "
-     "relight only what edits reach; full rebakes every one (and adds "
-     "lightmaps)",
+     "relight only what edits reach and an unchanged diffuse volume is "
+     "kept; full rebakes both (and adds lightmaps)",
      cmd_run_scene_bake, CMD_COUNT, 0u, .holds = true_v},
     {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Whether the open scene uses the World's objects where it has none",
