@@ -1,10 +1,20 @@
 #include "bake/vkr_bake_atmosphere.h"
 
+#include "filesystem/vkr_filesystem_cpp.h"
+
+extern "C" {
+#include "core/vkr_hash.h"
+}
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <string>
 
 namespace {
 constexpr float k_pi = 3.14159265358979323846f;
@@ -282,9 +292,9 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
   const bool moon_key = vkr_atmosphere_moon_is_key(&p);
   const Vec4 key = moon_key ? p.moon : p.sun;
   out->key_light_direction = make3(key.x, key.y, key.z);
-  out->observer_irradiance =
-      moon_key ? vkr_atmosphere_observer_lunar_irradiance(&p)
-               : vkr_atmosphere_observer_irradiance(&p);
+  out->observer_irradiance = moon_key
+                                 ? vkr_atmosphere_observer_lunar_irradiance(&p)
+                                 : vkr_atmosphere_observer_irradiance(&p);
   /* Both atmosphere lights scatter, as in the runtime source bake; a light
      without irradiance contributes nothing. */
   struct BakeLight {
@@ -329,12 +339,12 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
                                 ? zero()
                                 : trans_sample(position, toward);
             const Vec3 ms = multi_sample(position, toward);
-            source = add(
-                source,
-                mul(lights[light].irradiance,
-                    add(mul(ts, add(scale(m.rayleigh_scattering, pr[light]),
-                                    scale(m.mie_scattering, pm[light]))),
-                        mul(ms, m.scattering))));
+            source =
+                add(source,
+                    mul(lights[light].irradiance,
+                        add(mul(ts, add(scale(m.rayleigh_scattering, pr[light]),
+                                        scale(m.mie_scattering, pm[light]))),
+                            mul(ms, m.scattering))));
           }
           l = add(l,
                   mul(t, segment_source_integral(source, m.extinction, step)));
@@ -355,8 +365,8 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
                                 : trans_sample(surface, toward);
             const Vec3 lit = mul(mul(lights[light].irradiance, ts),
                                  make3(p.ground.x, p.ground.y, p.ground.z));
-            l = add(l, scale(mul(t, lit),
-                             std::max(dot(up, toward), 0.0f) / k_pi));
+            l = add(l,
+                    scale(mul(t, lit), std::max(dot(up, toward), 0.0f) / k_pi));
           }
         }
         out->source_rgb[((size_t)face * k_source_size + y) * k_source_size +
@@ -385,6 +395,129 @@ Vec3 vkr_bake_atmosphere_sample(const VkrBakeAtmosphere *atmosphere,
       lerp3(atmosphere->source_rgb[base + (size_t)y1 * k_source_size + x0],
             atmosphere->source_rgb[base + (size_t)y1 * k_source_size + x1], tx),
       ty);
+}
+
+namespace {
+
+/* "VKAT" in little-endian, and the cache entry layout's version. */
+constexpr uint32_t k_cache_magic = 0x54414b56u;
+constexpr uint32_t k_cache_version = 1u;
+
+/* Everything a cache entry depends on: the model version, the LUT and
+   source sizes and the prepared parameters, whose bytes the build reads. */
+std::string cache_key(const VkrAtmosphereGpuParams &params) {
+  const uint32_t fields[6] = {VKR_BAKE_ATMOSPHERE_MODEL_VERSION,
+                              k_transmittance_width,
+                              k_transmittance_height,
+                              k_multiple_size,
+                              k_source_size,
+                              (uint32_t)sizeof(params)};
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  vkr_sha256_update(&hash, fields, sizeof(fields));
+  vkr_sha256_update(&hash, &params, sizeof(params));
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256_final(&hash, digest);
+  char hex[VKR_SHA256_HEX_SIZE];
+  vkr_sha256_hex(digest, hex);
+  return std::string(hex);
+}
+
+bool read_cached(const std::filesystem::path &path,
+                 const VkrAtmosphereGpuParams &params, VkrBakeAtmosphere *out) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return false;
+  }
+  uint32_t header[2] = {};
+  VkrAtmosphereGpuParams stored = {};
+  float values[6] = {};
+  uint64_t count = 0u;
+  stream.read((char *)header, sizeof(header));
+  stream.read((char *)&stored, sizeof(stored));
+  stream.read((char *)values, sizeof(values));
+  stream.read((char *)&count, sizeof(count));
+  if (!stream || header[0] != k_cache_magic || header[1] != k_cache_version ||
+      std::memcmp(&stored, &params, sizeof(params)) != 0 ||
+      count != (uint64_t)6u * k_source_size * k_source_size) {
+    return false;
+  }
+  std::vector<Vec3> source((size_t)count);
+  for (Vec3 &value : source) {
+    float rgb[3];
+    stream.read((char *)rgb, sizeof(rgb));
+    value = make3(rgb[0], rgb[1], rgb[2]);
+  }
+  if (!stream || stream.peek() != std::char_traits<char>::eof()) {
+    return false;
+  }
+  *out = {};
+  out->enabled = true_v;
+  out->params = params;
+  out->observer_irradiance = make3(values[0], values[1], values[2]);
+  out->key_light_direction = make3(values[3], values[4], values[5]);
+  out->source_rgb = std::move(source);
+  return true;
+}
+
+/* Writes the entry beside its final name and renames it into place, so a
+   reader sees a whole entry or none. */
+void write_cached(const std::filesystem::path &path,
+                  const VkrBakeAtmosphere &atmosphere) {
+  std::error_code error;
+  std::filesystem::create_directories(path.parent_path(), error);
+  std::filesystem::path temporary = path;
+  temporary += ".tmp." +
+               std::to_string(
+                   std::chrono::steady_clock::now().time_since_epoch().count());
+  {
+    std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+    const uint32_t header[2] = {k_cache_magic, k_cache_version};
+    const Vec3 &o = atmosphere.observer_irradiance;
+    const Vec3 &k = atmosphere.key_light_direction;
+    const float values[6] = {o.x, o.y, o.z, k.x, k.y, k.z};
+    const uint64_t count = atmosphere.source_rgb.size();
+    stream.write((const char *)header, sizeof(header));
+    stream.write((const char *)&atmosphere.params, sizeof(atmosphere.params));
+    stream.write((const char *)values, sizeof(values));
+    stream.write((const char *)&count, sizeof(count));
+    for (const Vec3 &value : atmosphere.source_rgb) {
+      const float rgb[3] = {value.x, value.y, value.z};
+      stream.write((const char *)rgb, sizeof(rgb));
+    }
+    if (!stream) {
+      stream.close();
+      std::filesystem::remove(temporary, error);
+      return;
+    }
+  }
+  std::filesystem::rename(temporary, path, error);
+  if (error) {
+    std::filesystem::remove(temporary, error);
+  }
+}
+
+} // namespace
+
+bool vkr_bake_atmosphere_build_cached(VkrBakeAtmosphere *out,
+                                      const VkrAtmosphereSettings *settings,
+                                      const char *cache_directory) {
+  if (!cache_directory || !cache_directory[0] || !out || !settings ||
+      !vkr_atmosphere_settings_valid(settings) || !settings->enabled) {
+    return vkr_bake_atmosphere_build(out, settings);
+  }
+  const VkrAtmosphereGpuParams params = vkr_atmosphere_prepare(settings);
+  const std::filesystem::path path =
+      vkr_filesystem_native_utf8_path(cache_directory) /
+      ("atmosphere-" + cache_key(params) + ".bin");
+  if (read_cached(path, params, out)) {
+    return true;
+  }
+  if (!vkr_bake_atmosphere_build(out, settings)) {
+    return false;
+  }
+  write_cached(path, *out);
+  return true;
 }
 
 uint64_t vkr_bake_atmosphere_recipe_hash(const VkrBakeAtmosphere *atmosphere) {

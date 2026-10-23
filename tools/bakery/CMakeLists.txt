@@ -216,6 +216,15 @@ if(VKR_BUILD_TOOLS)
         "${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_surface.c"
         ${VKR_BAKERY_COOKING_SOURCES})
     set(VKR_BAKERY_IDENTITY_DIFFUSE_EXTRA "diffuse")
+    # The bake atmosphere's code, which names the directory that keeps sun-key
+    # atmospheres between lightmap and volume bakes.
+    list(APPEND VKR_BAKERY_IDENTITY_GROUPS ATMOSPHERE)
+    set(VKR_BAKERY_IDENTITY_ATMOSPHERE_FILES
+        "${CMAKE_SOURCE_DIR}/tools/bake/vkr_bake_atmosphere.cpp"
+        "${CMAKE_SOURCE_DIR}/tools/bake/vkr_bake_atmosphere.h"
+        "${CMAKE_SOURCE_DIR}/renderer/src/vkr_atmosphere.c"
+        "${CMAKE_SOURCE_DIR}/renderer/src/vkr_atmosphere.h")
+    set(VKR_BAKERY_IDENTITY_ATMOSPHERE_EXTRA "atmosphere")
 endif()
 
 set(VKR_BAKERY_IDENTITY_SPEC "${CMAKE_CURRENT_BINARY_DIR}/vkr_bakery_identity_spec.cmake")

@@ -198,6 +198,8 @@ struct Options {
      manifest and exits kKeptExit: `vkr_bakery bake lightmap` keeps the
      previous set, having checked it is the one the index describes. */
   bool keep_if_unchanged = false;
+  /* Where sun-key atmospheres are kept between bakes. */
+  const char *atmosphere_cache = nullptr;
   /* Two sets whose matching instances' irradiance --compare measures. */
   const char *compare[2] = {nullptr, nullptr};
 };
@@ -222,7 +224,7 @@ void usage() {
       "[--buried-backface <fraction, 0 off>] [--dump-texels <csv>] "
       "[--index <inputs.vkli>] [--previous-set <set.vklm> --previous-index "
       "<inputs.vkli>] [--reach <world units>] [--report <json>] "
-      "[--keep-if-unchanged]\n"
+      "[--keep-if-unchanged] [--atmosphere-cache <dir>]\n"
       "Set comparison: --compare <a.vklm> <b.vklm>\n");
 }
 
@@ -397,6 +399,8 @@ bool parse(int argc, char **argv, Options *options) {
       }
     } else if (std::strcmp(flag, "--report") == 0) {
       options->report = value;
+    } else if (std::strcmp(flag, "--atmosphere-cache") == 0) {
+      options->atmosphere_cache = value;
     } else if (std::strcmp(flag, "--check-transport") == 0) {
       if (std::strcmp(value, "all") == 0) {
         options->check_transport = CheckTransport::All;
@@ -3187,6 +3191,9 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
   }
   const auto load_start = std::chrono::steady_clock::now();
   VkrBakeScene scene(allocator);
+  if (options.atmosphere_cache) {
+    scene.atmosphere_cache = options.atmosphere_cache;
+  }
   VkrBakeSceneError scene_error;
   if (!vkr_bake_scene_load(&scene, options.scene, &scene_error)) {
     std::fprintf(stderr, "Scene preparation failed (error %u): %s: %s\n",

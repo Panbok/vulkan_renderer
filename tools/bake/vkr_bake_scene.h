@@ -128,6 +128,10 @@ struct VkrBakeScene {
   /* The settings `atmosphere` was built from, so a bake can rebuild it for
      another sun direction (ADR-088 sun keys). */
   VkrAtmosphereSettings atmosphere_settings = {};
+  /* Where atmosphere builds are kept between bakes
+     (vkr_bake_atmosphere_build_cached); empty for none. Set before the
+     load. */
+  std::string atmosphere_cache;
   /* The directional light the atmosphere's key light became; UINT32_MAX
      without an atmosphere. */
   uint32_t atmosphere_light = UINT32_MAX;

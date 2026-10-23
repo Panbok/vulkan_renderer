@@ -854,6 +854,20 @@ vkr_internal bool8_t vkr_bake_run_inspect(VkrBake *bake,
   return vkr_bake_run_recipe_inspect(bake, &recipe, job, name, out_manifest);
 }
 
+/* Where a workspace keeps sun-key atmospheres between bakes, named by the
+   atmosphere code's identity so another build never reads them; NULL
+   outside a workspace. */
+vkr_internal const char *vkr_bake_atmosphere_cache(VkrBake *bake,
+                                                   const char *workspace_root) {
+  if (!workspace_root) {
+    return NULL;
+  }
+  char root[VKR_BAKE_PATH];
+  (void)vkr_bake_resolve(workspace_root, root);
+  return vkr_bake_printf(bake, "%s/jobs/variants/atmosphere-%s", root,
+                         VKR_BAKERY_IDENTITY_ATMOSPHERE);
+}
+
 vkr_internal bool8_t vkr_bake_job_directory(VkrBake *bake,
                                             const char *workspace_root,
                                             const char *prefix,
@@ -1305,6 +1319,12 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   }
   if (keep) {
     vkr_bake_push(&arguments, "--keep-if-unchanged");
+  }
+  const char *atmospheres =
+      vkr_bake_atmosphere_cache(bake, args->workspace_root);
+  if (atmospheres) {
+    vkr_bake_push(&arguments, "--atmosphere-cache");
+    vkr_bake_push(&arguments, atmospheres);
   }
   VKR_BAKE_TRY(vkr_bake_write_command(
       bake, vkr_bake_printf(bake, "%s/bake.command.json", job), &arguments));
@@ -1981,6 +2001,12 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
   }
   if (keep) {
     vkr_bake_push(&arguments, "--keep-if-unchanged");
+  }
+  const char *atmospheres =
+      vkr_bake_atmosphere_cache(bake, args->workspace_root);
+  if (atmospheres) {
+    vkr_bake_push(&arguments, "--atmosphere-cache");
+    vkr_bake_push(&arguments, atmospheres);
   }
   VKR_BAKE_TRY(vkr_bake_write_command(
       bake, vkr_bake_printf(bake, "%s/bake.command.json", job), &arguments));

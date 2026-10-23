@@ -1990,7 +1990,9 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
     }
     apply_sun_light(entities, authored_sun, &atmosphere_settings);
     scene->atmosphere_settings = atmosphere_settings;
-    if (!vkr_bake_atmosphere_build(&scene->atmosphere, &atmosphere_settings)) {
+    if (!vkr_bake_atmosphere_build_cached(&scene->atmosphere,
+                                          &atmosphere_settings,
+                                          scene->atmosphere_cache.c_str())) {
       return fail(VkrBakeSceneError::Parse,
                   "the atmosphere does not build from its settings");
     }
@@ -2141,7 +2143,8 @@ bool vkr_bake_scene_build_sun_atmosphere(const VkrBakeScene *scene,
   }
   VkrAtmosphereSettings settings = scene->atmosphere_settings;
   settings.sun_direction = vec3_normalize(sun_direction);
-  return vkr_bake_atmosphere_build(out, &settings);
+  return vkr_bake_atmosphere_build_cached(out, &settings,
+                                          scene->atmosphere_cache.c_str());
 }
 
 void vkr_bake_scene_use_atmosphere(VkrBakeScene *scene,

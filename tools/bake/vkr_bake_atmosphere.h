@@ -26,6 +26,15 @@ constexpr uint32_t VKR_BAKE_ATMOSPHERE_MODEL_VERSION = 3u;
 
 bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
                                const VkrAtmosphereSettings *settings);
+/* As vkr_bake_atmosphere_build, reading the result from `cache_directory`
+   when an earlier build of the same prepared parameters left it there and
+   writing it there otherwise; an empty directory builds without a cache.
+   A sun key's atmosphere takes about a second on a Level Design Test bake,
+   and every lightmap and volume bake builds the same eight. The bakery
+   names the directory by the atmosphere code's identity. */
+bool vkr_bake_atmosphere_build_cached(VkrBakeAtmosphere *out,
+                                      const VkrAtmosphereSettings *settings,
+                                      const char *cache_directory);
 /* `atmosphere` is an enabled, completely built scene record and direction is
    a finite unit vector. Callers select this sampler at the scene boundary. */
 Vec3 vkr_bake_atmosphere_sample(const VkrBakeAtmosphere *atmosphere,

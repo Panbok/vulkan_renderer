@@ -84,6 +84,8 @@ struct Options {
      exits VKR_DIFFUSE_VOLUME_KEPT_EXIT; `vkr_bakery bake diffuse` keeps the
      previous volume. */
   bool keep_if_unchanged = false;
+  /* Where sun-key atmospheres are kept between bakes. */
+  const char *atmosphere_cache = nullptr;
 };
 
 bool number(const char *text, float *out) {
@@ -115,7 +117,7 @@ void usage() {
                "--previous-index <inputs.vkli> reports whether the inputs "
                "match it; with --previous-volume <volume.vkdv> a bake gathers "
                "only the probes the edits reach [--reach 4] [--report "
-               "file.json] [--keep-if-unchanged]\n"
+               "file.json] [--keep-if-unchanged] [--atmosphere-cache dir]\n"
                "Compare: --compare <a.vkdv> <b.vkdv> reports how the bands "
                "differ probe by probe\n");
 }
@@ -186,6 +188,9 @@ bool parse(int argc, char **argv, Options *out) {
       out->report = argv[++i];
     } else if (std::strcmp(argv[i], "--keep-if-unchanged") == 0) {
       out->keep_if_unchanged = true;
+    } else if (std::strcmp(argv[i], "--atmosphere-cache") == 0 &&
+               i + 1 < argc) {
+      out->atmosphere_cache = argv[++i];
     } else
       return false;
   }
@@ -1662,6 +1667,9 @@ bool write_report(const Options &options, const VolumeReport &report) {
 int inspect_scene(const Options &options, VkrAllocator *allocator,
                   Arena *arena) {
   VkrBakeScene scene(allocator);
+  if (options.atmosphere_cache) {
+    scene.atmosphere_cache = options.atmosphere_cache;
+  }
   VkrBakeSceneError error;
   if (!vkr_bake_scene_load(&scene, options.scene, &error)) {
     std::fprintf(stderr, "Scene preparation failed (error %u): %s: %s\n",
