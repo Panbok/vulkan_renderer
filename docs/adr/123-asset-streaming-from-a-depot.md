@@ -667,6 +667,24 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     capture 0.332 against 0.323 between local loads), and
     `check_sparse_project.py` passes (open 8.8 s, preparation 1.3 s,
     capture 0.324).
+- 2026-10-23, BC previews and the desktop pipeline, Windows 10, Ryzen 5 2600,
+  RX 6700 XT, Vulkan, Release, loopback, depot and stream directory on E:
+  beside the checkout:
+  - `python tools/checks/check_asset_stream.py --editor
+    build_release/editor/vkr_editor.exe --depot
+    build_release/tools/depot/vkr_depot.exe` passes once, with reloads, and
+    so whole-file downloads, ordered by measured demand (ADR-012). The local
+    run read 782 files (3,252 MB, 511 of them BC `.vkt`;
+    `main.cooked.bc` uploaded 1,318 MB). Streamed: 775 files fetched, none
+    failed, every one equal to the local file; 536 preview reads brought
+    90.7 MB, 441 whole files followed and 1,257 MB was stored. From the
+    stream's opening the scene was ready at 19.8 s, the last preview read
+    at 24.1 s and the last file at 64.0 s, with no texture pending from
+    64.8 s (at most 432 previews at once, none at the capture); loaders
+    waited 34.1 s in all. A local load was ready at 19.0 s with every
+    texture about 15 s later. The capture differs from a local one by
+    0.591 of 255, where two local loads differ by 0.518. One run; no
+    earlier Windows run to compare the order against.
 
 ## Revisit when
 

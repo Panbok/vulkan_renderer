@@ -140,7 +140,9 @@ demand keeps resident.
    drawn; fetching only the mips its need holds would trim without pressure
    (item 1), which the owner kept deferred on 2026-10-23. The tiled pipeline
    measures demand only while the texture budget binds (ADR-024), and orders
-   by epoch otherwise. Not yet measured over a depot.
+   by epoch otherwise. A first Windows run over a loopback depot reached
+   every texture's full file 64.0 s after the stream opened, against about
+   34 s for a local load (ADR-123); no run with the old order to compare.
 
 **Lifetime.** The texture system owns images, levels and slots; the material
 system owns streams and demand; each backend adapter owns native images, copy
