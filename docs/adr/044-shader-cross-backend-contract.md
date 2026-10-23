@@ -566,8 +566,8 @@ sampler slots, luma and chroma storage slots, extent, coded extent,
 Native evidence: on 2026-10-23 `tools/checks/check_view_stream.py --role
 record` encoded a headless Bistro Scene (RGBA8 sRGB, 1275×700, streamed at
 1274×700) on the RX 6700 XT, Release; PyAV decoded the recording, and the
-frame nearest the server's capture was 42.6 dB PSNR from that capture
-resampled to the stream as the kernel does (the last frame 34.1 dB, the
+frame nearest the server's capture was 41.5 dB PSNR from that capture
+resampled to the stream as the kernel does (the last frame 33.9 dB, the
 Metal plaza result's level). Runs under the Khronos validation layer, core
 and synchronization, reported no message. A windowed or extended-linear
 RGBA16F source has not run.
@@ -1022,7 +1022,7 @@ domain under the [evidence rules](#evidence-rules).
 | Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 | Draw census (pass `Cull.Census`, `VkrGpuDebugPayload.draw_census`): reason-coded rejected classification words, each camera candidate's state packed eight to a word and its object id | Shared | `shared/lod_kernel.slangh` (`vkr_gpu_draw_rejected`, `vkr_gpu_draw_camera_state`, `vkr_gpu_draw_census_put`); host mirror and CPU test in `vkr_gpu_abi.h`, `tests/src/draw_census_test.c` | `metal/msl/world/gpu_draws.metal` (classify, encode, `vkr_metal_packet_gpu_draw_census`); Metal native evidence pending | `vulkan/slang/world/deferred.slang` (`vk_gpu_draw_classify`, `vk_gpu_draw_encode`, `vk_gpu_draw_census`); compiles to SPIR-V, Vulkan native evidence unavailable |
 | Debug GPU spike (pass `Debug.GpuSpike`, `VkrGpuDebugPayload.gpu_spike_iterations`): a dependent multiply-add chain for a GPU cost with no CPU cost | Shared semantics, one implementation per backend | — | `metal/msl/editor/gpu_spike.metal`; Metal native: on Bistro (M1 Pro, Release) 2,000,000 iterations ran about 60 ms on the frame that carried them | `vulkan/slang/editor/gpu_spike.slang` (`vk_gpu_spike`); compiles to SPIR-V, Vulkan native evidence unavailable |
-| View export ([ADR-131](131-view-streaming.md)): the finished Scene image resampled for a video encoder | Shared resample and sRGB encode, one implementation per backend; the outputs differ by encoder input (BGRA surface, NV12 picture) | — | `metal/msl/editor/view_export.metal`; Metal native: Bistro plaza 34.4 dB client vs server (M1 Pro) | `vulkan/slang/editor/view_export.slang` (`vk_view_export`); Vulkan native: Bistro plaza 42.6 dB decoded vs resampled server capture at the capture's frame, no Khronos validation message (RX 6700 XT, 2026-10-23) |
+| View export ([ADR-131](131-view-streaming.md)): the finished Scene image resampled for a video encoder | Shared resample and sRGB encode, one implementation per backend; the outputs differ by encoder input (BGRA surface, NV12 picture) | — | `metal/msl/editor/view_export.metal`; Metal native: Bistro plaza 34.4 dB client vs server (M1 Pro) | `vulkan/slang/editor/view_export.slang` (`vk_view_export`); Vulkan native: Bistro plaza 41.5 dB decoded vs resampled server capture at the capture's frame, no Khronos validation message (RX 6700 XT, 2026-10-23) |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
 mirrors the shared Slang record. Consult [`shared/README.md`](../../renderer/src/shaders/shared/README.md)

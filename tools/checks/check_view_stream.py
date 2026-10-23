@@ -233,10 +233,13 @@ def finish(processes, outs, deadline: float) -> None:
             out.close()
 
 
-def server_script(bind: str, allow: list, hold: float) -> str:
+def server_script(bind: str, allow: list, hold: float,
+                  bitrate_max: int = 0) -> str:
     serve = {"bind": bind}
     if allow:
         serve["allow"] = allow
+    if bitrate_max:
+        serve["bitrate_max"] = bitrate_max
     polls = "\n".join([SERVER_POLL] * max(1, int(hold / 2)))
     return SERVER_SCRIPT.format(serve=json.dumps(serve), polls=polls,
                                 capture=json.dumps(CAPTURE))
@@ -527,7 +530,8 @@ def run_server(args, work: pathlib.Path, failures: list) -> list:
     log = work / "server.log"
     deadline = time.time() + args.timeout + args.hold
     server, out = launch(args.editor, work / "server",
-                         server_script(args.bind, args.allow, args.hold), log,
+                         server_script(args.bind, args.allow, args.hold,
+                                       args.bitrate_max), log,
                          int(args.timeout + args.hold), SCENE,
                          args.metal_validation == "server",
                          vulkan_validation=args.vulkan_validation)
@@ -667,6 +671,10 @@ def main() -> int:
     parser.add_argument("--hold", type=float, default=180.0,
                         help="seconds a --role server serves before its "
                         "capture")
+    parser.add_argument("--bitrate-max", type=int, default=0,
+                        help="stream cap in bits per second of --role "
+                        "server (remote_view.serve 'bitrate_max'; default "
+                        "the server's 40 Mbit/s)")
     parser.add_argument("--address", help="server of --role client")
     parser.add_argument("--key", help="server key of --role client")
     parser.add_argument("--identity", default="",

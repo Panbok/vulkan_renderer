@@ -1130,17 +1130,36 @@ vkr_internal bool8_t vkr_vk_view_session_ready(VkrVulkanView *view,
 // Encoding
 // =============================================================================
 
-vkr_internal void
-vkr_vk_view_rate_control(const VkrVulkanView *view,
-                         const VkrVkViewSession *session, uint32_t bitrate,
-                         VkVideoEncodeRateControlLayerInfoKHR *out_layer,
-                         VkVideoEncodeH264RateControlInfoKHR *out_h264,
-                         VkVideoEncodeRateControlInfoKHR *out_info) {
+/* One rate-control state and the structures it chains; filled in place and
+   not moved after, because its members point at each other. */
+typedef struct VkrVkViewRateControl {
+  VkVideoEncodeH264RateControlLayerInfoKHR h264_layer;
+  VkVideoEncodeRateControlLayerInfoKHR layer;
+  VkVideoEncodeH264RateControlInfoKHR h264;
+  VkVideoEncodeRateControlInfoKHR info;
+} VkrVkViewRateControl;
+
+vkr_internal void vkr_vk_view_rate_control(const VkrVulkanView *view,
+                                           const VkrVkViewSession *session,
+                                           uint32_t bitrate,
+                                           VkrVkViewRateControl *out) {
   /* One frame interval of buffering, as the network proposal sets it: a
      frame's bits leave within about a frame. */
   const uint32_t buffer_ms = Max(1000u / Max(session->frame_rate, 1u), 2u);
-  *out_layer = (VkVideoEncodeRateControlLayerInfoKHR){
+  /* The device's whole QP range. Without one, the AMD driver (Adrenalin
+     26.10.1) encodes every picture at one QP whatever the bitrate: about
+     50 KB a frame of Bistro at 1280x704 for both 10 and 20 Mbit/s. */
+  const VkVideoEncodeH264CapabilitiesKHR *caps = &view->h264_capabilities;
+  out->h264_layer = (VkVideoEncodeH264RateControlLayerInfoKHR){
+      .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_RATE_CONTROL_LAYER_INFO_KHR,
+      .useMinQp = VK_TRUE,
+      .minQp = {.qpI = caps->minQp, .qpP = caps->minQp, .qpB = caps->minQp},
+      .useMaxQp = VK_TRUE,
+      .maxQp = {.qpI = caps->maxQp, .qpP = caps->maxQp, .qpB = caps->maxQp},
+  };
+  out->layer = (VkVideoEncodeRateControlLayerInfoKHR){
       .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_LAYER_INFO_KHR,
+      .pNext = &out->h264_layer,
       .averageBitrate = bitrate,
       .maxBitrate = bitrate,
       .frameRateNumerator = session->frame_rate,
@@ -1149,19 +1168,19 @@ vkr_vk_view_rate_control(const VkrVulkanView *view,
   /* An open GOP of P pictures that each reference the one before; an IDR
      picture only on request. The GOP is not regular, so no reference
      pattern flag applies. */
-  *out_h264 = (VkVideoEncodeH264RateControlInfoKHR){
+  out->h264 = (VkVideoEncodeH264RateControlInfoKHR){
       .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_RATE_CONTROL_INFO_KHR,
       .gopFrameCount = UINT32_MAX,
       .idrPeriod = UINT32_MAX,
       .consecutiveBFrameCount = 0u,
       .temporalLayerCount = 1u,
   };
-  *out_info = (VkVideoEncodeRateControlInfoKHR){
+  out->info = (VkVideoEncodeRateControlInfoKHR){
       .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR,
-      .pNext = out_h264,
+      .pNext = &out->h264,
       .rateControlMode = view->rate_control_mode,
       .layerCount = 1u,
-      .pLayers = out_layer,
+      .pLayers = &out->layer,
       .virtualBufferSizeInMs = buffer_ms,
       .initialVirtualBufferSizeInMs = buffer_ms / 2u,
   };
@@ -1238,16 +1257,10 @@ vkr_internal bool8_t vkr_vk_view_record_encode(
 
   const bool8_t rate_control =
       view->rate_control_mode != VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DEFAULT_KHR;
-  VkVideoEncodeRateControlLayerInfoKHR current_layer;
-  VkVideoEncodeH264RateControlInfoKHR current_h264;
-  VkVideoEncodeRateControlInfoKHR current;
-  vkr_vk_view_rate_control(view, session, session->rate_bitrate, &current_layer,
-                           &current_h264, &current);
-  VkVideoEncodeRateControlLayerInfoKHR next_layer;
-  VkVideoEncodeH264RateControlInfoKHR next_h264;
-  VkVideoEncodeRateControlInfoKHR next;
-  vkr_vk_view_rate_control(view, session, picture->bitrate, &next_layer,
-                           &next_h264, &next);
+  VkrVkViewRateControl current;
+  vkr_vk_view_rate_control(view, session, session->rate_bitrate, &current);
+  VkrVkViewRateControl next;
+  vkr_vk_view_rate_control(view, session, picture->bitrate, &next);
 
   VkVideoPictureResourceInfoKHR dpb_pictures[VKR_VK_VIEW_DPB_SLOTS];
   VkVideoReferenceSlotInfoKHR bound[VKR_VK_VIEW_DPB_SLOTS];
@@ -1267,7 +1280,7 @@ vkr_internal bool8_t vkr_vk_view_record_encode(
   }
   const VkVideoBeginCodingInfoKHR begin = {
       .sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
-      .pNext = rate_control && session->coding_started ? &current : NULL,
+      .pNext = rate_control && session->coding_started ? &current.info : NULL,
       .videoSession = session->session,
       .videoSessionParameters = session->parameters,
       .referenceSlotCount = VKR_VK_VIEW_DPB_SLOTS,
@@ -1287,7 +1300,7 @@ vkr_internal bool8_t vkr_vk_view_record_encode(
         .sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
         .pNext = (control_flags &
                   VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR)
-                     ? &next
+                     ? &next.info
                      : NULL,
         .flags = control_flags,
     };

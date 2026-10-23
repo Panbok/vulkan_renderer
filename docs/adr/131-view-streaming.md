@@ -201,8 +201,10 @@ endpoint security drops unsolicited inbound traffic.
    type 2, one reference frame: each P picture references the one before
    it and an IDR picture comes at a session's start, on request or after a
    failed submission. Rate control is CBR (VBR or the default where CBR is
-   absent) with one frame interval of buffering and ultra-low-latency
-   tuning; the bitrate follows each request. The VUI names BT.709
+   absent) with one frame interval of buffering, the device's whole QP
+   range and ultra-low-latency tuning; the bitrate follows each request.
+   Without an explicit QP range the AMD driver encodes at one QP whatever
+   the bitrate. The VUI names BT.709
    primaries, transfer and matrix, video range, and no reordering
    (`max_num_reorder_frames = 0`). Every slot busy drops the frame's
    picture; a failed encode reports its export unwritten.
@@ -329,19 +331,26 @@ python tools/checks/check_view_stream.py --role record \
     --editor build_release/editor/vkr_editor.exe
 ```
 
-It recorded 378 frames of 1274×700 (coded 1280×704) at the 20 Mbit/s
-starting rate, 20.0 MB: about 53 KB a frame against the 41.7 KB that
-20 Mbit/s at 60 Hz allows, so the CBR stream runs about a quarter over its
-rate. PyAV decoded 383 frames, the first an IDR picture, and read BT.709
-and video range from the VUI. The frame nearest the server's capture,
-compared with the capture resampled to the stream as the kernel resamples
-the Scene image, was 42.6 dB PSNR from it; the last frame, 34.1 dB, shows
-a Scene that kept settling (mean signed difference about −1.3 of 255).
-Server render p50 57.5 ms, encode p50 4.8 / p95 5.1 ms. With
-`--vulkan-validation` (the Khronos layer) the check passed with no
-message, and a run with `VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true` added
-reported none either. A check run's fresh home starts the driver's shader
-cache cold, which takes about 250 s before the scene loads.
+It recorded 382 frames of 1274×700 (coded 1280×704) at the 20 Mbit/s
+starting rate, 4.1 MB: 10.7 KB a frame on the still view, under the
+41.7 KB that 20 Mbit/s at 60 Hz allows. PyAV decoded 387 frames, the first
+an IDR picture, and read BT.709 and video range from the VUI. The frame
+nearest the server's capture, compared with the capture resampled to the
+stream as the kernel resamples the Scene image, was 41.5 dB PSNR from it;
+the last frame, 33.9 dB, shows a Scene that kept settling (mean signed
+difference about −1.4 of 255). Server render p50 58.4 ms, encode p50 4.4 /
+p95 4.6 ms. With `--vulkan-validation` (the Khronos layer) the check passed
+with no message, and a run with `VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true`
+added reported none either. A check run's fresh home starts the driver's
+shader cache cold, which takes about 250 s before the scene loads.
+
+The QP range is what makes the bitrate count. At `c47c7484`, without it,
+the same view encoded about 51 KB a frame at 10 and at 20 Mbit/s, with a
+one-frame, 100 ms or 1 s buffer and with VBR alike (2.4 times the rate at
+10 Mbit/s), at 42.8 dB. With it, the still view takes 7.1 KB a frame at
+10 Mbit/s and 10.2 KB at 20 Mbit/s (41.0 and 41.5 dB), and flying the
+client check's path across the square takes 13.6 KB (0.65 of the share)
+and 21.5 KB (0.52), with single frames up to about 2.5 times the share.
 
 Between two computers, 2026-10-23, with the rules before the sender's
 deadline, skip and overshoot rules: the Windows server above at
