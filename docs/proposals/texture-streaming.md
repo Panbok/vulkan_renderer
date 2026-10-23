@@ -189,7 +189,11 @@ The owner accepted each recommendation below on 2026-10-20.
   full residency, and a count of frames that sample below the required mip.
   Static camera only so far (2026-10-23): albedo at 57.8 dB PSNR against full
   residency under a 1.11 GB budget, with 40 texture slots below their need
-  in each of 60 frames (ADR-024); the moving path is not captured yet.
+  in each of 60 frames (ADR-024). On the 1440p orbit at
+  `VKR_VULKAN_MEMORY_BUDGET_MB=10500` (1.97 GB resident, about 70 slots below
+  need) albedo at frames 60, 150 and 290 stayed at 71.1 dB, bit-identical and
+  59.8 dB against full residency, no pixel more than 4 of 255 apart, and final
+  colour at 62.9 dB, identical and 51.8 dB.
 - A budget at half of Bistro's full-resolution texture bytes, with no
   material showing the neutral default after its first load. Met and
   exceeded on the RX 6700 XT (2026-10-23): at 1.1 GB, 35% of the 3.16 GB,
