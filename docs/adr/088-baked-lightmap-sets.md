@@ -436,36 +436,53 @@ the bake's outcome ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
 Lightmap bakes are incremental by default (owner decision 2026-10-23), with
 an explicit full rebake: the Bake settings window's "Full rebake" button,
 `lighting.bake` with `full: true`, `scene.bake … full`, the request key
-`lightmap_full` and `bake lightmap --full`.
+`full` and `bake lightmap --full`. The same controls rebake the diffuse
+volume, which a bake otherwise keeps when nothing it reads changed
+([ADR-054](054-baked-diffuse-volumes.md)).
 
-- **Unchanged sets.** The inspection reports `content_digest`, a digest of
-  everything the baker read: world-space triangles, materials with their
-  textures' content digests, lights, sky, sun keys, layers and settings,
-  never a path ([`vkr_bake_lightmap_inputs.h`](../../tools/bake/vkr_bake_lightmap_inputs.h)).
-  Its digest with the recipe and the lightmap baker's identity
+- **Unchanged sets.** The sidecar's `input_fingerprint` digests the recipe,
+  the set format and the lightmap baker's identity
   (`VKR_BAKERY_IDENTITY_LIGHTMAP`, the hash of `tools/bake`, the lightmap
-  baker, the set format and astcenc) is the sidecar's `input_fingerprint`.
-  When the previous set's sidecar names the same fingerprint and its
-  `output_sha256` still matches, the bake publishes nothing and exits 6
-  (`VKR_BAKERY_BAKE_LIGHTMAP_UNCHANGED`; 0 when the output is that set), and a
-  project bake keeps the record, its revision and the scene's reference. A
-  closure digest could not serve: a project bake writes its effective scene,
-  which names model variants by absolute path, to a new job directory, and
-  lowering lists other assets' records in it.
-- **Input index.** Beside each set, `<name>.vkli` (VKLI v1, CRC-checked,
-  `vkr_bake_lightmap_index_write`) holds the digest of the global inputs
-  (settings, page size, atmosphere, environment, subsurface profiles, sun
-  keys, directional lights, layer table) and per source instance, lightmapped
-  or not, its key (document id or entity index, source node, kind), the digest
-  of its triangles and materials, its world bounds and its rectangle sizes,
-  and per lamp its digest, position, range, emitter radius and group, with
-  the set's payload checksum and size. A project records it as the set
+  baker, the set format and astcenc). The inspection compares what the baker
+  reads with the previous set's input index and reports `matches_previous`
+  (`vkr_bake_lightmap_inputs_match` in
+  [`vkr_bake_lightmap_inputs.h`](../../tools/bake/vkr_bake_lightmap_inputs.h)):
+  geometry, materials with their textures' content digests, lights, sky,
+  sun keys, layers and settings, never a path. When the fingerprint matches,
+  the inputs match and the previous set's `output_sha256` still holds, the
+  bake publishes nothing and exits 6 (`VKR_BAKERY_BAKE_UNCHANGED`; 0 when
+  the output is that set), and a project bake keeps the record, its revision
+  and the scene's reference. A digest of files could not serve: a project
+  bake writes its effective scene, which names model variants by absolute
+  path, to a new job directory, and lowering lists other assets' records in
+  it.
+- **Tolerance.** Floats compare within 0.1 mm plus 2×10⁻⁶ of their magnitude
+  (`kVkrBakeInputTolerance`): an editor save rewrites rotations it derives
+  from angles a few ulps off, and on the Level Design Test one save changed
+  the exact corners of 73 of 6,384 instances that did not move (2026-10-23).
+  An instance is its key, an exact digest of its triangle count, triangle
+  flags and materials, its bounds and 28 area-weighted moments of its
+  world-space triangles (area, centroid, covariance, and the corners' mean
+  normal, texture and lightmap UVs with their squares, color and tangent); a
+  lamp its exact kind, flags and group and its 26 float fields. Global
+  floats round to 10⁻⁵ before they are hashed.
+- **Input index.** Beside each set, `<name>.vkli` (VKLI v2, CRC-checked,
+  `vkr_bake_lightmap_index_write`; a v1 index bakes in full) holds the
+  digest of the global inputs (settings, page size, atmosphere, environment,
+  subsurface profiles, sun keys, directional lights, layer table) and per
+  source instance, lightmapped or not, its key (document id or entity index,
+  source node, kind), digest, moments, world bounds and rectangle sizes, and
+  per lamp its digest, fields, position, range, emitter radius and group,
+  with the set's payload checksum and size. A project records it as the set
   record's second artifact (role `lightmap_index`), so it travels with the
   set through sharing and the depot and goes with the set's revision.
-- **Plan.** A bake with a previous set and index whose globals, plane table,
-  page size and payload checksum match plans per layer which lightmapped
-  instances relight (`vkr_bake_lightmap_plan_incremental`); anything else
-  bakes in full and says why. An instance that changed, appeared or lost its
+- **Plan.** A bake builds on a previous set only when the set's sidecar
+  names this bake's `input_fingerprint`: another baker version or recipe
+  bakes in full, because the old tiles may hold what a fix changed. With
+  such a set and an index whose globals, plane table, page size and payload
+  checksum match, it plans per layer which lightmapped instances relight
+  (`vkr_bake_lightmap_plan_incremental`); anything else bakes in full and
+  says why. An instance that changed, appeared or lost its
   rectangle relights in every layer. Otherwise, for the old and new bounds
   of every changed instance and every changed lamp, with reach R: a sun key
   relights the instances within R of a changed box swept away from its key
@@ -490,13 +507,25 @@ an explicit full rebake: the Bake settings window's "Full rebake" button,
   plane page and encoded together (an encoded tile depends on its own texels
   alone in every plane format), copied rectangles take the previous set's
   tiles at their new place, and the empty area takes one encoded empty tile.
-  A full bake is the same path with every instance relit.
+  A full bake is the same path with every instance relit. Texel sets that
+  hold every texel of the set they come from share its data; the first
+  layer's gather and texels go after that layer; strips hold at most 65,536
+  tiles, even inside a large rectangle; and the page image, rectangle,
+  strip and encoding buffers are reused across planes, because freed large
+  blocks stay in the process's footprint. On a 4096 page of 4.4 million
+  texels (the street fixture at 64 texels per unit, 16 samples) the baker
+  peaked at 2.25 GB physical footprint against 2.11 GB before incremental
+  bakes and 3.76 GB at their first commit (2026-10-23).
 - **Error.** A copied instance keeps what light an edit moved beyond the plan
   reached: the second bounce off a newly shadowed or lit surface, and
   emission or sky occlusion farther than R. `vkr_bakery tool lightmap-baker
   --compare <a.vklm> <b.vklm>` measures it per plane: instances with
-  identical tiles and the mean and worst per-instance relative luminance
-  difference.
+  identical tiles, the luminance-weighted error, the mean per-instance
+  relative error and the five worst instances, each with its key,
+  rectangle, both mean luminances and the mean absolute difference. An
+  instance's relative error divides by its mean luminance or 1% of the
+  plane's, whichever is larger, so near-black instances do not rank first
+  on a tiny difference.
 - **Provenance and gates.** The sidecar's `production` records `kind`
   (`full`, with the reason, or `incremental`), for an incremental set the
   path and digest of the set it built on, and the instances relit per layer
@@ -890,10 +919,22 @@ Unavailable: a Windows or Vulkan host.
   0.007 to 0.017% and at most 0.15% for one instance, at R 1, 2, 4 and 8 alike
   (worst 0.16, 0.16, 0.15 and 0.12%). Adding a prop at the street's end gave
   at most 0.22%. `check_lightmap_rebake.py` passes the project flow: an
-  unchanged rebake keeps the record, `lightmap_full` bakes again, a lamp edit
-  bakes incrementally and the revision two bakes back goes. A level-scale run
-  (thousands of instances), a large-occluder edit and any Vulkan run are
-  pending.
+  unchanged rebake keeps the record, `full` bakes again, a lamp edit
+  bakes incrementally and the revision two bakes back goes. Two full bakes
+  of the fixture's inputs are identical byte for byte; turning one prop by
+  3×10⁻⁸ changes the full bake of every other instance by at most 0.02%.
+- Rebakes on the Testbed project's Level Design Test (6,384 instances, 227
+  lamps in one group, 64 samples, 2026-10-23): two full bakes whose inputs
+  differed only by the save drift above had identical tiles for 89% of
+  instances per sun key and 78% in the lamp group, a luminance-weighted
+  difference of 0.04% per sun key and 0.22% in the lamp group, and worst
+  instances of 13,240% (a 4 cm rod black in one bake) and 1,138% (a shaft
+  wall) in the lamp group, which bakes with no indirect clamp. An
+  incremental bake of the same inputs against the second full bake: 0.03%
+  per sun key and 0.23% in the lamp group, with the same worst instances.
+  An incremental set therefore differs from a full bake no more than two
+  full bakes differ there; its copied instances are the first full bake's
+  bytes. A large-occluder edit and any Vulkan run are pending.
 
 ## Revisit when
 

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-14
+updated: 2026-10-23
 authority: adr
 ---
 
@@ -172,7 +172,18 @@ than 0 or the lamp-group count. Versions 1 and 2 are refused.
 inspect manifest, records the dependency closure, recipe and tool digest,
 verifies the output with the runtime decoder and writes the `.vkdv.bake.json`
 sidecar. `--check` rejects stale inputs or corrupt output. A placement without
-bricks exits 3 without output.
+bricks exits 3 without output. Since 2026-10-23 the bake writes the input
+index `<name>.vkli` beside the volume
+([ADR-088](088-baked-lightmap-sets.md), Rebakes); a bake whose previous volume
+(`--previous`, the output itself by default) was made with the same recipe
+and baker identity (`VKR_BAKERY_IDENTITY_DIFFUSE`) from inputs that match
+its index within the tolerance keeps it, exits 6 and publishes nothing, and
+`--full` bakes regardless. A project bake passes its previous volume and the
+request's `full`, records the index as the volume record's `volume_index`
+artifact, and on exit 6 keeps the record and its revision. Probes and
+bricks are not reused across a changed scene: any change bakes the whole
+volume. The recorded closure is re-hashed after the bake instead of a second
+scene load.
 
 ### Runtime
 
