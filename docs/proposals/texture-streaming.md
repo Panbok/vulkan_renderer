@@ -31,7 +31,8 @@ owns fetching bytes from a remote depot and their transport order, and
   material textures: the tighter of the Graphics `texture_resolution` setting
   and the scene's `texture_max_extent` (ADR-012). A changed limit reloads the
   affected textures through the material stream queue, at most 32 queued or
-  loading, recently drawn materials first. Only a material's first load of a
+  loading, shrinks first, then drawn textures furthest below their measured
+  need (ADR-012). Only a material's first load of a
   file larger than 1 MiB still arriving from a remote content directory
   reads less: the levels in its first 256 KiB, as a preview that this
   reload replaces once a frame draws it
@@ -139,10 +140,12 @@ every material sample for a workflow id itself abandoned.
    deferred it on 2026-10-22 (ADR-012). The second step now uploads only the
    levels above the floor, but each texture still publishes twice, which
    that cost came from; it needs a measurement before it returns.
-5. **One priority for local and remote loads.** The network protocol's
-   progressive phase requests remote mips smallest first by streaming source
-   and screen size. It consumes the measured demand (ADR-024, and item 1 on
-   the tiled pipeline) instead of a second estimate.
+5. **One priority for local and remote loads.** Done for ordering: local
+   reloads and remote whole-file downloads follow one order from the
+   measured demand (ADR-012). A remote texture still downloads whole once
+   drawn; fetching only the mips its need holds would trim without pressure
+   (item 2), which the owner kept deferred on 2026-10-23. The tiled pipeline
+   orders by epoch until item 1 lands. Not yet measured over a depot.
 
 **Lifetime.** The texture system owns images, levels and slots; the material
 system owns streams and demand; each backend adapter owns native images, copy
@@ -176,7 +179,13 @@ The owner accepted each recommendation below on 2026-10-20.
   mips, on the M1 Pro (tiled) and the RX 6700 XT (desktop).
 - A hitch report while flying through Bistro on a recorded camera path at a
   fixed speed: frame time p95, p99 and maximum, and upload stalls, against
-  today's load.
+  today's load. Open defect (2026-10-23): `bistro_vulkan_high_orbit_1440`
+  at `VKR_VULKAN_MEMORY_BUDGET_MB=6000`, where the texture allowance falls
+  to 0 and every texture keeps loading and being evicted, lost the device
+  in every run with and without level copies, after 23,733 and 82,549
+  submissions; an RGD dump placed the page fault in
+  `Transmission.Compact.Fullscreen.0` at an address no live resource holds.
+  The driver's budget passed. The cause is not found.
 - G-buffer albedo captures along that path after streaming settles, against
   full residency, and a count of frames that sample below the required mip.
 - A budget at half of Bistro's full-resolution texture bytes, with no

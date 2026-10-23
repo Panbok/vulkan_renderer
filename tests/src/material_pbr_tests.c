@@ -1516,6 +1516,75 @@ test_material_texture_demand_orders_mip_lowering(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_demand_orders_mip_lowering PASSED\n");
 }
 
+/* Measured demand orders reloads: of two drawn textures the limit grows,
+   the one measured furthest below its need queues its reload first, though
+   it comes later in stream order, and only it counts as held below need.
+   Remote whole-file downloads follow the same order. */
+vkr_internal void test_material_texture_reload_priority_follows_demand(
+    MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialHandle unmeasured_material = {0};
+  VkrMaterialHandle measured_material = {0};
+  VkrTextureHandle unmeasured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrTextureHandle measured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  /* Both hold 9 of 11 mips (256 of 1024); the measured material needs
+     1024. */
+  VkrMaterialTextureStream *unmeasured = test_demand_resident_stream(
+      ctx, "reload_priority_unmeasured", 1024u, 11u, 4096u,
+      &unmeasured_material, &unmeasured_texture);
+  const uint32_t unmeasured_index =
+      (uint32_t)(unmeasured - system->texture_streams);
+  test_demand_resident_stream(ctx, "reload_priority_measured", 1024u, 11u,
+                              4096u, &measured_material, &measured_texture);
+  const VkrTextureHandle textures[] = {unmeasured_texture, measured_texture};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i])
+        ->description.mip_levels = 9u;
+  }
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+  const uint32_t stream_count = system->texture_stream_count;
+
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, unmeasured_material);
+  vkr_material_system_touch_texture_residency(system, measured_material);
+  system->texture_demand_pending[0] = (VkrTextureDemand){
+      .material_id = measured_material.id,
+      .material_generation = measured_material.generation,
+      .extent_log2 = 10u,
+  };
+  system->texture_demand_pending_count = 1u;
+  system->texture_reload_pending = true_v;
+  vkr_material_system_pump_texture_streams(system, 1u);
+
+  assert(system->texture_stream_count == stream_count + 2u);
+  const VkrMaterialTextureStream *first =
+      &system->texture_streams[stream_count];
+  const VkrMaterialTextureStream *second =
+      &system->texture_streams[stream_count + 1u];
+  assert(first->reload && second->reload);
+  assert(first->replaces.id == measured_texture.id &&
+         first->replaces.generation == measured_texture.generation);
+  assert(second->replaces.id == unmeasured_texture.id);
+  assert(system->texture_streams[unmeasured_index].reloading);
+  assert(system->texture_demand_below_need_count == 1u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, measured_material);
+  vkr_material_system_cancel_texture_streams(system, unmeasured_material);
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i]);
+    if (texture) {
+      texture->description.mip_levels = 1u;
+      texture->limit_source_extent = 0u;
+      texture->limit_source_mip_levels = 0u;
+    }
+  }
+  printf("  test_material_texture_reload_priority_follows_demand PASSED\n");
+}
+
 vkr_internal void
 test_shared_texture_eviction_tracks_unique_bytes(MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
@@ -2809,6 +2878,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_residency_evicts_to_budget(&context);
   test_material_texture_residency_lowers_mips_before_evicting(&context);
   test_material_texture_demand_orders_mip_lowering(&context);
+  test_material_texture_reload_priority_follows_demand(&context);
   test_texture_capacity_retry_high_water();
   test_shared_texture_eviction_tracks_unique_bytes(&context);
   test_shared_texture_eviction_republishes_all_materials(&context);

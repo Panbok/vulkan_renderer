@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-22
+updated: 2026-10-23
 authority: proposal
 ---
 # Network protocol
@@ -133,12 +133,13 @@ before it enters the store (ADR-105). The rest:
   mips first.
 - **Priority.** The remote serves whole-file fetches before preview
   reads and both before prefetches; whole-file downloads follow the order
-  in which drawn previews reach their reload (ADR-012), a queued download
+  in which drawn previews reach their reload, which follows the measured
+  texture demand (ADR-012), a queued download
   whose texture no frame drew for 120 draw epochs is cancelled, and a
-  scene's preparation queues the materials it validates (ADR-123). Mip
-  priority will come from the required mips that
-  [texture streaming](texture-streaming.md) computes, which then replace
-  the fixed 256 KiB preview; this service orders the remote fetches.
+  scene's preparation queues the materials it validates (ADR-123). Fetching
+  only the mips that [texture streaming](texture-streaming.md) measures a
+  material needs, in place of the fixed 256 KiB preview, stays deferred with
+  trimming without pressure (owner, 2026-10-23).
   Priority from the streaming sources and the screen size for other assets
   remains; Bistro, one mesh and its textures, cannot show it.
 - **Throughput of single files.** A received object is checked once,

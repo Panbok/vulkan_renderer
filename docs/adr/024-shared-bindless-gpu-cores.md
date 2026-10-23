@@ -244,7 +244,13 @@ first, and only then every texture by size; a raise stops at the need, and
 without pressure nothing changes (owner decisions, 2026-10-22). Materials no
 frame measured recently, such as those only shadows, reflections or probes
 draw, keep the epoch and size order. The tiled pipeline measures no demand
-yet. `asset.material.texture_demand.materials` counts the materials the last
+yet. The same need orders reloads, local and remote (ADR-012), and
+`asset.material.texture_demand.below_need` counts resident texture slots
+whose texture holds fewer mips than their material's measured need within
+the material limit; Bistro's pressure case at
+`VKR_VULKAN_MEMORY_BUDGET_MB=6000` ended with 44 and 38 of them
+(2026-10-23), the driver's budget on the 1440p orbit with none.
+`asset.material.texture_demand.materials` counts the materials the last
 folded frame measured.
 
 Evidence for measured demand (2026-10-22, RX 6700 XT, Release): the texture

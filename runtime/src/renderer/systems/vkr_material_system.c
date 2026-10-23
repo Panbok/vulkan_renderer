@@ -1511,8 +1511,57 @@ vkr_material_system_reload_needed(VkrMaterialSystem *system,
   return false_v;
 }
 
+/* Mip levels a resident stream's texture lacks for what the GPU measured its
+ * material needs, within the material limit; zero when it holds them or no
+ * frame measured the material recently, which `out_measured` tells apart. */
+static uint32_t
+vkr_material_stream_need_shortfall(VkrMaterialSystem *system,
+                                   const VkrMaterialTextureStream *stream,
+                                   bool8_t *out_measured) {
+  const uint32_t required =
+      vkr_material_system_required_extent(system, stream->material);
+  *out_measured = required != 0u;
+  if (!required) {
+    return 0u;
+  }
+  const VkrTexture *texture = vkr_texture_system_get_by_handle(
+      system->texture_system, stream->resident_texture);
+  const uint32_t needed = vkr_texture_system_load_limit_mip_levels(
+      system->texture_system, stream->resident_texture,
+      vkr_material_cap_limit(system, required));
+  const uint32_t held = texture ? texture->description.mip_levels : needed;
+  return needed > held ? needed - held : 0u;
+}
+
+/* The order a stale stream's reload is queued in, larger first: reloads
+ * that shrink, which the budget waits for and which read nothing with a
+ * level copy; then drawn textures before undrawn ones; within those, the
+ * textures measured furthest below their need, then unmeasured ones, then
+ * those already at it. Remote whole-file downloads follow this order. */
+static uint32_t
+vkr_material_system_reload_priority(VkrMaterialSystem *system,
+                                    const VkrMaterialTextureStream *stream,
+                                    bool8_t drawn, bool8_t grows) {
+  bool8_t measured = false_v;
+  const uint32_t shortfall =
+      vkr_material_stream_need_shortfall(system, stream, &measured);
+  const uint32_t rank = !measured ? 1u : shortfall ? 2u : 0u;
+  return (grows ? 0u : 1u) << 31 | (drawn ? 1u : 0u) << 30 | rank << 28 |
+         Min(shortfall, 0xffffu);
+}
+
+/* The higher priority first; equal ones in stream order. */
+static int32_t vkr_material_system_reload_compare(const void *a,
+                                                  const void *b) {
+  const VkrMaterialTextureReloadOrder *x = a;
+  const VkrMaterialTextureReloadOrder *y = b;
+  if (x->priority != y->priority)
+    return x->priority > y->priority ? -1 : 1;
+  return x->stream < y->stream ? -1 : x->stream > y->stream;
+}
+
 /* Queues reloads of resident textures whose mip chain the current limit
- * changes, recently drawn materials first, with at most
+ * changes, in vkr_material_system_reload_priority order, with at most
  * VKR_MATERIAL_TEXTURE_RELOAD_MAX queued or loading. The scan repeats each
  * pump until every stale texture has a reload. An undrawn texture the limit
  * would grow waits until its material is drawn again: reloading a closed
@@ -1532,49 +1581,61 @@ vkr_material_system_queue_texture_reloads(VkrMaterialSystem *system) {
             : 0u;
   }
 
-  bool8_t stale_left = false_v;
   system->texture_reload_deferred = false_v;
-  const uint32_t scanned = system->texture_stream_count;
-  for (uint32_t pass = 0u; pass < 2u; ++pass) {
-    for (uint32_t i = 0u; i < scanned; ++i) {
-      VkrMaterialTextureStream *stream = &system->texture_streams[i];
-      const bool8_t drawn = vkr_material_system_stream_last_used(
-                                system, stream) == system->texture_stream_epoch;
-      if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT ||
-          stream->replacement || stream->reloading || drawn != (pass == 0u) ||
-          !vkr_material_stream_stale(system, stream,
-                                     stream->resident_texture)) {
-        continue;
-      }
-      if (!drawn && vkr_texture_system_load_limit_grows(
-                        system->texture_system, stream->resident_texture,
-                        vkr_material_stream_limit(system, stream))) {
-        system->texture_reload_deferred = true_v;
-        continue;
-      }
-      if (outstanding >= VKR_MATERIAL_TEXTURE_RELOAD_MAX ||
-          system->texture_stream_count >= system->texture_stream_capacity) {
-        stale_left = true_v;
-        continue;
-      }
-      VkrMaterialTextureStream *reload =
-          &system->texture_streams[system->texture_stream_count++];
-      *reload = (VkrMaterialTextureStream){
-          .material = stream->material,
-          .slot = stream->slot,
-          .path_length = stream->path_length,
-          .reload = true_v,
-          .extent_cap = stream->extent_cap,
-          .state = VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED,
-          .resident_texture = VKR_TEXTURE_HANDLE_INVALID,
-          .replaces = stream->resident_texture,
-      };
-      MemCopy(reload->path, stream->path, stream->path_length);
-      reload->path[stream->path_length] = '\0';
-      stream->reloading = true_v;
-      system->texture_stream_queued_count++;
-      outstanding++;
+  VkrMaterialTextureReloadOrder *order = system->texture_reload_order;
+  uint32_t order_count = 0u;
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    const VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT ||
+        stream->replacement || stream->reloading ||
+        !vkr_material_stream_stale(system, stream, stream->resident_texture)) {
+      continue;
     }
+    const bool8_t drawn = vkr_material_system_stream_last_used(
+                              system, stream) == system->texture_stream_epoch;
+    const bool8_t grows = vkr_texture_system_load_limit_grows(
+        system->texture_system, stream->resident_texture,
+        vkr_material_stream_limit(system, stream));
+    if (!drawn && grows) {
+      system->texture_reload_deferred = true_v;
+      continue;
+    }
+    order[order_count++] = (VkrMaterialTextureReloadOrder){
+        .stream = i,
+        .priority =
+            vkr_material_system_reload_priority(system, stream, drawn, grows),
+    };
+  }
+  vkr_sort(order, order_count, sizeof(*order),
+           vkr_material_system_reload_compare);
+
+  bool8_t stale_left = false_v;
+  for (uint32_t k = 0u; k < order_count; ++k) {
+    if (outstanding >= VKR_MATERIAL_TEXTURE_RELOAD_MAX ||
+        system->texture_stream_count >= system->texture_stream_capacity) {
+      stale_left = true_v;
+      break;
+    }
+    /* Appending a reload leaves the fixed stream array where it is. */
+    VkrMaterialTextureStream *stream =
+        &system->texture_streams[order[k].stream];
+    VkrMaterialTextureStream *reload =
+        &system->texture_streams[system->texture_stream_count++];
+    *reload = (VkrMaterialTextureStream){
+        .material = stream->material,
+        .slot = stream->slot,
+        .path_length = stream->path_length,
+        .reload = true_v,
+        .extent_cap = stream->extent_cap,
+        .state = VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED,
+        .resident_texture = VKR_TEXTURE_HANDLE_INVALID,
+        .replaces = stream->resident_texture,
+    };
+    MemCopy(reload->path, stream->path, stream->path_length);
+    reload->path[stream->path_length] = '\0';
+    stream->reloading = true_v;
+    system->texture_stream_queued_count++;
+    outstanding++;
   }
   system->texture_reload_pending = stale_left;
 }
@@ -1755,17 +1816,10 @@ vkr_material_system_count_below_need(VkrMaterialSystem *system) {
     if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT) {
       continue;
     }
-    const uint32_t required =
-        vkr_material_system_required_extent(system, stream->material);
-    if (!required) {
-      continue;
-    }
-    const VkrTexture *texture = vkr_texture_system_get_by_handle(
-        system->texture_system, stream->resident_texture);
-    const uint32_t needed = vkr_texture_system_load_limit_mip_levels(
-        system->texture_system, stream->resident_texture,
-        vkr_material_cap_limit(system, required));
-    count += texture && needed > texture->description.mip_levels ? 1u : 0u;
+    bool8_t measured = false_v;
+    count += vkr_material_stream_need_shortfall(system, stream, &measured) > 0u
+                 ? 1u
+                 : 0u;
   }
   return count;
 }
@@ -2152,6 +2206,11 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                           (uint64_t)VKR_MATERIAL_TEXTURE_STREAM_CAPACITY *
                               sizeof(*system->texture_candidates),
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  system->texture_reload_order =
+      vkr_allocator_alloc(&system->allocator,
+                          (uint64_t)VKR_MATERIAL_TEXTURE_STREAM_CAPACITY *
+                              sizeof(*system->texture_reload_order),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   system->texture_demand = vkr_allocator_alloc(
       &system->allocator,
       (uint64_t)config->max_material_count * sizeof(*system->texture_demand),
@@ -2163,8 +2222,8 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!system->texture_streams || !system->texture_material_last_used_epochs ||
       !system->publications || !system->replacements ||
-      !system->texture_candidates || !system->texture_demand ||
-      !system->texture_demand_pending) {
+      !system->texture_candidates || !system->texture_reload_order ||
+      !system->texture_demand || !system->texture_demand_pending) {
     vkr_material_system_shutdown(system);
     return false_v;
   }

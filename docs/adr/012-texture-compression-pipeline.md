@@ -172,7 +172,11 @@ Each texture records the larger side and level count of its stored chain, so a
 changed limit reloads only textures whose chain would differ; 1K textures stay
 loaded under a 2K limit. Reloads run through the material texture stream queue
 ([material system](../../runtime/src/renderer/systems/vkr_material_system.c)),
-recently drawn materials first, with at most 32 queued or loading. A limit that
+with at most 32 queued or loading, in one order for local and remote files
+(`vkr_material_system_reload_priority`): reloads that shrink first, then
+drawn materials before undrawn ones, and among those the textures the GPU
+measured furthest below their need, then unmeasured ones, then those
+already at it ([ADR-024](024-shared-bindless-gpu-cores.md)). A limit that
 would grow a texture no draw used in the last frame waits until its material
 is drawn again; a lower limit shrinks every texture. Without that wait, a
 switch from Bistro (limit 1024) to Level Design Test (full) re-streamed

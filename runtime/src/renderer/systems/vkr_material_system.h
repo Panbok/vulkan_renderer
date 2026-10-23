@@ -89,6 +89,13 @@ typedef struct VkrMaterialTextureStream {
   uint32_t replacement;
 } VkrMaterialTextureStream;
 
+/* A stale resident stream and the priority its reload is queued by
+ * (vkr_material_system_queue_texture_reloads). */
+typedef struct VkrMaterialTextureReloadOrder {
+  uint32_t stream;
+  uint32_t priority;
+} VkrMaterialTextureReloadOrder;
+
 /* One resident texture as the budget sees it: built per pass over the
  * streams, one entry per shared texture. */
 typedef struct VkrMaterialTextureCandidate {
@@ -229,6 +236,8 @@ typedef struct VkrMaterialSystem {
   /* Scratch for the budget's passes, VKR_MATERIAL_TEXTURE_STREAM_CAPACITY
      entries from the persistent arena. */
   VkrMaterialTextureCandidate *texture_candidates;
+  /* Scratch for the reload scan's order, as many entries. */
+  VkrMaterialTextureReloadOrder *texture_reload_order;
   /* GPU texture demand (ADR-024) by material id, and the newest completed
      frame's entries, which the next pump folds in; max_material_count
      each. */
