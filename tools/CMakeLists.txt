@@ -315,6 +315,12 @@ add_library(vkr_lightmap_baker STATIC vkr_lightmap_baker.cpp)
 vkr_configure_cooker_target(vkr_lightmap_baker)
 target_compile_features(vkr_lightmap_baker PRIVATE cxx_std_17)
 target_link_libraries(vkr_lightmap_baker PRIVATE vkr_bake_core)
+# Runs a job's lightmap and diffuse-volume bakers on one loaded scene.
+add_library(vkr_lighting_baker STATIC vkr_lighting_baker.cpp)
+vkr_configure_cooker_target(vkr_lighting_baker)
+target_compile_features(vkr_lighting_baker PRIVATE cxx_std_17)
+target_link_libraries(vkr_lighting_baker PRIVATE vkr_bake_core
+    vkr_lightmap_baker vkr_diffuse_baker)
 
 add_library(vkr_mesh_cooker STATIC
     vkr_mesh_cooker.c

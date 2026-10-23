@@ -1723,15 +1723,21 @@ bool write_report(const Options &options, const VolumeReport &report) {
 
 int inspect_scene(const Options &options, VkrAllocator *allocator,
                   Arena *arena) {
-  VkrBakeScene scene(allocator);
-  if (options.atmosphere_cache) {
-    scene.atmosphere_cache = options.atmosphere_cache;
-  }
-  VkrBakeSceneError error;
-  if (!vkr_bake_scene_load(&scene, options.scene, &error)) {
-    std::fprintf(stderr, "Scene preparation failed (error %u): %s: %s\n",
-                 (unsigned)error, options.scene, scene.diagnostic.c_str());
-    return 1;
+  /* The lighting baker's scene when it shares one, else this bake's own. */
+  VkrBakeScene loaded(allocator);
+  VkrBakeScene *shared =
+      vkr_bake_scene_shared(options.scene, options.atmosphere_cache);
+  VkrBakeScene &scene = shared ? *shared : loaded;
+  if (!shared) {
+    if (options.atmosphere_cache) {
+      loaded.atmosphere_cache = options.atmosphere_cache;
+    }
+    VkrBakeSceneError error;
+    if (!vkr_bake_scene_load(&loaded, options.scene, &error)) {
+      std::fprintf(stderr, "Scene preparation failed (error %u): %s: %s\n",
+                   (unsigned)error, options.scene, loaded.diagnostic.c_str());
+      return 1;
+    }
   }
   // Resolve aliases before any output can replace a source used by the bake.
   for (const auto &dependency : scene.dependency_paths) {

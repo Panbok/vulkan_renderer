@@ -2374,6 +2374,100 @@ bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
   return true_v;
 }
 
+/* One program of vkr_project_run_bakery_pair, run on its own thread. */
+typedef struct VkrProjectPairedRun {
+  VkrPlatformProcessConfig config;
+  VkrPlatformProcessError error;
+  const char *exited;
+  int32_t code;
+  bool8_t ran;
+  float64_t seconds;
+} VkrProjectPairedRun;
+
+vkr_internal void *vkr_project_paired_run(void *argument) {
+  VkrProjectPairedRun *run = argument;
+  const float64_t started = vkr_bakery_monotonic_seconds();
+  bool8_t timed_out = false_v;
+  run->code = -1;
+  run->ran = vkr_platform_process_run(&run->config, &run->code, &timed_out);
+  run->seconds = vkr_bakery_monotonic_seconds() - started;
+  /* The other bake stops waiting for a baker this one never hands off. */
+  (void)vkr_bakery_write_file_atomic(run->exited, "\n", 1u);
+  return NULL;
+}
+
+bool8_t vkr_project_run_bakery_pair(VkrProjectJob *job,
+                                    const VkrProjectBakeryRun runs[2],
+                                    int32_t out_codes[2]) {
+  const VkrPlatformEnvironmentVariable overlay[] = {
+      {VKR_VFS_ASSET_OVERLAY_VARIABLE, job->asset_overlay}};
+  const bool8_t overlaid = job->asset_overlay[0] != '\0';
+  VkrProjectPairedRun paired[2];
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    VKR_PROJECT_TRY(
+        vkr_project_progress(job, runs[i].label, -1.0, runs[i].detail));
+    paired[i] = (VkrProjectPairedRun){
+        .config =
+            {
+                .executable = job->config->self_path,
+                .arguments = runs[i].arguments,
+                .argument_count = runs[i].count,
+                .environment = overlaid ? overlay : NULL,
+                .environment_count = overlaid ? 1u : 0u,
+                .working_directory =
+                    job->config->root[0] ? job->config->root : NULL,
+                .termination_grace_ms = 5000u,
+                .terminate_process_tree = true_v,
+                .hidden = true_v,
+                .is_cancelled = vkr_project_is_cancelled,
+            },
+        .exited = runs[i].exited,
+    };
+    paired[i].config.out_error = &paired[i].error;
+  }
+  fflush(stdout);
+  Arena *arena = arena_create(KB(64), KB(64));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrThread thread = {0};
+  const bool8_t threaded =
+      arena && vkr_allocator_arena(&allocator) &&
+      vkr_thread_create(&allocator, &thread, vkr_project_paired_run,
+                        &paired[0]);
+  if (!threaded) {
+    (void)vkr_project_paired_run(&paired[0]);
+  }
+  (void)vkr_project_paired_run(&paired[1]);
+  if (threaded) {
+    (void)vkr_thread_join(thread);
+    (void)vkr_thread_destroy(&allocator, &thread);
+  }
+  if (arena) {
+    arena_destroy(arena);
+  }
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    printf("timing: stage='%s' detail='%s' exit=%d wall_ms=%llu\n",
+           runs[i].label, vkr_bakery_path_name(job->config->self_path),
+           paired[i].code, (unsigned long long)(paired[i].seconds * 1000.0));
+    out_codes[i] = paired[i].code;
+  }
+  fflush(stdout);
+  if (vkr_project_is_cancelled(NULL)) {
+    job->cancelled = true_v;
+    return vkr_project_fail(job, "Project preparation cancelled");
+  }
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    if (!paired[i].ran) {
+      return vkr_project_fail(
+          job, "%s could not run %s: %s failed with error %d (%s)",
+          runs[i].label, job->config->self_path,
+          paired[i].error.step ? paired[i].error.step : "launch",
+          paired[i].error.code,
+          vkr_project_launch_error_text(paired[i].error.code));
+    }
+  }
+  return true_v;
+}
+
 bool8_t vkr_project_run_bakery(VkrProjectJob *job, const char *const *arguments,
                                uint32_t count, const char *label,
                                const char *fallback_detail, uint32_t accepted,

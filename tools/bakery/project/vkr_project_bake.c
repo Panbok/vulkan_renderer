@@ -1350,19 +1350,44 @@ vkr_internal VkrBakeryJson *vkr_project_bake_production(VkrProjectJob *job,
   return record;
 }
 
-vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
-                                             VkrBakeryJson *scene,
-                                             const char *asset_root) {
-  Arena *arena = job->arena;
-  VkrBakeryJson *bake_scene = vkr_bakery_json_clone(arena, scene);
-  vkr_bakery_json_remove(bake_scene, "diffuse_volume");
-  VkrBakeryJson *runtime =
-      vkr_project_effective_bake_runtime(job, bake_scene, asset_root, true_v);
-  VKR_PROJECT_TRY(runtime);
+/* A lighting bake a project job prepared: the `vkr_bakery bake` arguments
+   and what recording its result needs. */
+typedef struct VkrProjectLightingBake {
+  VkrProjectArguments arguments;
+  const char *label;
+  /* The bake scene's file name, which progress shows. */
+  const char *detail;
   char revision[37];
-  vkr_project_uuid4(revision);
   char directory[VKR_PROJECT_PATH];
-  (void)snprintf(directory, sizeof(directory), "%s/builds/%s", asset_root,
+  const char *destination;
+  const char *index;
+  VkrBakeryJson *settings;
+  VkrBakeryJson *previous;
+} VkrProjectLightingBake;
+
+/* The lighting bakes' scene: `scene` lowered without its lightmap, volume
+   and probe results, which no lighting bake reads, so the volume and
+   lightmap bakes of a job can read one file. */
+vkr_internal VkrBakeryJson *
+vkr_project_lighting_runtime(VkrProjectJob *job, VkrBakeryJson *scene,
+                             const char *asset_root) {
+  VkrBakeryJson *bake_scene = vkr_bakery_json_clone(job->arena, scene);
+  vkr_bakery_json_remove(bake_scene, "diffuse_volume");
+  vkr_bakery_json_remove(bake_scene, "lightmaps");
+  return vkr_project_effective_bake_runtime(job, bake_scene, asset_root,
+                                            true_v);
+}
+
+vkr_internal bool8_t vkr_project_prepare_volume(VkrProjectJob *job,
+                                                VkrBakeryJson *scene,
+                                                const char *asset_root,
+                                                VkrBakeryJson *runtime,
+                                                VkrProjectLightingBake *out) {
+  Arena *arena = job->arena;
+  char *revision = out->revision;
+  vkr_project_uuid4(revision);
+  char *directory = out->directory;
+  (void)snprintf(directory, sizeof(out->directory), "%s/builds/%s", asset_root,
                  revision);
   if (vkr_project_exists(directory)) {
     return vkr_project_fail(job, "[Errno 17] File exists: '%s'", directory);
@@ -1371,7 +1396,7 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
   const char *destination =
       vkr_project_printf(job, "%s/volume.vkdv", directory);
   const char *index = vkr_project_printf(job, "%s/volume.vkli", directory);
-  VkrProjectArguments arguments = {0};
+  out->arguments = (VkrProjectArguments){0};
   const char *fixed[] = {"bake",
                          "diffuse",
                          "--workspace-root",
@@ -1381,7 +1406,7 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
                          "--output",
                          destination};
   for (uint32_t i = 0u; i < ArrayCount(fixed); ++i) {
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, fixed[i]));
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &out->arguments, fixed[i]));
   }
   const VkrBakeryJson *requested =
       vkr_bakery_json_get(job->request, "diffuse_settings");
@@ -1394,11 +1419,11 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
       continue;
     }
     VKR_PROJECT_TRY(vkr_project_argument_push(
-        job, &arguments, vkr_project_printf(job, "--%s", lists[l])));
+        job, &out->arguments, vkr_project_printf(job, "--%s", lists[l])));
     for (const VkrBakeryJson *value = values->first; value;
          value = value->next) {
       VKR_PROJECT_TRY(vkr_project_argument_push(
-          job, &arguments, vkr_project_argument(job, value)));
+          job, &out->arguments, vkr_project_argument(job, value)));
     }
   }
   static const char *const scalars[] = {
@@ -1416,10 +1441,10 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
         *c = '-';
       }
     }
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments,
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &out->arguments,
                                               vkr_project_strdup(job, flag)));
     VKR_PROJECT_TRY(vkr_project_argument_push(
-        job, &arguments, vkr_project_argument(job, value)));
+        job, &out->arguments, vkr_project_argument(job, value)));
   }
   /* The previous volume lets the bake keep it when nothing it was baked
      from changed; the request's `full` bakes again regardless. */
@@ -1430,24 +1455,37 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
   const char *previous_volume =
       vkr_project_record_artifact_file(job, previous, "volume", asset_root);
   if (previous_volume) {
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--previous"));
     VKR_PROJECT_TRY(
-        vkr_project_argument_push(job, &arguments, previous_volume));
+        vkr_project_argument_push(job, &out->arguments, "--previous"));
+    VKR_PROJECT_TRY(
+        vkr_project_argument_push(job, &out->arguments, previous_volume));
   }
   if (vkr_project_truthy(vkr_bakery_json_get(job->request, "full"))) {
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--full"));
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &out->arguments, "--full"));
   }
-  /* Both skips leave the scene without a volume; any other failure fails
-     the bake. */
-  const char *label = "Baking diffuse volume";
-  VKR_PROJECT_TRY(vkr_project_progress(
-      job, label, -1.0,
-      vkr_bakery_path_name(vkr_project_json_text(runtime, "runtime_path"))));
-  fflush(stdout);
-  int32_t code = -1;
-  VKR_PROJECT_TRY(vkr_project_run_program(job, job->config->self_path,
-                                          arguments.items, arguments.count,
-                                          label, NULL, &code));
+  out->label = "Baking diffuse volume";
+  out->detail =
+      vkr_bakery_path_name(vkr_project_json_text(runtime, "runtime_path"));
+  out->destination = destination;
+  out->index = index;
+  out->settings = settings;
+  out->previous = previous;
+  return true_v;
+}
+
+/* Records a volume bake's result: the new volume, the previous one kept,
+   or no volume for a scene without geometry or too large for one. */
+vkr_internal bool8_t vkr_project_finish_volume(
+    VkrProjectJob *job, VkrBakeryJson *scene, const char *asset_root,
+    const VkrProjectLightingBake *bake, int32_t code) {
+  Arena *arena = job->arena;
+  const char *label = bake->label;
+  const char *directory = bake->directory;
+  const char *destination = bake->destination;
+  const char *index = bake->index;
+  VkrBakeryJson *settings = bake->settings;
+  VkrBakeryJson *previous = bake->previous;
+  const char *revision = bake->revision;
   if (code != 0 && code != VKR_PROJECT_DIFFUSE_NO_VOLUME &&
       code != VKR_PROJECT_DIFFUSE_TOO_LARGE &&
       code != VKR_PROJECT_BAKE_UNCHANGED) {
@@ -1508,6 +1546,25 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
   return true_v;
 }
 
+vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
+                                             VkrBakeryJson *scene,
+                                             const char *asset_root) {
+  VkrBakeryJson *runtime = vkr_project_lighting_runtime(job, scene, asset_root);
+  VKR_PROJECT_TRY(runtime);
+  VkrProjectLightingBake bake;
+  VKR_PROJECT_TRY(
+      vkr_project_prepare_volume(job, scene, asset_root, runtime, &bake));
+  /* Both skips leave the scene without a volume; any other failure fails
+     the bake. */
+  VKR_PROJECT_TRY(vkr_project_progress(job, bake.label, -1.0, bake.detail));
+  fflush(stdout);
+  int32_t code = -1;
+  VKR_PROJECT_TRY(
+      vkr_project_run_program(job, job->config->self_path, bake.arguments.items,
+                              bake.arguments.count, bake.label, NULL, &code));
+  return vkr_project_finish_volume(job, scene, asset_root, &bake, code);
+}
+
 /* Checks from its header and plane table alone that the set a bake
    published holds the planes of this host's pipeline class, the class whose
    reference it replaces. */
@@ -1548,19 +1605,14 @@ vkr_internal bool8_t vkr_project_check_lightmap_class(VkrProjectJob *job,
    `lightmaps.<class>` reference at it. The other class's reference and set
    stay, so each platform's bake replaces only its own. A scene with nothing
    to bake for this class drops this class's set alone. */
-vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
-                                                VkrBakeryJson *scene,
-                                                const char *asset_root) {
+vkr_internal bool8_t vkr_project_prepare_lightmaps(
+    VkrProjectJob *job, VkrBakeryJson *scene, const char *asset_root,
+    VkrBakeryJson *runtime, VkrProjectLightingBake *out) {
   Arena *arena = job->arena;
-  VkrBakeryJson *bake_scene = vkr_bakery_json_clone(arena, scene);
-  vkr_bakery_json_remove(bake_scene, "lightmaps");
-  VkrBakeryJson *runtime =
-      vkr_project_effective_bake_runtime(job, bake_scene, asset_root, true_v);
-  VKR_PROJECT_TRY(runtime);
-  char revision[37];
+  char *revision = out->revision;
   vkr_project_uuid4(revision);
-  char directory[VKR_PROJECT_PATH];
-  (void)snprintf(directory, sizeof(directory), "%s/builds/%s", asset_root,
+  char *directory = out->directory;
+  (void)snprintf(directory, sizeof(out->directory), "%s/builds/%s", asset_root,
                  revision);
   if (vkr_project_exists(directory)) {
     return vkr_project_fail(job, "[Errno 17] File exists: '%s'", directory);
@@ -1568,7 +1620,7 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
   VKR_PROJECT_TRY(vkr_project_make_dirs(job, directory));
   const char *destination =
       vkr_project_printf(job, "%s/lightmaps.vklm", directory);
-  VkrProjectArguments arguments = {0};
+  out->arguments = (VkrProjectArguments){0};
   const char *fixed[] = {"bake",
                          "lightmap",
                          "--workspace-root",
@@ -1578,7 +1630,7 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
                          "--output",
                          destination};
   for (uint32_t i = 0u; i < ArrayCount(fixed); ++i) {
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, fixed[i]));
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &out->arguments, fixed[i]));
   }
   const VkrBakeryJson *requested =
       vkr_bakery_json_get(job->request, "lightmap_settings");
@@ -1604,17 +1656,18 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
         *c = '-';
       }
     }
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments,
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &out->arguments,
                                               vkr_project_strdup(job, flag)));
     VKR_PROJECT_TRY(vkr_project_argument_push(
-        job, &arguments, vkr_project_argument(job, value)));
+        job, &out->arguments, vkr_project_argument(job, value)));
   }
   /* `denoise` is a JSON boolean; the bake takes 0 or 1. */
   const VkrBakeryJson *denoise = vkr_bakery_json_get(settings, "denoise");
   if (denoise) {
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--denoise"));
+    VKR_PROJECT_TRY(
+        vkr_project_argument_push(job, &out->arguments, "--denoise"));
     VKR_PROJECT_TRY(vkr_project_argument_push(
-        job, &arguments, vkr_project_truthy(denoise) ? "1" : "0"));
+        job, &out->arguments, vkr_project_truthy(denoise) ? "1" : "0"));
   }
   /* Validation admits only null or an object here. */
   VkrBakeryJson *lightmaps = vkr_bakery_json_get(scene, "lightmaps");
@@ -1639,18 +1692,42 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
   const char *previous_set =
       vkr_project_record_artifact_file(job, previous, "lightmap", asset_root);
   if (previous_set) {
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--previous"));
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, previous_set));
+    VKR_PROJECT_TRY(
+        vkr_project_argument_push(job, &out->arguments, "--previous"));
+    VKR_PROJECT_TRY(
+        vkr_project_argument_push(job, &out->arguments, previous_set));
   }
   if (vkr_project_truthy(vkr_bakery_json_get(job->request, "full"))) {
-    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--full"));
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &out->arguments, "--full"));
   }
-  int32_t code = 0;
-  VKR_PROJECT_TRY(vkr_project_run_bakery(
-      job, arguments.items, arguments.count, "Baking lightmaps", "lightmap",
-      VKR_PROJECT_ACCEPT(VKR_PROJECT_LIGHTMAP_NO_INSTANCES) |
-          VKR_PROJECT_ACCEPT(VKR_PROJECT_BAKE_UNCHANGED),
-      &code));
+  out->label = "Baking lightmaps";
+  out->detail =
+      vkr_bakery_path_name(vkr_project_json_text(runtime, "runtime_path"));
+  out->destination = destination;
+  out->index = NULL;
+  out->settings = settings;
+  out->previous = previous;
+  return true_v;
+}
+
+/* Records a lightmap bake's result: the new set, the previous one kept, or
+   no set for this pipeline class when nothing bakes on this host. */
+vkr_internal bool8_t vkr_project_finish_lightmaps(
+    VkrProjectJob *job, VkrBakeryJson *scene, const char *asset_root,
+    const VkrProjectLightingBake *bake, int32_t code) {
+  Arena *arena = job->arena;
+  const char *directory = bake->directory;
+  const char *destination = bake->destination;
+  VkrBakeryJson *settings = bake->settings;
+  VkrBakeryJson *previous = bake->previous;
+  const char *revision = bake->revision;
+  /* Validation admits only null or an object here. */
+  VkrBakeryJson *lightmaps = vkr_bakery_json_get(scene, "lightmaps");
+  if (code != 0 && code != VKR_PROJECT_LIGHTMAP_NO_INSTANCES &&
+      code != VKR_PROJECT_BAKE_UNCHANGED) {
+    return vkr_project_fail(job, "%s failed (exit %d); see the job log",
+                            bake->label, code);
+  }
   if (code == VKR_PROJECT_BAKE_UNCHANGED) {
     /* The record, its revision and the scene's reference stay. */
     (void)vkr_project_remove_tree(directory);
@@ -1720,6 +1797,70 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
   return true_v;
 }
 
+vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
+                                                VkrBakeryJson *scene,
+                                                const char *asset_root) {
+  VkrBakeryJson *runtime = vkr_project_lighting_runtime(job, scene, asset_root);
+  VKR_PROJECT_TRY(runtime);
+  VkrProjectLightingBake bake;
+  VKR_PROJECT_TRY(
+      vkr_project_prepare_lightmaps(job, scene, asset_root, runtime, &bake));
+  int32_t code = 0;
+  VKR_PROJECT_TRY(vkr_project_run_bakery(
+      job, bake.arguments.items, bake.arguments.count, bake.label, "lightmap",
+      VKR_PROJECT_ACCEPT(VKR_PROJECT_LIGHTMAP_NO_INSTANCES) |
+          VKR_PROJECT_ACCEPT(VKR_PROJECT_BAKE_UNCHANGED),
+      &code));
+  return vkr_project_finish_lightmaps(job, scene, asset_root, &bake, code);
+}
+
+/* The volume and lightmap bakes of one job, run at once on one bake scene
+   and handing their bakers to one lighting baker, which loads the scene
+   once (`--handoff`, ADR-088 Rebakes); a bake that keeps its previous output
+   starts no baker. Their results are recorded as the separate bakes record
+   them, the volume first. */
+vkr_internal bool8_t vkr_project_bake_lighting(VkrProjectJob *job,
+                                               VkrBakeryJson *scene,
+                                               const char *asset_root) {
+  VkrBakeryJson *runtime = vkr_project_lighting_runtime(job, scene, asset_root);
+  VKR_PROJECT_TRY(runtime);
+  VkrProjectLightingBake volume;
+  VkrProjectLightingBake lightmaps;
+  VKR_PROJECT_TRY(
+      vkr_project_prepare_volume(job, scene, asset_root, runtime, &volume));
+  VKR_PROJECT_TRY(vkr_project_prepare_lightmaps(job, scene, asset_root, runtime,
+                                                &lightmaps));
+  char id[37];
+  vkr_project_uuid4(id);
+  const char *handoff =
+      vkr_project_printf(job, "%s/jobs/handoff-%s", job->workspace, id);
+  VKR_PROJECT_TRY(vkr_project_make_dirs(job, handoff));
+  VkrProjectLightingBake *bakes[2] = {&volume, &lightmaps};
+  static const char *const kinds[2] = {"diffuse", "lightmap"};
+  VkrProjectBakeryRun runs[2];
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    VKR_PROJECT_TRY(
+        vkr_project_argument_push(job, &bakes[i]->arguments, "--handoff"));
+    VKR_PROJECT_TRY(
+        vkr_project_argument_push(job, &bakes[i]->arguments, handoff));
+    runs[i] = (VkrProjectBakeryRun){
+        .arguments = bakes[i]->arguments.items,
+        .count = bakes[i]->arguments.count,
+        .label = bakes[i]->label,
+        .detail = bakes[i]->detail,
+        .exited = vkr_project_printf(job, "%s/%s.exited", handoff, kinds[i]),
+    };
+  }
+  int32_t codes[2] = {-1, -1};
+  const bool8_t ran = vkr_project_run_bakery_pair(job, runs, codes);
+  (void)vkr_project_remove_tree(handoff);
+  VKR_PROJECT_TRY(ran);
+  VKR_PROJECT_TRY(
+      vkr_project_finish_volume(job, scene, asset_root, &volume, codes[0]));
+  return vkr_project_finish_lightmaps(job, scene, asset_root, &lightmaps,
+                                      codes[1]);
+}
+
 bool8_t vkr_project_perform_bakes(VkrProjectJob *job, VkrBakeryJson *scene,
                                   const char *asset_root) {
   Arena *arena = job->arena;
@@ -1745,10 +1886,15 @@ bool8_t vkr_project_perform_bakes(VkrProjectJob *job, VkrBakeryJson *scene,
   if (!asset_root || !asset_root[0]) {
     asset_root = job->stage;
   }
-  if (vkr_project_truthy(vkr_bakery_json_get(bakes, "diffuse"))) {
+  const bool8_t diffuse =
+      vkr_project_truthy(vkr_bakery_json_get(bakes, "diffuse"));
+  const bool8_t lightmap =
+      vkr_project_truthy(vkr_bakery_json_get(bakes, "lightmap"));
+  if (diffuse && lightmap) {
+    VKR_PROJECT_TRY(vkr_project_bake_lighting(job, scene, asset_root));
+  } else if (diffuse) {
     VKR_PROJECT_TRY(vkr_project_bake_volume(job, scene, asset_root));
-  }
-  if (vkr_project_truthy(vkr_bakery_json_get(bakes, "lightmap"))) {
+  } else if (lightmap) {
     VKR_PROJECT_TRY(vkr_project_bake_lightmaps(job, scene, asset_root));
   }
   /* Probes capture last: the volume and lightmap bakes above point `scene`

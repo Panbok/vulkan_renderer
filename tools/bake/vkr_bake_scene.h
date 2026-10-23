@@ -154,6 +154,16 @@ struct VkrBakeScene {
 bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                          VkrBakeSceneError *out_error);
 
+/* The scene `vkr_bakery tool lighting-baker` loaded once for the lightmap
+   and diffuse-volume bakes of a project job (ADR-088), which a baker asked
+   to load `scene_path` with the same atmosphere cache uses instead of
+   loading its own; NULL when none is shared. The lighting baker shares it
+   while it runs the two bakers and restores what a bake changes between
+   them. */
+VkrBakeScene *vkr_bake_scene_shared(const char *scene_path,
+                                    const char *atmosphere_cache);
+void vkr_bake_scene_share(VkrBakeScene *scene, const char *scene_path);
+
 /* Builds the atmosphere `scene` would have with its sun toward the unit
    `sun_direction`, everything else as authored. `scene` has an enabled
    atmosphere. */

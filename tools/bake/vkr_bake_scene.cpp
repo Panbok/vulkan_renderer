@@ -2147,6 +2147,29 @@ bool vkr_bake_scene_build_sun_atmosphere(const VkrBakeScene *scene,
                                           scene->atmosphere_cache.c_str());
 }
 
+namespace {
+
+/* The scene vkr_bake_scene_share names, and the path it was loaded from. */
+VkrBakeScene *g_shared_scene = nullptr;
+std::string g_shared_scene_path;
+
+} // namespace
+
+VkrBakeScene *vkr_bake_scene_shared(const char *scene_path,
+                                    const char *atmosphere_cache) {
+  if (!g_shared_scene || !scene_path || g_shared_scene_path != scene_path ||
+      g_shared_scene->atmosphere_cache !=
+          (atmosphere_cache ? atmosphere_cache : "")) {
+    return nullptr;
+  }
+  return g_shared_scene;
+}
+
+void vkr_bake_scene_share(VkrBakeScene *scene, const char *scene_path) {
+  g_shared_scene = scene && scene_path ? scene : nullptr;
+  g_shared_scene_path = g_shared_scene ? scene_path : "";
+}
+
 void vkr_bake_scene_use_atmosphere(VkrBakeScene *scene,
                                    const VkrBakeAtmosphere &atmosphere) {
   scene->atmosphere = atmosphere;

@@ -3203,16 +3203,22 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
     return compare_sets(options, arena);
   }
   const auto load_start = std::chrono::steady_clock::now();
-  VkrBakeScene scene(allocator);
-  if (options.atmosphere_cache) {
-    scene.atmosphere_cache = options.atmosphere_cache;
-  }
-  VkrBakeSceneError scene_error;
-  if (!vkr_bake_scene_load(&scene, options.scene, &scene_error)) {
-    std::fprintf(stderr, "Scene preparation failed (error %u): %s: %s\n",
-                 (unsigned)scene_error, options.scene,
-                 scene.diagnostic.c_str());
-    return 1;
+  /* The lighting baker's scene when it shares one, else this bake's own. */
+  VkrBakeScene loaded(allocator);
+  VkrBakeScene *shared =
+      vkr_bake_scene_shared(options.scene, options.atmosphere_cache);
+  VkrBakeScene &scene = shared ? *shared : loaded;
+  if (!shared) {
+    if (options.atmosphere_cache) {
+      loaded.atmosphere_cache = options.atmosphere_cache;
+    }
+    VkrBakeSceneError scene_error;
+    if (!vkr_bake_scene_load(&loaded, options.scene, &scene_error)) {
+      std::fprintf(stderr, "Scene preparation failed (error %u): %s: %s\n",
+                   (unsigned)scene_error, options.scene,
+                   loaded.diagnostic.c_str());
+      return 1;
+    }
   }
   if (scene.triangles.size() > VKR_BAKE_BVH_MAX_TRIANGLES) {
     std::fprintf(stderr, "The scene has %zu triangles; a bake holds %u\n",

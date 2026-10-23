@@ -74,6 +74,10 @@ typedef struct VkrBake {
      times, and the next bake checks it again (vkr_bake_digest). */
   VkrBakeryIndex *index;
   bool8_t index_opened;
+  /* With `--handoff <dir>`, the lightmap and diffuse-volume bakes of one
+     project job run their bakers in one `tool lighting-baker` process
+     (vkr_bake_run_handed_off); NULL otherwise. */
+  const char *handoff;
 } VkrBake;
 
 #define VKR_BAKE_TRY(expression)                                               \
@@ -827,13 +831,141 @@ cleanup:
   return result;
 }
 
+/* Whether the handoff directory holds `name`. */
+vkr_internal bool8_t vkr_bake_handoff_has(VkrBake *bake, const char *name) {
+  return vkr_bakery_is_file(
+      vkr_bake_printf(bake, "%s/%s", bake->handoff, name));
+}
+
+/* Writes `text` to `name` in the handoff directory. */
+vkr_internal bool8_t vkr_bake_handoff_write(VkrBake *bake, const char *name,
+                                            const char *text) {
+  return vkr_bakery_write_file_atomic(
+      vkr_bake_printf(bake, "%s/%s", bake->handoff, name), text, strlen(text));
+}
+
+/* The exit status `<kind>.code` in the handoff directory holds. */
+vkr_internal bool8_t vkr_bake_handoff_code(VkrBake *bake, const char *kind,
+                                           int32_t *out_code) {
+  uint8_t *data = NULL;
+  uint64_t length = 0u;
+  if (!vkr_bakery_read_file(
+          vkr_bake_printf(bake, "%s/%s.code", bake->handoff, kind), 64u, &data,
+          &length)) {
+    return false_v;
+  }
+  char *end = NULL;
+  const long code = strtol((const char *)data, &end, 10);
+  const bool8_t read = end != (char *)data;
+  free(data);
+  if (read) {
+    *out_code = (int32_t)code;
+  }
+  return read;
+}
+
+/*
+ * Runs a lightmap or diffuse baker through the handoff directory of
+ * `--handoff` (tools/vkr_lighting_baker.cpp), so a project job's two
+ * bakers load their scene once. The bake writes `<kind>.args`: its log,
+ * then its baker's arguments, one per line. The lightmap bake waits for the
+ * diffuse bake's arguments and runs the lighting baker for both, or runs its
+ * own baker alone once the project job writes `diffuse.exited` for a
+ * diffuse bake that ended without a baker. The diffuse bake waits for its
+ * `diffuse.code`, or runs its own baker once the lightmap bake ended
+ * without one (`lightmap.exited`) or runs alone (`lightmap.alone`). A bake
+ * whose arguments do not fit one per line runs alone and says so.
+ * `*out_ran` is false when the caller is to run the baker itself.
+ */
+vkr_internal bool8_t vkr_bake_run_handed_off(VkrBake *bake,
+                                             const VkrBakeArguments *arguments,
+                                             const char *log, bool8_t *out_ran,
+                                             int32_t *out_code) {
+  *out_ran = false_v;
+  const char *baker = arguments->count > 1u ? arguments->items[1] : "";
+  const bool8_t lightmap = strcmp(baker, "lightmap-baker") == 0;
+  if (!lightmap && strcmp(baker, "diffuse-baker") != 0) {
+    return true_v;
+  }
+  const char *kind = lightmap ? "lightmap" : "diffuse";
+  VkrBakeryBuffer text = {0};
+  bool8_t fits = strchr(log, '\n') == NULL;
+  vkr_bakery_buffer_appendf(&text, "%s\n", log);
+  for (uint32_t i = 0u; i < arguments->count; ++i) {
+    fits = fits && strchr(arguments->items[i], '\n') == NULL;
+    vkr_bakery_buffer_appendf(&text, "%s\n", arguments->items[i]);
+  }
+  fits = fits && !text.failed &&
+         vkr_bakery_write_file_atomic(
+             vkr_bake_printf(bake, "%s/%s.args", bake->handoff, kind),
+             text.data, text.length);
+  vkr_bakery_buffer_free(&text);
+  if (!fits) {
+    (void)vkr_bake_handoff_write(bake, vkr_bake_printf(bake, "%s.alone", kind),
+                                 "\n");
+    return true_v;
+  }
+  for (;;) {
+    if (vkr_bake_is_cancelled(NULL)) {
+      return vkr_bake_fail(bake, "Bake cancelled");
+    }
+    if (lightmap && vkr_bake_handoff_has(bake, "diffuse.args")) {
+      const char *tool[] = {"tool", "lighting-baker", "--handoff",
+                            bake->handoff};
+      int32_t tool_code = -1;
+      VKR_BAKE_TRY(vkr_bake_run(
+          bake, bake->config->self_path, tool, ArrayCount(tool), bake->repo,
+          vkr_bake_printf(bake, "%s/lighting.log", bake->handoff), 0u, NULL, 0u,
+          &tool_code));
+      /* A lighting baker that stopped before a baker's status gives that
+         bake its own failure. */
+      const char *fallback =
+          vkr_bake_printf(bake, "%d\n", tool_code ? tool_code : 1);
+      int32_t unused = 0;
+      if (!vkr_bake_handoff_code(bake, "diffuse", &unused)) {
+        (void)vkr_bake_handoff_write(bake, "diffuse.code", fallback);
+      }
+      if (!vkr_bake_handoff_code(bake, "lightmap", out_code)) {
+        *out_code = tool_code ? tool_code : 1;
+      }
+      *out_ran = true_v;
+      return true_v;
+    }
+    if (lightmap && (vkr_bake_handoff_has(bake, "diffuse.exited") ||
+                     vkr_bake_handoff_has(bake, "diffuse.alone"))) {
+      (void)vkr_bake_handoff_write(bake, "lightmap.alone", "\n");
+      return true_v;
+    }
+    if (!lightmap && vkr_bake_handoff_code(bake, "diffuse", out_code)) {
+      *out_ran = true_v;
+      return true_v;
+    }
+    if (!lightmap && (vkr_bake_handoff_has(bake, "lightmap.exited") ||
+                      vkr_bake_handoff_has(bake, "lightmap.alone"))) {
+      /* The lightmap bake may have written this bake's status as it
+         ended. */
+      if (vkr_bake_handoff_code(bake, "diffuse", out_code)) {
+        *out_ran = true_v;
+      }
+      return true_v;
+    }
+    vkr_platform_sleep(20u);
+  }
+}
+
 vkr_internal bool8_t vkr_bake_run_baker(VkrBake *bake,
                                         const VkrBakeArguments *arguments,
                                         const char *log) {
   int32_t code = -1;
-  VKR_BAKE_TRY(vkr_bake_run(bake, bake->config->self_path, arguments->items,
-                            arguments->count, bake->repo, log, 0u, NULL, 0u,
-                            &code));
+  bool8_t ran = false_v;
+  if (bake->handoff) {
+    VKR_BAKE_TRY(vkr_bake_run_handed_off(bake, arguments, log, &ran, &code));
+  }
+  if (!ran) {
+    VKR_BAKE_TRY(vkr_bake_run(bake, bake->config->self_path, arguments->items,
+                              arguments->count, bake->repo, log, 0u, NULL, 0u,
+                              &code));
+  }
   bake->baker_code = code;
   if (code == 0) {
     return true_v;
@@ -1755,6 +1887,8 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
       args.cpu = true_v;
     } else if (!strcmp(flag, "--previous")) {
       ok = (args.previous = vkr_bake_value(argv, argc, &i)) != NULL;
+    } else if (!strcmp(flag, "--handoff")) {
+      ok = (bake->handoff = vkr_bake_value(argv, argc, &i)) != NULL;
     } else if (!strcmp(flag, "--full")) {
       args.full = true_v;
     } else {
@@ -2294,6 +2428,8 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
       ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.indirect_clamp);
     } else if (!strcmp(flag, "--previous")) {
       ok = (args.previous = vkr_bake_value(argv, argc, &i)) != NULL;
+    } else if (!strcmp(flag, "--handoff")) {
+      ok = (bake->handoff = vkr_bake_value(argv, argc, &i)) != NULL;
     } else if (!strcmp(flag, "--full")) {
       args.full = true_v;
     } else if (!strcmp(flag, "--reach")) {

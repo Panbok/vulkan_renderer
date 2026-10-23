@@ -235,6 +235,9 @@ cuts are in [ADR-088](088-baked-lightmap-sets.md) Rebakes (fixed costs).
 Since a second pass of those cuts the CPU BVH that placement and
 visibility read builds on threads, the same tree node for node: placement
 took 2.7 s against 6.6 s and the one-prop volume bake 27 s (2026-10-23).
+A job that also bakes lightmaps runs the diffuse baker in the lightmap
+bake's lighting baker, on the scene that loaded for both (ADR-088 Rebakes,
+one scene load per job).
 
 ### Runtime
 

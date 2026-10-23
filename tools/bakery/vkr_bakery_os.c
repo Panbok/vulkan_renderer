@@ -381,6 +381,8 @@ bool8_t vkr_bakery_read_file(const char *path, uint64_t max_bytes,
   if (!file) {
     return false_v;
   }
+  /* One read of the whole file, not one per stdio buffer refill. */
+  (void)setvbuf(file, NULL, _IONBF, 0);
   bool8_t ok = false_v;
   uint8_t *data = NULL;
   if (fseek(file, 0, SEEK_END) != 0) {
@@ -681,6 +683,8 @@ bool8_t vkr_bakery_hash_file(const char *path,
   if (!file) {
     return false_v;
   }
+  /* Each 1 MiB chunk in one read, not one per stdio buffer refill. */
+  (void)setvbuf(file, NULL, _IONBF, 0);
   uint8_t *chunk = (uint8_t *)malloc(MB(1));
   if (!chunk) {
     fclose(file);

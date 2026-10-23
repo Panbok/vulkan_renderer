@@ -443,6 +443,22 @@ bool8_t vkr_project_run_bakery(VkrProjectJob *job, const char *const *arguments,
                                uint32_t count, const char *label,
                                const char *fallback_detail, uint32_t accepted,
                                int32_t *out_code);
+/** One `vkr_bakery` run of vkr_project_run_bakery_pair: its arguments, the
+ * progress label and detail, and the file to write when it ends. */
+typedef struct VkrProjectBakeryRun {
+  const char *const *arguments;
+  uint32_t count;
+  const char *label;
+  const char *detail;
+  const char *exited;
+} VkrProjectBakeryRun;
+/** Runs two `vkr_bakery` processes at once, such as the lightmap and volume
+ * bakes that hand their bakers to one lighting baker (`--handoff`), and
+ * writes each run's `exited` file as it ends. Fails when one does not start
+ * or the job is cancelled; their exit codes are the caller's to judge. */
+bool8_t vkr_project_run_bakery_pair(VkrProjectJob *job,
+                                    const VkrProjectBakeryRun runs[2],
+                                    int32_t out_codes[2]);
 /** Runs an external program (the harness) under the same cancellation. */
 bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
                                 const char *const *arguments, uint32_t count,

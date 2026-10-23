@@ -602,6 +602,23 @@ volume, which a bake otherwise keeps when nothing it reads changed
   unchanged job took 6 s, its two bake commands 0.25 s each. The same edit
   from the same state gave the same set and volume bytes before and after
   these cuts (sha256 `0720bed0…` and `fa589a69…`).
+- **One scene load per job.** A project job that bakes both the volume and
+  the lightmaps writes one bake scene for both and runs `vkr_bakery bake
+  diffuse` and `bake lightmap` at once with `--handoff <dir>`. A bake that
+  keeps its previous output starts no baker; otherwise each writes its
+  baker's log and arguments to `<dir>/<kind>.args`, and the lightmap bake
+  runs `vkr_bakery tool lighting-baker --handoff <dir>`, which loads the
+  scene once and runs the lightmap baker and then the diffuse baker on it,
+  writing `<kind>.code` for each. The lightmap baker goes first, since the
+  diffuse baker's BVH reorders the triangles, and the scene gets back its
+  loaded atmosphere between them. A bake runs its own baker when the other
+  bake ended without handing one off (the job writes `<kind>.exited` as a
+  bake ends) or when its arguments do not fit one per line. The bakes then
+  publish as they did apart, and the job records the volume and then the
+  lightmaps. On the Level Design Test copy the one-prop edit job took 69 to
+  78 s against 90 to 96 s, the same set and volume bytes, an unchanged job
+  4 s, and the lighting baker's peak resident memory was 4.35 GB, a single
+  baker's.
 - **Bake geometry.** A model with source-node edits bakes from a variant
   of its cooked mesh with the edits patched in. The project runner keeps
   variants and model inspections in the workspace's `jobs/variants`, named
