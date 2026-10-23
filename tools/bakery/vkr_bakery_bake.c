@@ -1190,6 +1190,36 @@ vkr_internal bool8_t vkr_bake_recipe_fingerprint(
   return true_v;
 }
 
+/*
+ * Records in the sidecar of `previous`, which a bake kept because its
+ * inputs match, the scene and closure this bake read, so the next bake of
+ * the same text keeps it without a scene load (vkr_bake_closure_current).
+ * A failure leaves the sidecar as it was; the next bake reads the scene.
+ */
+vkr_internal void
+vkr_bake_refresh_closure(VkrBake *bake, const VkrBakeKind *kind,
+                         const char *previous, const char *scene_source,
+                         const char *scene, const char *bake_manifest) {
+  const bool8_t failed_before = bake->failed;
+  const char *sidecar = vkr_bake_printf(bake, "%s.bake.json", previous);
+  VkrBakeryJson *metadata = vkr_bake_load(bake, sidecar, "metadata");
+  VkrBakeryJson *manifest = NULL;
+  VkrBakeryJson *dependencies = NULL;
+  if (metadata && vkr_bake_inspect_manifest(bake, kind, bake_manifest, scene,
+                                            &manifest, &dependencies)) {
+    Arena *arena = bake->arena;
+    VkrBakeryJson *scene_record = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, scene_record, "source",
+                        vkr_bakery_json_cstr(arena, scene_source));
+    vkr_bakery_json_set(arena, scene_record, "canonical",
+                        vkr_bakery_json_cstr(arena, scene));
+    vkr_bakery_json_set(arena, metadata, "scene", scene_record);
+    vkr_bakery_json_set(arena, metadata, "dependencies", dependencies);
+    (void)vkr_bake_write_json(bake, sidecar, metadata, true_v);
+  }
+  bake->failed = failed_before;
+}
+
 vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                                       const char *output, const char *sidecar,
                                       const char *manifest_destination,
@@ -1335,6 +1365,8 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
     /* The inputs match the previous volume's index: the bake would publish
        that volume again. */
     bake->failed = failed_before;
+    vkr_bake_refresh_closure(bake, &vkr_bake_diffuse_kind, previous,
+                             args->scene, scene, bake_manifest);
     (void)vkr_bakery_remove_file(temporary);
     (void)vkr_bakery_remove_file(temporary_index);
     *out_unchanged = strcmp(previous, output) != 0;
@@ -2017,6 +2049,8 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
     /* The inputs match the previous set's index: the bake would publish
        that set again. */
     bake->failed = failed_before;
+    vkr_bake_refresh_closure(bake, &vkr_bake_lightmap_kind, previous,
+                             args->scene, scene, bake_manifest);
     (void)vkr_bakery_remove_file(temporary);
     (void)vkr_bakery_remove_file(temporary_index);
     *out_unchanged = strcmp(previous, output) != 0;
