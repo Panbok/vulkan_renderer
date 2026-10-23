@@ -80,6 +80,10 @@ struct Options {
   const char *previous_volume = nullptr;
   float reach = 4.0f;
   const char *report = nullptr;
+  /* A bake whose inputs match `previous_index` stops after its manifest and
+     exits VKR_DIFFUSE_VOLUME_KEPT_EXIT; `vkr_bakery bake diffuse` keeps the
+     previous volume. */
+  bool keep_if_unchanged = false;
 };
 
 bool number(const char *text, float *out) {
@@ -111,7 +115,7 @@ void usage() {
                "--previous-index <inputs.vkli> reports whether the inputs "
                "match it; with --previous-volume <volume.vkdv> a bake gathers "
                "only the probes the edits reach [--reach 4] [--report "
-               "file.json]\n"
+               "file.json] [--keep-if-unchanged]\n"
                "Compare: --compare <a.vkdv> <b.vkdv> reports how the bands "
                "differ probe by probe\n");
 }
@@ -180,6 +184,8 @@ bool parse(int argc, char **argv, Options *out) {
         return false;
     } else if (std::strcmp(argv[i], "--report") == 0 && i + 1 < argc) {
       out->report = argv[++i];
+    } else if (std::strcmp(argv[i], "--keep-if-unchanged") == 0) {
+      out->keep_if_unchanged = true;
     } else
       return false;
   }
@@ -1769,7 +1775,11 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
     return 0;
   if (!layout.brick_count) {
     std::fprintf(stderr, "The scene has no geometry to place probes near\n");
-    return 1;
+    return VKR_DIFFUSE_VOLUME_NO_BRICKS_EXIT;
+  }
+  if (options.keep_if_unchanged && matches_previous == 1) {
+    std::printf("kept: the inputs match the previous volume's index\n");
+    return VKR_DIFFUSE_VOLUME_KEPT_EXIT;
   }
   if (!prepare_visibility(options, bvh, materials, &volume)) {
     return 1;

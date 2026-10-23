@@ -854,41 +854,6 @@ vkr_internal bool8_t vkr_bake_run_inspect(VkrBake *bake,
   return vkr_bake_run_recipe_inspect(bake, &recipe, job, name, out_manifest);
 }
 
-vkr_internal bool8_t vkr_bake_manifest_spacing(VkrBake *bake,
-                                               const VkrBakeryJson *manifest,
-                                               const VkrBakeDiffuse *args,
-                                               float64_t *out) {
-  static const char *const keys[] = {"spacing", "probe_spacing"};
-  for (uint32_t k = 0u; k < ArrayCount(keys); ++k) {
-    const VkrBakeryJson *candidate = vkr_bakery_json_get(manifest, keys[k]);
-    float64_t spacing[3];
-    float64_t single = 0.0;
-    if (vkr_bake_number(candidate, &single)) {
-      spacing[0] = spacing[1] = spacing[2] = single;
-    } else if (candidate && candidate->type == VKR_BAKERY_JSON_ARRAY &&
-               candidate->count == 3u) {
-      bool8_t numbers = true_v;
-      uint32_t i = 0u;
-      for (const VkrBakeryJson *item = candidate->first; item;
-           item = item->next, ++i) {
-        numbers = numbers && vkr_bake_number(item, &spacing[i]);
-      }
-      if (!numbers) {
-        continue;
-      }
-    } else {
-      continue;
-    }
-    if (isfinite(spacing[0]) && isfinite(spacing[1]) && isfinite(spacing[2]) &&
-        spacing[0] > 0.0 && spacing[1] > 0.0 && spacing[2] > 0.0) {
-      *out = fmin(spacing[0], fmin(spacing[1], spacing[2]));
-      return true_v;
-    }
-  }
-  return vkr_bake_fail(bake, "Inspect manifest lacks probe spacing for the "
-                             "default photon radius");
-}
-
 vkr_internal bool8_t vkr_bake_job_directory(VkrBake *bake,
                                             const char *workspace_root,
                                             const char *prefix,
@@ -1211,14 +1176,6 @@ vkr_internal bool8_t vkr_bake_recipe_fingerprint(
   return true_v;
 }
 
-/* Whether an inspection manifest says its inputs match the previous
-   output's input index. */
-vkr_internal bool8_t vkr_bake_matches_previous(const VkrBakeryJson *manifest) {
-  const VkrBakeryJson *matches =
-      vkr_bakery_json_get(manifest, "matches_previous");
-  return matches && matches->type == VKR_BAKERY_JSON_BOOL && matches->boolean;
-}
-
 vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                                       const char *output, const char *sidecar,
                                       const char *manifest_destination,
@@ -1227,7 +1184,6 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                                       bool8_t *out_unchanged) {
   char scene[VKR_BAKE_PATH];
   char job[VKR_BAKE_PATH];
-  char inspect_path[VKR_BAKE_PATH];
   VKR_BAKE_TRY(vkr_bake_validate_recipe(bake, args));
   VKR_BAKE_TRY(vkr_bake_existing_file(bake, args->scene, "--scene", scene));
   VKR_BAKE_TRY(vkr_bake_job_directory(bake, args->workspace_root, "diffuse_",
@@ -1278,25 +1234,6 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
       bake->failed = failed_before;
     }
   }
-  VkrBakeArguments inspection = {0};
-  VKR_BAKE_TRY(
-      vkr_bake_recipe_arguments(bake, args, scene, false_v, &inspection));
-  if (indexed) {
-    vkr_bake_push(&inspection, "--previous-index");
-    vkr_bake_push(&inspection, previous_index);
-  }
-  if (!vkr_bake_run_recipe_inspect(bake, &inspection, job, "inspect",
-                                   inspect_path)) {
-    /* Bounds too large for the brick budget at this spacing leave the scene
-       without a volume, as a scene without geometry does. */
-    *out_too_large = bake->baker_code == VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT;
-    return false_v;
-  }
-  VkrBakeryJson *inspect = NULL;
-  VkrBakeryJson *dependencies = NULL;
-  VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind,
-                                         inspect_path, scene, &inspect,
-                                         &dependencies));
   char resolved_targets[3][VKR_BAKE_PATH];
   const char *targets[] = {output, sidecar, manifest_destination};
   for (uint32_t i = 0u; i < 3u; ++i) {
@@ -1308,44 +1245,28 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
       }
     }
   }
-  VKR_BAKE_TRY(vkr_bake_protect(
-      bake, dependencies, targets, ArrayCount(targets),
-      "Output, metadata, or manifest would overwrite a bake source asset"));
-  /* A scene without geometry places no brick; it keeps environment and
-     reflection-probe diffuse lighting. */
-  int64_t bricks = 0;
-  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "bricks"), &bricks);
-  if (!bricks) {
-    *out_no_volume = true_v;
-    return vkr_bake_fail(bake,
-                         "the scene has no geometry to place probes near, so "
-                         "it keeps environment and reflection-probe diffuse "
-                         "lighting. Inspection: %s",
-                         job);
-  }
-  /* A previous volume baked with this fingerprint from inputs the
-     inspection found matching is current: the bake would publish it
-     again. */
+  /* The recipe's photon radius without an explicit one: a quarter of the
+     probe spacing the baker reports, which prints its float spacing to six
+     significant digits. */
   float64_t photon_radius = args->photon_radius;
   if (!args->has_photon_radius) {
-    float64_t spacing = 0.0;
-    VKR_BAKE_TRY(vkr_bake_manifest_spacing(bake, inspect, args, &spacing));
-    photon_radius = spacing * 0.25;
+    char spacing[32];
+    (void)snprintf(spacing, sizeof(spacing), "%g",
+                   (double)(float)args->spacing);
+    photon_radius = strtod(spacing, NULL) * 0.25;
   }
   VkrBakeryJson *recipe = vkr_bake_recipe_record(bake, args, photon_radius);
   char fingerprint[72];
   VKR_BAKE_TRY(vkr_bake_recipe_fingerprint(
       bake, "diffuse", VKR_BAKERY_IDENTITY_DIFFUSE, VKR_DIFFUSE_VOLUME_VERSION,
       recipe, fingerprint));
+  /* One baker run reads the scene once: with a previous volume this baker
+     made with this recipe and still the file its sidecar describes, inputs
+     that match its index stop the run there and keep the volume. */
   char previous_sha256[72];
-  if (indexed && vkr_bake_matches_previous(inspect) &&
-      vkr_bake_previous_current(bake, previous, fingerprint, previous_sha256)) {
-    *out_unchanged = strcmp(previous, output) != 0;
-    printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":\"%s\","
-           "\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
-           previous, previous_sha256, fingerprint, job);
-    return true_v;
-  }
+  const bool8_t keep =
+      indexed &&
+      vkr_bake_previous_current(bake, previous, fingerprint, previous_sha256);
   char output_directory[VKR_BAKE_PATH];
   vkr_bakery_path_parent(output_directory, sizeof(output_directory), output);
   if (!vkr_bakery_make_directories(output_directory)) {
@@ -1382,19 +1303,52 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
     vkr_bake_push(&arguments, "--previous-index");
     vkr_bake_push(&arguments, previous_index);
   }
+  if (keep) {
+    vkr_bake_push(&arguments, "--keep-if-unchanged");
+  }
   VKR_BAKE_TRY(vkr_bake_write_command(
       bake, vkr_bake_printf(bake, "%s/bake.command.json", job), &arguments));
+  const bool8_t failed_before = bake->failed;
   bool8_t ok = vkr_bake_run_baker(bake, &arguments,
                                   vkr_bake_printf(bake, "%s/bake.log", job));
-  VkrBakeryJson *baked = NULL;
-  VkrBakeryJson *after = NULL;
-  VkrBakeryJson *dvol = NULL;
-  ok = ok && vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind,
-                                       bake_manifest, scene, &baked, &after);
-  if (ok && !vkr_bakery_json_equal(dependencies, after)) {
-    ok = vkr_bake_fail(bake, "Bake source closure changed while the volume was "
-                             "prepared");
+  if (!ok && keep && bake->baker_code == VKR_DIFFUSE_VOLUME_KEPT_EXIT) {
+    /* The inputs match the previous volume's index: the bake would publish
+       that volume again. */
+    bake->failed = failed_before;
+    (void)vkr_bakery_remove_file(temporary);
+    (void)vkr_bakery_remove_file(temporary_index);
+    *out_unchanged = strcmp(previous, output) != 0;
+    printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":\"%s\","
+           "\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
+           previous, previous_sha256, fingerprint, job);
+    return true_v;
   }
+  if (!ok) {
+    /* Bounds too large for the brick budget at this spacing leave the scene
+       without a volume, as a scene without geometry, which places no
+       brick, does; it keeps environment and reflection-probe diffuse
+       lighting. */
+    *out_too_large = bake->baker_code == VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT;
+    if (bake->baker_code == VKR_DIFFUSE_VOLUME_NO_BRICKS_EXIT) {
+      bake->failed = failed_before;
+      *out_no_volume = true_v;
+      return vkr_bake_fail(bake,
+                           "the scene has no geometry to place probes near, "
+                           "so it keeps environment and reflection-probe "
+                           "diffuse lighting. Inspection: %s",
+                           job);
+    }
+    return false_v;
+  }
+  VkrBakeryJson *baked = NULL;
+  VkrBakeryJson *dependencies = NULL;
+  VkrBakeryJson *dvol = NULL;
+  ok = ok &&
+       vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind, bake_manifest,
+                                 scene, &baked, &dependencies);
+  ok = ok && vkr_bake_protect(bake, dependencies, targets, ArrayCount(targets),
+                              "Output, metadata, or manifest would overwrite "
+                              "a bake source asset");
   ok = ok && (dvol = vkr_bake_verify_dvol(bake, temporary)) != NULL;
   if (ok && !vkr_bake_closure_unchanged(bake, dependencies)) {
     ok = vkr_bake_fail(bake, "Bake source closure changed before publication");
@@ -1920,6 +1874,12 @@ cleanup:
   return result;
 }
 
+/* The lightmap baker's exit codes for a bake with nothing for this host's
+   class to hold, and for inputs that match the previous set's index under
+   --keep-if-unchanged (tools/vkr_lightmap_baker.cpp). */
+#define VKR_BAKE_LIGHTMAP_NOTHING_EXIT 3
+#define VKR_BAKE_LIGHTMAP_KEPT_EXIT 6
+
 vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
                                        const VkrBakeLightmap *args,
                                        const char *output, const char *sidecar,
@@ -1928,7 +1888,6 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
                                        bool8_t *out_unchanged) {
   char scene[VKR_BAKE_PATH];
   char job[VKR_BAKE_PATH];
-  char inspect_path[VKR_BAKE_PATH];
   VKR_BAKE_TRY(vkr_bake_lightmap_validate(bake, args));
   VKR_BAKE_TRY(vkr_bake_existing_file(bake, args->scene, "--scene", scene));
   VKR_BAKE_TRY(vkr_bake_job_directory(bake, args->workspace_root, "lightmap_",
@@ -1967,18 +1926,6 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
            previous, current_sha256, fingerprint, job);
     return true_v;
   }
-  VkrBakeArguments inspection = recipe;
-  if (indexed) {
-    vkr_bake_push(&inspection, "--previous-index");
-    vkr_bake_push(&inspection, previous_index);
-  }
-  VKR_BAKE_TRY(vkr_bake_run_recipe_inspect(bake, &inspection, job, "inspect",
-                                           inspect_path));
-  VkrBakeryJson *inspect = NULL;
-  VkrBakeryJson *dependencies = NULL;
-  VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind,
-                                         inspect_path, scene, &inspect,
-                                         &dependencies));
   const char *targets[] = {output, sidecar, manifest_destination};
   char resolved_targets[3][VKR_BAKE_PATH];
   for (uint32_t i = 0u; i < 3u; ++i) {
@@ -1990,46 +1937,13 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
       }
     }
   }
-  VKR_BAKE_TRY(vkr_bake_protect(
-      bake, dependencies, targets, ArrayCount(targets),
-      "Output, metadata, or manifest would overwrite a bake source asset"));
-  int64_t instances = 0;
-  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "lightmap_instances"),
-                     &instances);
-  if (instances == 0) {
-    *out_nothing = true_v;
-    return vkr_bake_fail(bake,
-                         "no scene model carries lightmap UVs; cook meshes "
-                         "with lightmap_texels_per_unit. Inspection: %s",
-                         job);
-  }
-  /* A desktop host bakes only lamp groups (ADR-104), so a scene without
-     static lamps has nothing to bake there. */
-  int64_t baked_layers = 1;
-  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "baked_layers"),
-                     &baked_layers);
-  if (baked_layers == 0) {
-    *out_nothing = true_v;
-    return vkr_bake_fail(bake,
-                         "the scene has no static lamps or emission, and "
-                         "this host's desktop pipeline bakes only their "
-                         "light. "
-                         "Inspection: %s",
-                         job);
-  }
-
-  /* A previous set baked with this fingerprint from inputs the inspection
-     found matching is current: the bake would publish it again. */
+  /* One baker run reads the scene once: with a previous set this baker made
+     with this recipe and still the file its sidecar describes, inputs that
+     match its index stop the run there and keep the set. */
   char previous_sha256[72];
-  if (indexed && vkr_bake_matches_previous(inspect) &&
-      vkr_bake_previous_current(bake, previous, fingerprint, previous_sha256)) {
-    *out_unchanged = strcmp(previous, output) != 0;
-    printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":\"%s\","
-           "\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
-           previous, previous_sha256, fingerprint, job);
-    return true_v;
-  }
-
+  const bool8_t keep =
+      indexed &&
+      vkr_bake_previous_current(bake, previous, fingerprint, previous_sha256);
   char output_directory[VKR_BAKE_PATH];
   vkr_bakery_path_parent(output_directory, sizeof(output_directory), output);
   if (!vkr_bakery_make_directories(output_directory)) {
@@ -2065,19 +1979,54 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
     vkr_bake_push(&arguments, "--reach");
     vkr_bake_push(&arguments, vkr_bake_printf(bake, "%.9g", args->reach));
   }
+  if (keep) {
+    vkr_bake_push(&arguments, "--keep-if-unchanged");
+  }
   VKR_BAKE_TRY(vkr_bake_write_command(
       bake, vkr_bake_printf(bake, "%s/bake.command.json", job), &arguments));
+  const bool8_t failed_before = bake->failed;
   bool8_t ok = vkr_bake_run_baker(bake, &arguments,
                                   vkr_bake_printf(bake, "%s/bake.log", job));
-  VkrBakeryJson *baked = NULL;
-  VkrBakeryJson *after = NULL;
-  VkrBakeryJson *vklm = NULL;
-  ok = ok && vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind,
-                                       bake_manifest, scene, &baked, &after);
-  if (ok && !vkr_bakery_json_equal(dependencies, after)) {
-    ok = vkr_bake_fail(bake, "Bake source closure changed while the lightmaps "
-                             "were prepared");
+  if (!ok && keep && bake->baker_code == VKR_BAKE_LIGHTMAP_KEPT_EXIT) {
+    /* The inputs match the previous set's index: the bake would publish
+       that set again. */
+    bake->failed = failed_before;
+    (void)vkr_bakery_remove_file(temporary);
+    (void)vkr_bakery_remove_file(temporary_index);
+    *out_unchanged = strcmp(previous, output) != 0;
+    printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":\"%s\","
+           "\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
+           previous, previous_sha256, fingerprint, job);
+    return true_v;
   }
+  if (!ok && bake->baker_code == VKR_BAKE_LIGHTMAP_NOTHING_EXIT) {
+    /* No scene model carries lightmap UVs, or a desktop host, which bakes
+       only lamp groups (ADR-104), finds no static lamp or emission. */
+    bake->failed = failed_before;
+    VkrBakeryJson *manifest = vkr_bake_load(bake, bake_manifest, "manifest");
+    bake->failed = failed_before;
+    int64_t instances = 0;
+    (void)vkr_bake_int(vkr_bakery_json_get(manifest, "lightmap_instances"),
+                       &instances);
+    *out_nothing = true_v;
+    return vkr_bake_fail(
+        bake,
+        instances == 0
+            ? "no scene model carries lightmap UVs; cook meshes with "
+              "lightmap_texels_per_unit. Inspection: %s"
+            : "the scene has no static lamps or emission, and this host's "
+              "desktop pipeline bakes only their light. Inspection: %s",
+        job);
+  }
+  VkrBakeryJson *baked = NULL;
+  VkrBakeryJson *dependencies = NULL;
+  VkrBakeryJson *vklm = NULL;
+  ok = ok &&
+       vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind, bake_manifest,
+                                 scene, &baked, &dependencies);
+  ok = ok && vkr_bake_protect(bake, dependencies, targets, ArrayCount(targets),
+                              "Output, metadata, or manifest would overwrite "
+                              "a bake source asset");
   ok = ok && (vklm = vkr_bake_verify_vklm(bake, temporary)) != NULL;
   if (ok && !vkr_bake_closure_unchanged(bake, dependencies)) {
     ok = vkr_bake_fail(bake, "Bake source closure changed before publication");

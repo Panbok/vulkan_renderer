@@ -80,6 +80,13 @@ constexpr uint32_t kDirectSamples = 8u;
 /* World distance within which a first bounce occludes for the ambient
    occlusion every tiled layer's alpha carries (ADR-088). */
 constexpr float32_t kOcclusionRadius = 1.0f;
+/* Exit codes `vkr_bakery bake lightmap` reads: nothing for this host's
+   class to bake (no lightmapped instance, or on the desktop class no
+   static lamp or emission), and inputs that match the previous index
+   under --keep-if-unchanged. */
+constexpr int kNothingExit = 3;
+constexpr int kKeptExit = 6;
+
 /* World distance within which an incremental bake relights indirect light
    around a changed instance or past a changed lamp's range
    (vkr_bake_lightmap_plan_incremental); see ADR-088 for the error it
@@ -187,6 +194,10 @@ struct Options {
   float32_t reach = kIncrementalReach;
   /* JSON report of how the set was produced. */
   const char *report = nullptr;
+  /* A bake whose inputs match the previous index stops after writing its
+     manifest and exits kKeptExit: `vkr_bakery bake lightmap` keeps the
+     previous set, having checked it is the one the index describes. */
+  bool keep_if_unchanged = false;
   /* Two sets whose matching instances' irradiance --compare measures. */
   const char *compare[2] = {nullptr, nullptr};
 };
@@ -210,7 +221,8 @@ void usage() {
       "[--indirect-clamp <luminance, 0 off>] [--rr-start <depth, 0 off>] "
       "[--buried-backface <fraction, 0 off>] [--dump-texels <csv>] "
       "[--index <inputs.vkli>] [--previous-set <set.vklm> --previous-index "
-      "<inputs.vkli>] [--reach <world units>] [--report <json>]\n"
+      "<inputs.vkli>] [--reach <world units>] [--report <json>] "
+      "[--keep-if-unchanged]\n"
       "Set comparison: --compare <a.vklm> <b.vklm>\n");
 }
 
@@ -241,6 +253,10 @@ bool parse(int argc, char **argv, Options *options) {
     const char *flag = argv[i];
     if (std::strcmp(flag, "--inspect") == 0) {
       options->inspect = true;
+      continue;
+    }
+    if (std::strcmp(flag, "--keep-if-unchanged") == 0) {
+      options->keep_if_unchanged = true;
       continue;
     }
     if (std::strcmp(flag, "--compare") == 0) {
@@ -3267,11 +3283,17 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
     return 0;
   }
   if (options.output) {
-    if (planned == 3) {
+    if (planned == 3 || layout.rects.empty()) {
       std::fprintf(stderr,
-                   "The scene has no static lamps or emission, so a desktop "
-                   "lightmap set has nothing to hold\n");
-      return 3;
+                   layout.rects.empty()
+                       ? "The scene has no lightmapped instances\n"
+                       : "The scene has no static lamps or emission, so a "
+                         "desktop lightmap set has nothing to hold\n");
+      return kNothingExit;
+    }
+    if (options.keep_if_unchanged && matches_previous == 1) {
+      std::printf("kept: the inputs match the previous set's index\n");
+      return kKeptExit;
     }
     return bake_set(options, scene, arena, layout, plan, inputs);
   }

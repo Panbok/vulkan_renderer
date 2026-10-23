@@ -45,6 +45,11 @@ extern "C" {
    entries or bricks than these limits allow at the given spacing; vkr_bakery
    skips the volume rather than failing the bake. */
 #define VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT 4
+/* Exit status of a diffuse bake whose scene has no geometry to place a
+   brick near, and of one under --keep-if-unchanged whose inputs match the
+   previous volume's index; vkr_bakery skips or keeps the volume. */
+#define VKR_DIFFUSE_VOLUME_NO_BRICKS_EXIT 3
+#define VKR_DIFFUSE_VOLUME_KEPT_EXIT 6
 
 /* An indirection entry names the brick that covers it and that brick's
    level, or is empty: no probe covers it and lighting keeps the environment
