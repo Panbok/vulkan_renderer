@@ -3078,7 +3078,8 @@ std::string instance_label(const VkrLightmapInstance &instance) {
  * hold with one rectangle size, whether its tiles are identical and how its
  * luminance differs. Per plane it prints the luminance-weighted error (the
  * summed absolute luminance difference over the summed luminance of `a`),
- * the mean per-instance relative error, and the worst instances by their
+ * the luminance ratio (the summed luminance of `b` over that of `a`), the
+ * mean per-instance relative error, and the worst instances by their
  * difference relative to `max(mean_a, floor)`, where the floor (1% of the
  * plane's mean luminance) keeps a near-black instance from ranking first
  * on a tiny absolute difference; each line names the instance's key, its
@@ -3125,6 +3126,7 @@ int compare_sets(const Options &options, Arena *arena) {
     uint32_t identical = 0u;
     std::vector<InstanceDifference> compared;
     float64_t luminance_sum = 0.0;
+    float64_t luminance_b_sum = 0.0;
     float64_t difference_sum = 0.0;
     float64_t texel_sum = 0.0;
     for (uint32_t i = 0u; i < sets[0].instance_count; ++i) {
@@ -3151,6 +3153,7 @@ int compare_sets(const Options &options, Arena *arena) {
       identical += a == b ? 1u : 0u;
       const float64_t texels = (float64_t)ra.width * ra.height;
       luminance_sum += entry.difference.mean_a * texels;
+      luminance_b_sum += entry.difference.mean_b * texels;
       difference_sum += entry.difference.mean_difference * texels;
       texel_sum += texels;
       compared.push_back(entry);
@@ -3172,11 +3175,12 @@ int compare_sets(const Options &options, Arena *arena) {
     worst = std::max(worst, plane_worst);
     std::printf(
         "compare plane=%u layer=%u kind=%s instances=%zu identical=%u "
-        "luminance_weighted_error=%.6f "
+        "luminance_weighted_error=%.6f luminance_ratio=%.6f "
         "mean_instance_relative_error=%.6f "
         "worst_instance_relative_error=%.6f\n",
         p, plane.layer, direct ? "lamp_direct" : "irradiance", compared.size(),
         identical, luminance_sum > 0.0 ? difference_sum / luminance_sum : 0.0,
+        luminance_sum > 0.0 ? luminance_b_sum / luminance_sum : 1.0,
         compared.empty() ? 0.0 : relative_sum / compared.size(), plane_worst);
     for (uint32_t w = 0u; w < kWorstInstances && w < compared.size(); ++w) {
       const InstanceDifference &entry = compared[w];

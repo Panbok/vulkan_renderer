@@ -134,9 +134,13 @@ its lamp evaluates `2c` instead of `3c`.
 - Each probe's paths are seeded from its lattice position, so a CPU volume is
   byte-identical for any thread count ([ADR-077](077-asset-build-system.md)).
   A Metal volume is byte-identical for any batching on a scene without cutout
-  or blended surfaces, but two Metal bakes of the Level Design Test differ:
-  shadow rays accept any hit, so through such surfaces the order of hits, and
-  with it the random draws, varies between runs.
+  or blended surfaces. Before 2026-10-23 two Metal bakes of the Level Design
+  Test differed: the closest of coincident surfaces, and with it the random
+  draws after it, followed the visit order of each build of the
+  acceleration structure. The probe gather now shares the lightmap gather's
+  build-independent closest hit and shadow test
+  ([ADR-088](088-baked-lightmap-sets.md) GPU transport); a repeat volume
+  bake of the Level Design Test is not yet compared.
 - A scene whose bounds need more indirection entries or bricks than the
   limits allow at its spacing gets no volume: the diffuse baker exits with
   `VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT`, `vkr_bakery bake diffuse` with

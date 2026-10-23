@@ -352,11 +352,16 @@ struct Stop {
 };
 
 /* The closest triangle within (kEpsilon, max_distance) that is not a cutout
-   texel below its cutoff, in one traversal: opaque triangles commit as the
-   traversal finds them, and cutout and blended candidates commit unless the
-   cutout passes. Blended surfaces are resolved by the caller, because their
-   stochastic pass must be drawn once per surface. With `any`, the first such
-   triangle found ends the traversal instead of the closest. */
+   texel below its cutoff, in one traversal. Blended surfaces are resolved by
+   the caller, because their stochastic pass must be drawn once per surface.
+   With `any`, the first such triangle found ends the traversal instead of
+   the closest; opaque triangles then commit as the traversal finds them.
+   Coincident surfaces, such as a lens on its fixture's face, meet a ray at
+   one distance, and the one an opaque traversal commits follows the order a
+   build of the acceleration structure visits them in, which differs from
+   build to build. A closest query therefore sees every triangle as a
+   candidate and keeps the lowest scene triangle among those at the closest
+   distance, so a bake does not depend on the build. */
 static Stop find_stop(thread const Scene &scene, float3 origin,
                       float3 direction, float max_distance, bool any) {
   ray r;
@@ -366,8 +371,13 @@ static Stop find_stop(thread const Scene &scene, float3 origin,
   r.max_distance = max_distance;
   intersection_params params;
   params.accept_any_intersection(any);
+  if (!any) {
+    params.force_opacity(forced_opacity::non_opaque);
+  }
   intersection_query<triangle_data> query;
   query.reset(r, scene.as, params);
+  float best_distance = INFINITY;
+  uint best_triangle = 0xffffffffu;
   while (query.next()) {
     if (query.get_candidate_intersection_type() !=
         intersection_type::triangle) {
@@ -376,10 +386,17 @@ static Stop find_stop(thread const Scene &scene, float3 origin,
     uint triangle =
         scene_triangle(scene, query.get_candidate_geometry_id(),
                        query.get_candidate_primitive_id());
+    float candidate = query.get_candidate_triangle_distance();
+    if (!any && (candidate > best_distance ||
+                 (candidate == best_distance && triangle > best_triangle))) {
+      continue;
+    }
     if (cutout_passes(scene, triangle,
                       query.get_candidate_triangle_barycentric_coord())) {
       continue;
     }
+    best_distance = candidate;
+    best_triangle = triangle;
     query.commit_triangle_intersection();
   }
   Stop stop;
@@ -441,12 +458,50 @@ static Hit trace_surface(thread const Scene &scene, float3 origin,
   return result;
 }
 
+/* Whether a surface that does not tint shadows, other than a cutout texel
+   below its cutoff, lies within (kEpsilon, distance). Every triangle is a
+   candidate, so the answer does not depend on the order the traversal meets
+   them in. */
+static bool finds_blocker(thread const Scene &scene, float3 origin,
+                          float3 direction, float distance) {
+  ray r;
+  r.origin = origin;
+  r.direction = direction;
+  r.min_distance = kEpsilon;
+  r.max_distance = distance;
+  intersection_params params;
+  params.force_opacity(forced_opacity::non_opaque);
+  params.accept_any_intersection(true);
+  intersection_query<triangle_data> query;
+  query.reset(r, scene.as, params);
+  while (query.next()) {
+    if (query.get_candidate_intersection_type() !=
+        intersection_type::triangle) {
+      continue;
+    }
+    uint triangle =
+        scene_triangle(scene, query.get_candidate_geometry_id(),
+                       query.get_candidate_primitive_id());
+    if (scene.materials[scene.triangle_materials[triangle]].misc.w != 0.0f ||
+        cutout_passes(scene, triangle,
+                      query.get_candidate_triangle_barycentric_coord())) {
+      continue;
+    }
+    query.commit_triangle_intersection();
+  }
+  return query.get_committed_intersection_type() ==
+         intersection_type::triangle;
+}
+
 /* Transmittance toward a light, as the CPU integrator's shadow walk: cutout
    surfaces below their cutoff pass; thin transmissive or index-matched
    surfaces tint by their glass color, blended ones mixed with (1 - alpha);
    anything else blocks. Any blocker zeroes the product whatever its order, so
    one any-hit traversal settles a segment unless the surface it finds tints;
-   then the segment is walked in order. */
+   then finds_blocker looks for a blocker among every triangle, and only a
+   segment without one is walked in order. The walk steps kEpsilon past each
+   surface, so it alone would miss a blocker coincident with a tinted surface
+   whenever the any-hit traversal met the tinted one first. */
 static float3 shadow_transmittance(thread const Scene &scene, float3 origin,
                                    float3 direction, float distance) {
   Stop any = find_stop(scene, origin, direction, distance, true);
@@ -456,6 +511,9 @@ static float3 shadow_transmittance(thread const Scene &scene, float3 origin,
   GpuMaterial any_source =
       scene.materials[scene.triangle_materials[any.triangle]];
   if (any_source.misc.w == 0.0f && uint(any_source.misc.z) != 2u) {
+    return float3(0.0f);
+  }
+  if (finds_blocker(scene, origin, direction, distance)) {
     return float3(0.0f);
   }
   float3 transmittance = float3(1.0f);

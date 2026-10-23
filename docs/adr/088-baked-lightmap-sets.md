@@ -238,8 +238,20 @@ holds two geometries: opaque triangles, and cutout triangles whose lowest
 alpha can fall below their cutoff. Rays test those as candidates in one
 traversal; blended and tinting surfaces stop the traversal and are resolved
 after it, because their pass must be drawn once per surface. A shadow ray
-first accepts any stop, and walks its segment in order only when that stop
-tints. It is a lightmap subset of the ADR-054 transport:
+first accepts any stop. When that stop tints, a second traversal looks for
+a blocker among every triangle, and only a segment without one is walked in
+order. A ray toward the closest surface takes every triangle, opaque ones
+included, as a candidate and keeps the lowest scene triangle among those at
+the closest distance (2026-10-23). Coincident surfaces, such as a lens brush
+on its fixture's face, meet a ray at one distance; before, the traversal
+committed the first opaque one it met, and that order differs between two
+builds of the acceleration structure, even of the same triangles in one
+process, so a full bake of the same inputs differed from the last wherever
+such a hit carried a lamp's emission. Likewise the shadow walk, which steps
+past each surface, missed a blocker coincident with a tinted surface
+whenever the any-hit traversal met the tinted one first. The extra
+candidates cost about 7% of the Metal gather time on the Level Design Test
+(evidence below). It is a lightmap subset of the ADR-054 transport:
 
 - a bounce scatters through one cosine lobe whose albedo is the CPU BSDF's
   split-sum specular reflectance R plus the diffuse residual
@@ -984,6 +996,28 @@ Unavailable: a Windows or Vulkan host.
   An incremental set therefore differs from a full bake no more than two
   full bakes differ there; its copied instances are the first full bake's
   bytes. A large-occluder edit and any Vulkan run are pending.
+- The cause of those outliers (APFS copy of the Level Design Test, 16
+  samples, Release, M1 Pro, 2026-10-23): the closest-hit and shadow-walk
+  order dependence described under GPU transport, not the lamp count, a
+  range cutoff or the missing indirect clamp. Gathering one page's first
+  200,000 texels again in the same process gave identical bytes; in each of
+  five new GPU contexts, 6 to 30 texels of the lamp group differed (by 1 to
+  4% each), and none once the first context's acceleration structure was
+  shared. Before the change, two full bakes of the same inputs left 15% of
+  instances per sun key and 18% in the lamp group with different tiles,
+  worst instances 24 to 51% per sun key and 131% in the lamp group; with
+  one prop turned by 3×10⁻⁸, the lamp group's worst instance was 1,208%
+  (a 24×32 texel rectangle at 0.043 against 0.558). After it, two full
+  bakes of the same inputs had identical tiles for 6,318 of 6,321
+  instances (worst 0.04%), and the turned prop's bake for all but one
+  instance per sun key and 12 in the lamp group (worst 0.009%). Against the
+  old kernel's bake of the same inputs, the luminance-weighted difference
+  is 0.8% per sun key and 1.5% in the lamp group, and the summed luminance
+  is 0.6 to 0.8% lower per sun key, 1.0% lower in the lamp group and 0.03%
+  higher in the lamp-direct plane: a coincident blocker now shadows a tinted
+  surface, and each formerly unstable instance keeps one of its former
+  values. No default changed; the indirect clamp stays off. The gather took
+  439 s against 408 s and the full bake 736 s against 660 s.
 
 ## Revisit when
 

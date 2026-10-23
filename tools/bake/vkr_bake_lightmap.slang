@@ -396,11 +396,16 @@ struct Stop
 };
 
 /* The closest triangle within (kEpsilon, max_distance) that is not a cutout
-   texel below its cutoff, in one traversal: opaque triangles commit as the
-   traversal finds them, and cutout and blended candidates commit unless the
-   cutout passes. Blended surfaces are resolved by the caller, because their
-   stochastic pass must be drawn once per surface. With `any`, the first such
-   triangle found ends the traversal instead of the closest. */
+   texel below its cutoff, in one traversal. Blended surfaces are resolved by
+   the caller, because their stochastic pass must be drawn once per surface.
+   With `any`, the first such triangle found ends the traversal instead of
+   the closest; opaque triangles then commit as the traversal finds them.
+   Coincident surfaces, such as a lens on its fixture's face, meet a ray at
+   one distance, and the one an opaque traversal commits follows the order a
+   build of the acceleration structure visits them in, which differs from
+   build to build. A closest query therefore sees every triangle as a
+   candidate and keeps the lowest scene triangle among those at the closest
+   distance, so a bake does not depend on the build. */
 Stop find_stop(Transport transport, float3 origin, float3 direction,
                float max_distance, bool any)
 {
@@ -412,8 +417,10 @@ Stop find_stop(Transport transport, float3 origin, float3 direction,
     RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(scene_as,
                          any ? RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-                             : RAY_FLAG_NONE,
+                             : RAY_FLAG_FORCE_NON_OPAQUE,
                          0xffu, ray);
+    float best_distance = infinity();
+    uint best_triangle = 0xffffffffu;
     while (query.Proceed())
     {
         if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
@@ -423,10 +430,18 @@ Stop find_stop(Transport transport, float3 origin, float3 direction,
         uint triangle = scene_triangle(
             transport.geometry_first0, transport.geometry_first1,
             query.CandidateGeometryIndex(), query.CandidatePrimitiveIndex());
+        float candidate = query.CandidateTriangleRayT();
+        if (!any && (candidate > best_distance ||
+                     (candidate == best_distance && triangle > best_triangle)))
+        {
+            continue;
+        }
         if (cutout_passes(triangle, query.CandidateTriangleBarycentrics()))
         {
             continue;
         }
+        best_distance = candidate;
+        best_triangle = triangle;
         query.CommitNonOpaqueTriangleHit();
     }
     Stop stop;
@@ -443,6 +458,40 @@ Stop find_stop(Transport transport, float3 origin, float3 direction,
         stop.distance = query.CommittedRayT();
     }
     return stop;
+}
+
+/* Whether a surface that does not tint shadows, other than a cutout texel
+   below its cutoff, lies within (kEpsilon, distance). Every triangle is a
+   candidate, so the answer does not depend on the order the traversal meets
+   them in. */
+bool finds_blocker(Transport transport, float3 origin, float3 direction,
+                   float distance)
+{
+    RayDesc ray;
+    ray.Origin = origin;
+    ray.Direction = direction;
+    ray.TMin = kEpsilon;
+    ray.TMax = distance;
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
+    query.TraceRayInline(scene_as, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                         0xffu, ray);
+    while (query.Proceed())
+    {
+        if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
+        {
+            continue;
+        }
+        uint triangle = scene_triangle(
+            transport.geometry_first0, transport.geometry_first1,
+            query.CandidateGeometryIndex(), query.CandidatePrimitiveIndex());
+        if (materials[triangle_materials[triangle]].misc.w != 0.0f ||
+            cutout_passes(triangle, query.CandidateTriangleBarycentrics()))
+        {
+            continue;
+        }
+        query.CommitNonOpaqueTriangleHit();
+    }
+    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
 /* Closest surface the ray stops at, skipping passed-through surfaces. The
@@ -503,7 +552,10 @@ Hit trace_surface(Transport transport, float3 origin, float3 direction,
    surfaces tint by their glass color, blended ones mixed with (1 - alpha);
    anything else blocks. Any blocker zeroes the product whatever its order, so
    one any-hit traversal settles a segment unless the surface it finds tints;
-   then the segment is walked in order. */
+   then finds_blocker looks for a blocker among every triangle, and only a
+   segment without one is walked in order. The walk steps kEpsilon past each
+   surface, so it alone would miss a blocker coincident with a tinted surface
+   whenever the any-hit traversal met the tinted one first. */
 float3 shadow_transmittance(Transport transport, float3 origin, float3 direction,
                             float distance)
 {
@@ -514,6 +566,10 @@ float3 shadow_transmittance(Transport transport, float3 origin, float3 direction
     }
     GpuMaterial any_source = materials[triangle_materials[any.triangle]];
     if (any_source.misc.w == 0.0f && uint(any_source.misc.z) != 2u)
+    {
+        return float3(0.0f);
+    }
+    if (finds_blocker(transport, origin, direction, distance))
     {
         return float3(0.0f);
     }
