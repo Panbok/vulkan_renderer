@@ -167,9 +167,15 @@ struct VkrEditorRemoteView {
   uint32_t bitrate;
   /* The bitrate the encoder's thread sets deadlines from. */
   VkrAtomicUint32 send_bitrate;
+  /* The bitrate asked of the encoder, `bitrate` over its measured
+     overshoot; the encoder's thread measures each frame against it. */
+  uint32_t encode_bitrate;
+  VkrAtomicUint32 asked_bitrate;
   uint64_t rate_checked_us;
-  /* Editor thread: the pose time the next export shows. */
+  /* Editor thread: the pose time the next export shows, and frames not
+     exported while the transport's backlog was over a frame interval. */
   uint64_t shown_pose_time_us;
+  uint64_t frames_skipped;
   /* Host lock: frames numbered and sent, their bytes, key frames, frames
      the transport refused, refresh requests, and the server's part of the
      latency. */
@@ -179,6 +185,8 @@ struct VkrEditorRemoteView {
   uint64_t key_frames;
   uint64_t send_failures;
   uint64_t refreshes;
+  /* Host lock: how far the encoder's frames run over the asked rate. */
+  float64_t overshoot;
   RemoteSamples render_ms;
   RemoteSamples encode_ms;
   /* Host lock: every encoded frame's Annex B bytes in one file
@@ -356,15 +364,15 @@ static void remote_send_frame(RemoteRing *ring, uint32_t slot,
   vkr_bit_write(&writer, encode_us, 32u);
   vkr_bit_write_bytes(&writer, packet->data, (uint32_t)packet->size);
   const uint32_t length = vkr_bit_writer_finish(&writer);
-  /* Twice the time the frame's bytes take at the stream's rate, so a key
-     frame on a slow link still arrives. */
-  const uint64_t bitrate =
+  /* Twice the time the frame's bytes and those queued ahead of it take at
+     the stream's rate, so a key frame on a slow link still arrives and the
+     frames behind it do not expire. */
+  const uint32_t bitrate =
       vkr_atomic_uint32_load(&view->send_bitrate, VKR_MEMORY_ORDER_RELAXED);
-  const uint64_t transfer_us =
-      bitrate ? (uint64_t)length * 8u * 1000000u / bitrate : 0u;
-  const uint64_t deadline_us =
-      Min(Max((uint64_t)REMOTE_DEADLINE_US, 2u * transfer_us),
-          (uint64_t)REMOTE_DEADLINE_MAX_US);
+  const uint64_t queued = vkr_net_session_queued_bytes(
+      view->net, view->viewer, VKR_NET_SERVICE_VIEW, REMOTE_FRAME_CHANNEL);
+  const uint64_t deadline_us = vkr_editor_remote_frame_deadline_us(
+      length, queued, bitrate, REMOTE_DEADLINE_US, REMOTE_DEADLINE_MAX_US);
   const VkrNetSendOptions options = {
       .flags = VKR_NET_SEND_IMMEDIATE,
       .deadline_us = vkr_net_host_now(view->host) + deadline_us,
@@ -382,6 +390,10 @@ static void remote_send_frame(RemoteRing *ring, uint32_t slot,
     view->frames_sent += 1u;
     view->bytes_sent += length;
     view->key_frames += packet->key_frame ? 1u : 0u;
+    view->overshoot = vkr_editor_remote_overshoot(
+        view->overshoot, packet->size,
+        vkr_atomic_uint32_load(&view->asked_bitrate, VKR_MEMORY_ORDER_RELAXED),
+        REMOTE_FRAME_RATE);
     remote_sample(&view->render_ms, (float32_t)render_us / 1000.0f);
     remote_sample(&view->encode_ms, (float32_t)encode_us / 1000.0f);
   } else {
@@ -479,7 +491,7 @@ static RemoteRing *remote_ring_create(VkrEditorRemoteView *view, uint32_t width,
       .width = width,
       .height = height,
       .frame_rate = REMOTE_FRAME_RATE,
-      .bitrate_bps = view->bitrate,
+      .bitrate_bps = view->encode_bitrate,
   };
   ring->encoder = vkr_video_encoder_create(&config, remote_packet, ring);
   if (!ring->encoder) {
@@ -1032,7 +1044,11 @@ bool8_t vkr_editor_remote_view_serve(
                           ? Max(bitrate_max_bps, (uint32_t)REMOTE_BITRATE_MIN)
                           : REMOTE_BITRATE_MAX;
   view->bitrate = Min(view->bitrate_max, (uint32_t)REMOTE_BITRATE_START);
+  view->encode_bitrate = view->bitrate;
+  view->overshoot = 1.0;
   vkr_atomic_uint32_store(&view->send_bitrate, view->bitrate,
+                          VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint32_store(&view->asked_bitrate, view->encode_bitrate,
                           VKR_MEMORY_ORDER_RELAXED);
   if (record_path) {
     FileMode mode = bitset8_create();
@@ -1174,6 +1190,11 @@ static void remote_server_update(VkrEditorRemoteView *view,
     has_path =
         vkr_net_core_path(vkr_net_host_core(view->host), view->viewer, &path);
   }
+  const uint64_t unsent = open ? vkr_net_session_unsent_bytes(
+                                     view->net, view->viewer,
+                                     VKR_NET_SERVICE_VIEW, REMOTE_FRAME_CHANNEL)
+                               : 0u;
+  const float64_t overshoot = view->overshoot;
   vkr_net_host_thread_unlock(view->thread);
   if (!open && !recording) {
     return;
@@ -1193,12 +1214,19 @@ static void remote_server_update(VkrEditorRemoteView *view,
       view->bitrate = (uint32_t)vkr_clamp_f64(
           rate, (float64_t)REMOTE_BITRATE_MIN, (float64_t)view->bitrate_max);
     }
+    /* An encoder that runs over its rate is asked for less, so the stream
+       stays within the share of the path it was given. */
+    view->encode_bitrate =
+        (uint32_t)Max((float64_t)view->bitrate / overshoot, 1.0);
     vkr_atomic_uint32_store(&view->send_bitrate, view->bitrate,
+                            VKR_MEMORY_ORDER_RELAXED);
+    vkr_atomic_uint32_store(&view->asked_bitrate, view->encode_bitrate,
                             VKR_MEMORY_ORDER_RELAXED);
     if (view->ring) {
       remote_ring_lock(view->ring);
       if (view->ring->encoder) {
-        vkr_video_encoder_set_bitrate(view->ring->encoder, view->bitrate);
+        vkr_video_encoder_set_bitrate(view->ring->encoder,
+                                      view->encode_bitrate);
       }
       remote_ring_unlock(view->ring);
     }
@@ -1220,6 +1248,13 @@ static void remote_server_update(VkrEditorRemoteView *view,
     }
     vkr_atomic_uint32_store(&view->key_wanted, 1u, VKR_MEMORY_ORDER_RELEASE);
   }
+  /* A frame encoded now would wait behind the backlog: skip it, before
+     the encoder references it. */
+  if (vkr_editor_remote_backlogged(unsent, view->bitrate,
+                                   1000000u / REMOTE_FRAME_RATE)) {
+    view->frames_skipped += 1u;
+    return;
+  }
   RemoteRing *ring = view->ring;
   for (uint32_t slot = 0u; slot < REMOTE_SLOTS; ++slot) {
     if (vkr_atomic_uint32_load(&ring->busy[slot], VKR_MEMORY_ORDER_ACQUIRE)) {
@@ -1240,7 +1275,7 @@ static void remote_server_update(VkrEditorRemoteView *view,
       frame->view_stream_request->next_export = (VkrViewExport){
           .width = width,
           .height = height,
-          .bitrate_bps = view->bitrate,
+          .bitrate_bps = view->encode_bitrate,
           .frame_rate = REMOTE_FRAME_RATE,
           .key_frame = ring->key_requested[slot],
           .on_packet = remote_packet,
@@ -1391,6 +1426,37 @@ void vkr_editor_remote_view_build(VkrEditorRemoteView *view,
   (void)vkr_ui_panel_end(ui);
 }
 
+/* The path to the other editor: round trip, bandwidth estimate, packets
+   lost, and frames the sender dropped at their deadline before they left
+   (a backlog) or while waiting to resend a lost packet (loss). The caller
+   holds the host lock. */
+static void remote_status_path(VkrEditorRemoteView *view,
+                               VkrNetConnectionId connection, Arena *arena,
+                               VkrBakeryJson *result) {
+  VkrNetPathStats path = {0};
+  if (!vkr_net_core_path(vkr_net_host_core(view->host), connection, &path)) {
+    return;
+  }
+  VkrBakeryJson *json = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(
+      arena, json, "srtt_ms",
+      vkr_bakery_json_float(arena, (float64_t)path.srtt_us / 1000.0));
+  vkr_bakery_json_set(
+      arena, json, "min_rtt_ms",
+      vkr_bakery_json_float(arena, (float64_t)path.min_rtt_us / 1000.0));
+  vkr_bakery_json_set(arena, json, "bandwidth_bps",
+                      vkr_bakery_json_int(arena, (int64_t)path.bandwidth * 8));
+  vkr_bakery_json_set(arena, json, "packets_sent",
+                      vkr_bakery_json_int(arena, (int64_t)path.packets_sent));
+  vkr_bakery_json_set(arena, json, "packets_lost",
+                      vkr_bakery_json_int(arena, (int64_t)path.packets_lost));
+  vkr_bakery_json_set(arena, json, "expired_unsent",
+                      vkr_bakery_json_int(arena, (int64_t)path.expired_unsent));
+  vkr_bakery_json_set(arena, json, "expired_resend",
+                      vkr_bakery_json_int(arena, (int64_t)path.expired_resend));
+  vkr_bakery_json_set(arena, result, "link", json);
+}
+
 VkrBakeryJson *vkr_editor_remote_view_status_json(VkrEditorRemoteView *view,
                                                   Arena *arena) {
   static const char *const roles[] = {"none", "server", "client"};
@@ -1423,6 +1489,11 @@ VkrBakeryJson *vkr_editor_remote_view_status_json(VkrEditorRemoteView *view,
         vkr_bakery_json_int(arena, (int64_t)view->send_failures));
     vkr_bakery_json_set(arena, result, "refreshes",
                         vkr_bakery_json_int(arena, (int64_t)view->refreshes));
+    vkr_bakery_json_set(arena, result, "overshoot",
+                        vkr_bakery_json_float(arena, view->overshoot));
+    if (view->viewer_open) {
+      remote_status_path(view, view->viewer, arena, result);
+    }
     remote_percentiles(&view->render_ms, &p50, &p95);
     vkr_bakery_json_set(arena, result, "render_ms_p50",
                         vkr_bakery_json_float(arena, p50));
@@ -1446,6 +1517,11 @@ VkrBakeryJson *vkr_editor_remote_view_status_json(VkrEditorRemoteView *view,
     vkr_net_host_thread_unlock(view->thread);
     vkr_bakery_json_set(arena, result, "bitrate",
                         vkr_bakery_json_int(arena, view->bitrate));
+    vkr_bakery_json_set(arena, result, "encode_bitrate",
+                        vkr_bakery_json_int(arena, view->encode_bitrate));
+    vkr_bakery_json_set(
+        arena, result, "frames_skipped",
+        vkr_bakery_json_int(arena, (int64_t)view->frames_skipped));
     vkr_bakery_json_set(
         arena, result, "width",
         vkr_bakery_json_int(arena, view->ring ? view->ring->width : 0));
@@ -1459,6 +1535,9 @@ VkrBakeryJson *vkr_editor_remote_view_status_json(VkrEditorRemoteView *view,
   vkr_net_host_thread_lock(view->thread);
   vkr_bakery_json_set(arena, result, "open",
                       vkr_bakery_json_bool(arena, view->open));
+  if (view->open) {
+    remote_status_path(view, view->connection, arena, result);
+  }
   vkr_bakery_json_set(
       arena, result, "frames_received",
       vkr_bakery_json_int(arena, (int64_t)view->frames_received));

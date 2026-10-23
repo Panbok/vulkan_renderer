@@ -397,6 +397,8 @@ typedef struct NetConnection {
   uint64_t packets_lost;
   uint64_t bytes_sent;
   uint64_t bytes_received;
+  uint64_t expired_unsent;
+  uint64_t expired_resend;
 } NetConnection;
 
 typedef struct NetTimer {
@@ -1884,6 +1886,7 @@ static uint64_t net_fill_channel(VkrNetCore *core, NetConnection *conn,
       continue;
     }
     if (net_message_expired(message, now)) {
+      conn->expired_resend += 1u;
       net_message_abandon(core, conn, channel, index, message);
       continue;
     }
@@ -1913,6 +1916,7 @@ static uint64_t net_fill_channel(VkrNetCore *core, NetConnection *conn,
     }
     if (net_message_expired(message, now)) {
       /* Abandoning may advance the head, and the cursor with it. */
+      conn->expired_unsent += 1u;
       net_message_abandon(core, conn, channel, index, message);
       channel->unsent_seq = Max(channel->unsent_seq, seq + 1u);
       continue;
@@ -3975,6 +3979,8 @@ bool8_t vkr_net_core_path(const VkrNetCore *core, VkrNetConnectionId connection,
       .packets_lost = conn->packets_lost,
       .bytes_sent = conn->bytes_sent,
       .bytes_received = conn->bytes_received,
+      .expired_unsent = conn->expired_unsent,
+      .expired_resend = conn->expired_resend,
   };
   return true_v;
 }
@@ -4004,4 +4010,28 @@ uint64_t vkr_net_core_queued_bytes(const VkrNetCore *core,
     return 0u;
   }
   return conn->channels[channel]->queued_bytes;
+}
+
+uint64_t vkr_net_core_unsent_bytes(const VkrNetCore *core,
+                                   VkrNetConnectionId connection,
+                                   uint8_t channel_index) {
+  const NetConnection *conn = core ? net_connection(core, connection) : NULL;
+  if (!conn || channel_index >= VKR_NET_CHANNEL_MAX ||
+      !conn->channels[channel_index]) {
+    return 0u;
+  }
+  NetChannel *channel = conn->channels[channel_index];
+  uint64_t unsent = 0u;
+  for (uint64_t seq = channel->unsent_seq; seq < channel->tail_seq; ++seq) {
+    const NetSendMessage *message = net_live_message(channel, seq);
+    if (!message) {
+      continue;
+    }
+    const uint64_t sent =
+        message->fragment_size
+            ? (uint64_t)message->next_fragment * message->fragment_size
+            : (message->next_fragment ? message->size : 0u);
+    unsent += message->size - Min(sent, (uint64_t)message->size);
+  }
+  return unsent;
 }

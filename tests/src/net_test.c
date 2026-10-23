@@ -1027,6 +1027,68 @@ static void test_net_deadline(void) {
   printf("  test_net_deadline PASSED\n");
 }
 
+/* Sends `count` messages of `size` bytes at 60 Hz on a deadline channel
+   over `link` and returns the sender's path counts. */
+static VkrNetPathStats net_deadline_stream(const VkrNetSimLink *link,
+                                           uint32_t deadline_ms, uint32_t size,
+                                           uint32_t count, uint32_t *received) {
+  NetTestWorld world;
+  net_world_init(&world, 26u, NULL, NULL);
+  net_world_link(&world, link);
+  net_world_connect(&world);
+  const VkrNetChannelConfig channel = {.delivery = VKR_NET_DEADLINE,
+                                       .max_message_size = 64u * 1024u,
+                                       .deadline_ms = deadline_ms};
+  net_open_both(&world, 5u, &channel);
+  static uint8_t data[64u * 1024u];
+  for (uint32_t i = 0u; i < count; ++i) {
+    net_test_fill(data, size, i);
+    assert(vkr_net_core_send(world.client.core, world.client.connection, 5u,
+                             data, size, NULL, world.now) == VKR_NET_SEND_OK);
+    vkr_net_core_flush(world.client.core);
+    net_world_run(&world, 16667u);
+  }
+  net_world_run(&world, 5u * NET_TEST_SECOND);
+  assert(!world.server.duplicate && !world.server.corrupt);
+  VkrNetPathStats stats;
+  assert(vkr_net_core_path(world.client.core, world.client.connection, &stats));
+  *received = world.server.received[5];
+  net_world_destroy(&world);
+  return stats;
+}
+
+/* Fails when a deadline message dropped before it left is counted as
+   waiting for a resend, or the other way round. The view service tells a
+   sender that outruns its link from a lossy link by these counts. */
+static void test_net_deadline_expiry_kinds(void) {
+  printf("  Running test_net_deadline_expiry_kinds...\n");
+  uint32_t received = 0u;
+  /* 25 KB at 60 Hz is 1.5 MB/s over a lossless 1 MB/s link. */
+  const VkrNetPathStats outrun =
+      net_deadline_stream(&(VkrNetSimLink){.latency_us = 5000u,
+                                           .bandwidth = 1000u * 1000u,
+                                           .queue_bytes = 4u * 1000u * 1000u},
+                          100u, 25000u, 300u, &received);
+  printf("    outrun: received %u, expired unsent %llu, resend %llu\n",
+         received, (unsigned long long)outrun.expired_unsent,
+         (unsigned long long)outrun.expired_resend);
+  assert(outrun.packets_lost == 0u);
+  assert(outrun.expired_resend == 0u);
+  assert(outrun.expired_unsent > 0u);
+  /* A 60 ms round trip leaves no time to resend before a 50 ms deadline. */
+  const VkrNetPathStats lossy =
+      net_deadline_stream(&(VkrNetSimLink){.latency_us = 30000u, .loss = 0.05f},
+                          50u, 4000u, 300u, &received);
+  printf("    lossy: received %u, expired unsent %llu, resend %llu, lost "
+         "%llu\n",
+         received, (unsigned long long)lossy.expired_unsent,
+         (unsigned long long)lossy.expired_resend,
+         (unsigned long long)lossy.packets_lost);
+  assert(lossy.packets_lost > 0u);
+  assert(lossy.expired_resend > 0u);
+  printf("  test_net_deadline_expiry_kinds PASSED\n");
+}
+
 /* Fails when a sender exceeds the receive window of a receiver that takes
    no messages, or does not resume once the receiver takes them. */
 static void test_net_flow_control(void) {
@@ -2284,6 +2346,7 @@ bool32_t run_net_tests(void) {
   test_net_sequenced();
   test_net_unreliable_notify();
   test_net_deadline();
+  test_net_deadline_expiry_kinds();
   test_net_flow_control();
   test_net_mtu_discovery();
   test_net_bulk_throughput();

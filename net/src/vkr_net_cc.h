@@ -8,6 +8,11 @@
  * last ten rounds) and the minimum RTT (over ten seconds), paces to the
  * bandwidth and caps the bytes in flight near their product.
  *
+ * Rounds in which every sample was app-limited and below the estimate
+ * do not age it, as in BBR's windowed filter: a video stream sending at a
+ * share of the link would otherwise see its estimate decay to its own
+ * rate and below.
+ *
  * Phases: STARTUP doubles the rate each round until the bandwidth stops
  * growing by a quarter for three rounds or the round loses more than 2%;
  * DRAIN empties the queue STARTUP built; PROBE_BW cycles its pacing gain
@@ -39,8 +44,13 @@ typedef struct VkrNetCc {
   uint8_t cycle_index;
   uint32_t full_bw_count;
 
-  /* Per-round maximum delivery rates, bytes per second. */
+  /* Per-round maximum delivery rates, bytes per second, of the last ten
+     rounds that had a sample which counts. `bw_slot` is the current
+     round's; it moves on only after a round whose sample counted, so a
+     sender that stays below the link keeps its estimate. */
   uint64_t bw_rounds[VKR_NET_CC_BW_ROUNDS];
+  uint32_t bw_slot;
+  bool8_t bw_slot_counted;
   uint64_t bandwidth;
   uint64_t full_bw;
 

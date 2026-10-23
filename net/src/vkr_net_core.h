@@ -235,6 +235,11 @@ typedef struct VkrNetPathStats {
   uint64_t packets_lost;
   uint64_t bytes_sent;
   uint64_t bytes_received;
+  /** DEADLINE messages dropped at their deadline before every fragment
+      left (the sender's queue was too long), and while waiting to resend
+      a lost fragment. */
+  uint64_t expired_unsent;
+  uint64_t expired_resend;
 } VkrNetPathStats;
 
 typedef struct VkrNetCore VkrNetCore;
@@ -318,5 +323,10 @@ bool8_t vkr_net_core_peer_address(const VkrNetCore *core,
 
 /* Messages and bytes queued and not yet acknowledged on a channel. */
 uint64_t vkr_net_core_queued_bytes(const VkrNetCore *core,
+                                   VkrNetConnectionId connection,
+                                   uint8_t channel);
+/* Bytes queued on a channel that have not left yet: the sender's backlog,
+   without the bytes in flight. Walks the channel's unsent messages. */
+uint64_t vkr_net_core_unsent_bytes(const VkrNetCore *core,
                                    VkrNetConnectionId connection,
                                    uint8_t channel);

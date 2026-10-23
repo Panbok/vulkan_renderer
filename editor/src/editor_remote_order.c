@@ -114,3 +114,27 @@ bool8_t vkr_editor_remote_order_want_key(VkrEditorRemoteOrder *order,
   order->asked_us = now_us;
   return true_v;
 }
+
+uint64_t vkr_editor_remote_frame_deadline_us(uint64_t length, uint64_t queued,
+                                             uint32_t bitrate_bps,
+                                             uint64_t floor_us,
+                                             uint64_t cap_us) {
+  const uint64_t transfer_us =
+      bitrate_bps ? (length + queued) * 8u * 1000000u / bitrate_bps : 0u;
+  return Min(Max(floor_us, 2u * transfer_us), cap_us);
+}
+
+bool8_t vkr_editor_remote_backlogged(uint64_t unsent, uint32_t bitrate_bps,
+                                     uint64_t interval_us) {
+  return bitrate_bps && unsent * 8u * 1000000u / bitrate_bps > interval_us;
+}
+
+float64_t vkr_editor_remote_overshoot(float64_t overshoot, uint64_t bytes,
+                                      uint32_t asked_bps, uint32_t frame_rate) {
+  if (!asked_bps || !frame_rate) {
+    return overshoot;
+  }
+  const float64_t share = (float64_t)asked_bps / 8.0 / (float64_t)frame_rate;
+  const float64_t made = (float64_t)bytes / share;
+  return Min(Max(overshoot * 0.98 + made * 0.02, 1.0), 4.0);
+}

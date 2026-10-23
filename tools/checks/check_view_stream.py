@@ -306,6 +306,18 @@ def server_report(text: str, failures: list) -> dict:
         print("  server render p50 %.1f p95 %.1f; encode p50 %.1f p95 %.1f"
               % (final.get("render_ms_p50", 0), final.get("render_ms_p95", 0),
                  final.get("encode_ms_p50", 0), final.get("encode_ms_p95", 0)))
+        print(f"  encoder asked {final.get('encode_bitrate')} (overshoot "
+              f"{final.get('overshoot', 0):.2f}), frames skipped "
+              f"{final.get('frames_skipped')}")
+    # The link is reported while the client is connected.
+    path = next((s["link"] for s in reversed(found) if "link" in s), None)
+    if path:
+        print("  path srtt %.1f ms (min %.1f), bandwidth estimate %d, packets "
+              "sent %d lost %d; frames expired unsent %d, waiting to resend %d"
+              % (path.get("srtt_ms", 0), path.get("min_rtt_ms", 0),
+                 path.get("bandwidth_bps", 0), path.get("packets_sent", 0),
+                 path.get("packets_lost", 0), path.get("expired_unsent", 0),
+                 path.get("expired_resend", 0)))
     return final
 
 

@@ -38,7 +38,8 @@ target_include_directories(vkr_anisotropy_cooker PRIVATE "${CMAKE_SOURCE_DIR}/re
 
 # Network transport measurements: crypto, raw UDP, the transport over sockets
 # and over the simulated link (docs/proposals/network-protocol.md).
-add_executable(vkr_net_bench net/vkr_net_bench.c)
+add_executable(vkr_net_bench net/vkr_net_bench.c
+  ../editor/src/editor_remote_order.c)
 vkr_require_declared_c_functions(vkr_net_bench)
 target_link_libraries(vkr_net_bench PRIVATE vkr_net vkr_sodium vkr_foundation)
 

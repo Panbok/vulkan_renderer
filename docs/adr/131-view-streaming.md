@@ -17,9 +17,12 @@ a Scene, and its Scene camera steers the server's. The pose-to-display
 latency was measured between two editors on one Mac over loopback. A
 Windows editor serves too: its Vulkan backend encodes with Vulkan Video
 H.264 (decision 6), and its own recording decodes on Windows; a Windows
-editor shows no remote view. A run between two computers, forward error
-correction, intra refresh, raw input forwarding and more than one client
-stay in the proposal.
+editor shows no remote view. On 2026-10-23 a Windows server streamed
+Bistro to a Mac client between two computers over the Mac's Wi-Fi. That
+run lost frames at the sender's deadline, which led to the sender rules in
+decision 4; those rules have not run between two computers yet. 2560×1440,
+forward error correction, intra refresh, raw input forwarding and more
+than one client stay in the proposal.
 
 ## Context
 
@@ -115,12 +118,29 @@ endpoint security drops unsolicited inbound traffic.
    newest pose through `move_camera` in the same build, encodes a surface
    on the renderer's report and sends the frame from the encoder's
    callback. Frames are numbered only when they leave, so a gap means a
-   frame the transport dropped at its deadline. A frame's deadline is two
-   frame intervals, or twice the time its bytes take at the stream's
-   bitrate when that is longer, at most 1 s, so a key frame on a slow link
-   still arrives. The bitrate is 0.85 × the path's bandwidth estimate every
-   100 ms, between 2 Mbit/s and a cap (default 40 Mbit/s). A client open or
-   `REFRESH` makes the next frame a key frame. The client's frame order
+   frame the transport dropped at its deadline. The sender's rules sit
+   beside the client's frame order in
+   [`editor_remote_order.c`](../../editor/src/editor_remote_order.c), with
+   no clock or I/O, so `vkr_net_bench sim --mode video` runs them over the
+   simulator. A frame's deadline is twice the time its bytes and the bytes
+   queued ahead of it on the channel take at the stream's bitrate, at
+   least two frame intervals and at most 1 s: a key frame on a slow link
+   still arrives, and the frames queued behind it do not expire, each gap
+   asking for another key frame. The server exports no frame while the
+   channel's unsent bytes (`vkr_net_session_unsent_bytes`, without those in
+   flight) would take more than one frame interval at the bitrate; a
+   skipped frame is never encoded, so the numbers stay contiguous and the
+   encoder references only frames that leave. The bitrate is 0.85 × the
+   path's bandwidth estimate every 100 ms, between 2 Mbit/s and a cap
+   (default 40 Mbit/s). The encoder is asked for that bitrate over its
+   overshoot: a moving average, over about fifty frames, of each sent
+   frame's size against its share of the asked rate, from 1 to 4. Key
+   frames count, so the frames after one pay for it. A server's
+   `remote_view.status` reports `frames_skipped`, `overshoot`,
+   `encode_bitrate` and, while a client is connected, `link`: round trip,
+   bandwidth estimate, packets sent and lost, and frames that expired
+   before they left or while waiting to resend; a client reports its own
+   `link`. A client open or `REFRESH` makes the next frame a key frame. The client's frame order
    ([`editor_remote_order.c`](../../editor/src/editor_remote_order.c))
    hands frames to a decoder thread in stream order. A frame that overtakes
    its predecessor waits up to 33 ms for it; a gap that window does not
@@ -205,7 +225,14 @@ endpoint security drops unsolicited inbound traffic.
   34.4 dB PSNR from the server's own capture, 43 dB on a plain wall.
 - `DEADLINE` delivery is unordered; a frame that overtakes its predecessor
   waits up to 33 ms, and only a frame lost past that window costs a key
-  frame. No loopback run has seen either.
+  frame. Neither the loopback runs nor the Windows-to-Mac run saw a frame
+  overtake another.
+- A link narrower than the stream skips frames at the server instead of
+  losing them in flight: the client sees fewer frames and asks for no key
+  frame. A frame behind a key frame arrives late instead of expiring.
+- An encoder that runs over its rate is asked for less, so its frames are
+  smaller than the rate allows; an encoder that stays under it is asked
+  for the full rate.
 - A Windows editor serves but cannot show a remote view: `vkr_video.h` has
   no Windows decoder and the Vulkan backend takes no import.
 - A Vulkan device with video encode creates one more queue and enables
@@ -316,15 +343,64 @@ message, and a run with `VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true` added
 reported none either. A check run's fresh home starts the driver's shader
 cache cold, which takes about 250 s before the scene loads.
 
-Not measured: a run between two computers, among them a Windows server
-and a Mac client, 2560×1440 (the proposal's target size), an EDR or
-windowed BGRA Scene source, and the client's own present.
+Between two computers, 2026-10-23, with the rules before the sender's
+deadline, skip and overshoot rules: the Windows server above at
+`c47c7484` on Bistro, `--role server --allow <Mac key> --hold 900`, and
+the Mac client at `cdda7e8c` over the Mac's Wi-Fi, `--role client
+--address 192.168.3.2:7340 --key <server key> --identity <identity file>`.
+The check passed: the server sent 2778 frames (34 key frames, 33
+refreshes, no send failure, the bitrate at its 40 Mbit/s cap); the client
+received 2525, decoded 2162 and showed 2151. It dropped 362 frames over 33
+gaps, with no late or reordered frame, so the 253 missing frames expired at
+the sender. Latency p50 49.0 / p95 57.4 ms over 256 frames; client
+arrival-to-display p50 3.9 ms, decode 3.8 ms; server render 26.6 ms,
+encode 4.8 ms at the last frame. The client's image showed the server's
+plaza; no PSNR was taken, because the captures stayed on two computers.
+
+`vkr_net_bench sim --mode video` reproduces the gaps without loss. It
+streams 40 s over the simulator (3 ms each way, 4 ms jitter) with the view
+service's channels, rate rule and client order; `--overshoot` scales every
+frame and `--key-ratio` key frames on top:
+
+```sh
+build_release/tools/vkr_net_bench sim --mode video --bandwidth-mb 1.375 \
+    --latency-ms 3 --jitter-ms 4 --seconds 40 --overshoot 1.25 --key-ratio 5
+```
+
+| Link, loss | Overshoot × key size | Earlier rules: gaps, frames decoded of 2400 | Current rules: gaps, skipped, decoded, send-to-decode p95 |
+|---|---|---|---|
+| 11 Mbit/s, 0 | 1.0 × 1 | 14, 2244 | 0, 23, 2348, 38.9 ms |
+| 11 Mbit/s, 0 | 1.0 × 5 | 208, 208 | 2, 34, 2353, 37.4 ms |
+| 11 Mbit/s, 0 | 1.25 × 5 | 99, 100 | 3, 51, 2332, 39.0 ms |
+| 11 Mbit/s, 1 % | 1.25 × 5 | 107, 107 | 3, 57, 2320, 48.0 ms |
+| 50 Mbit/s, 0 | 1.25 × 5 | 176, 176 | 1, 17, 2346, 18.6 ms |
+| 50 Mbit/s, 1 % | 1.25 × 5 | 164, 165 | 2, 29, 2326, 28.5 ms |
+| 1 Gbit/s, 0 | 1.0 × 5 | 0, 2400 | 0, 0, 2400, 0.8 ms |
+
+The earlier rules ran in this change's development build with the
+bandwidth filter fix of ADR-105; before that fix, a sender below the link
+lost its estimate. On the lossless links every expiry under them was a
+frame that never left (`expired_unsent`): a key frame delayed the frames
+behind it past their 33 ms deadline and each gap asked for the next key
+frame, and an overshooting encoder kept a backlog that expired most
+frames. The 1 Gbit/s row
+matches the loopback runs. `vulkan_renderer_tester --suite net` checks
+that a lossless link the sender outruns counts only `expired_unsent` and a
+lossy link with no time to resend counts `expired_resend`.
+
+With the current rules the Mac loopback check passed on 2026-10-23: 2161
+frames sent, 0 skipped, measured overshoot 1.00 (VideoToolbox keeps to its
+rate), 0 gaps, latency p50 43.5 / p95 48.5 ms, 34.5 dB.
+
+Not measured: the current sender rules between two computers, 2560×1440
+(the proposal's target size), an EDR or windowed BGRA Scene source, and
+the client's own present.
 
 ## Revisit when
 
-- A Windows server streams the desktop pipeline to a Mac between two
-  computers, or a Windows client is needed (a decoder and a Vulkan
-  import).
+- The sender rules run between two computers and show gaps or skipped
+  frames the simulator did not predict, or a Windows client is needed (a
+  decoder and a Vulkan import).
 - A run between two computers shows loss the reorder window does not
   absorb: FEC and intra refresh become worth their cost.
 - Raw input forwarding or a second client is needed.

@@ -542,6 +542,19 @@ uint64_t vkr_net_session_queued_bytes(const VkrNetSession *session,
                                    binding->channels[channel]);
 }
 
+uint64_t vkr_net_session_unsent_bytes(const VkrNetSession *session,
+                                      VkrNetConnectionId connection,
+                                      uint16_t service_id, uint8_t channel) {
+  SessionConnection *state = session ? session_find(session, connection) : NULL;
+  const SessionBinding *binding =
+      state ? session_binding(state, service_id) : NULL;
+  if (!binding || channel >= binding->channel_count) {
+    return 0u;
+  }
+  return vkr_net_core_unsent_bytes(session->core, connection,
+                                   binding->channels[channel]);
+}
+
 // =============================================================================
 // Dispatch
 // =============================================================================

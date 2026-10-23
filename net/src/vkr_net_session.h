@@ -103,6 +103,11 @@ uint64_t vkr_net_session_queued_bytes(const VkrNetSession *session,
                                       VkrNetConnectionId connection,
                                       uint16_t service_id, uint8_t channel);
 
+/* Bytes queued on a service channel that have not left yet. */
+uint64_t vkr_net_session_unsent_bytes(const VkrNetSession *session,
+                                      VkrNetConnectionId connection,
+                                      uint16_t service_id, uint8_t channel);
+
 /* Handles one core event. True when the session consumed it: channel-0
    messages and service channel events. CONNECTED and CLOSED stay with the
    caller too (false), after the session updated its state. */

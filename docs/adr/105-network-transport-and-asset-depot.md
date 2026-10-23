@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-22
+updated: 2026-10-23
 authority: adr
 ---
 
@@ -113,6 +113,11 @@ its close frame is sent rather than 200 ms.
 - **Delivery.** Up to 64 channels per connection; channel 0 is the reliable
   ordered session channel. Classes: unreliable, sequenced, reliable ordered,
   reliable unordered and deadline (dropped and cancelled after its time).
+  The path stats count deadline messages dropped before every fragment
+  left (`expired_unsent`, a backlog) apart from those dropped while waiting
+  to resend a lost fragment (`expired_resend`, loss);
+  `vkr_net_core_unsent_bytes` reports a channel's backlog without its
+  bytes in flight, which the view service skips frames by (ADR-131).
   Reliable messages up to 64 MiB split into fixed fragments at send time.
   Each channel has priority 0–7, weight, send queue and receive window;
   WINDOW frames raise the sender's limit as the application consumes.
@@ -132,7 +137,11 @@ its close frame is sent rather than 200 ms.
   background mode that scales pacing as queueing delay, measured against
   the path's lifetime minimum RTT plus 5 ms, approaches 25 ms; a background
   flow that yielded restarts STARTUP once the link is free. PROBE_RTT
-  samples count as app-limited.
+  samples count as app-limited. As in BBR's windowed filter, a round in
+  which every sample was app-limited and below the estimate does not age
+  the filter; until 2026-10-23 each round cleared its slot, so a sender
+  below the link, such as a view stream at 0.85 of the estimate, saw its
+  estimate fall toward its own rate and, in one simulated run, to zero.
 - **Path.** PMTU discovery probes 1,452 bytes and then the configured
   maximum (8,952 for jumbo frames); lost probes do not count as congestion.
   A packet from a new peer address only makes it a candidate; the

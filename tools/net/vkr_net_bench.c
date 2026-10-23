@@ -10,6 +10,15 @@
  *                        [--threaded]
  *   vkr_net_bench sim [--latency-ms X] [--loss P] [--bandwidth-mb B]
  *                     [--megabytes N] [--mtu N]
+ *   vkr_net_bench sim --mode video [--latency-ms X] [--jitter-ms X]
+ *                     [--loss P] [--bandwidth-mb B] [--queue-kb K]
+ *                     [--seconds S] [--overshoot F] [--key-ratio F]
+ *
+ * sim --mode video streams frames as the editor's view service does
+ * (ADR-131): 60 Hz frames on its deadline channel, the bitrate following
+ * 0.85 of the path's bandwidth estimate, each frame `--overshoot` times
+ * the bitrate's share and a key frame `--key-ratio` times that, and the
+ * client's frame order asking for key frames.
  *
  * --threaded pumps the host on its own thread (vkr_net_host_thread_start)
  * while the main thread sends through the host lock.
@@ -27,6 +36,8 @@
 #include "vkr_net_crypto.h"
 #include "vkr_net_host.h"
 #include "vkr_net_sim.h"
+
+#include "../../editor/src/editor_remote_order.h"
 
 #include <sodium.h>
 #include <stdio.h>
@@ -60,6 +71,10 @@ typedef struct BenchOptions {
   float64_t bandwidth_mb;
   uint32_t megabytes;
   uint32_t mtu;
+  float64_t jitter_ms;
+  float64_t queue_kb;
+  float64_t overshoot;
+  float64_t key_ratio;
 } BenchOptions;
 
 static float64_t bench_now(void) { return vkr_platform_get_absolute_time(); }
@@ -856,6 +871,318 @@ static int bench_sim(VkrAllocator *allocator, const BenchOptions *options) {
   return 0;
 }
 
+// =============================================================================
+// A view stream over the simulated link (sim --mode video)
+// =============================================================================
+
+/* The view service's channels, frame rate, deadlines and rate rule
+   (editor_remote_view.c). */
+#define VIDEO_FRAME_CHANNEL 1u
+#define VIDEO_CONTROL_CHANNEL 2u
+#define VIDEO_FRAME_US 16667u
+#define VIDEO_DEADLINE_US 33333u
+#define VIDEO_DEADLINE_MAX_US 1000000u
+#define VIDEO_REFRESH_US 500000u
+#define VIDEO_RATE_PERIOD_US 100000u
+#define VIDEO_RATE_SHARE 0.85
+#define VIDEO_BITRATE_MIN 2000000.0
+#define VIDEO_BITRATE_MAX 40000000.0
+#define VIDEO_BITRATE_START 20000000.0
+#define VIDEO_FRAME_MAX (8u << 20)
+/* Frame number, send time and key flag before the frame's filler. */
+#define VIDEO_HEADER 17u
+#define VIDEO_SAMPLES 65536u
+
+static const VkrNetChannelConfig bench_video_frames = {
+    .delivery = VKR_NET_DEADLINE,
+    .priority = 1u,
+    .weight = 1u,
+    .max_message_size = VIDEO_FRAME_MAX,
+    .receive_window = 4u * VIDEO_FRAME_MAX,
+    .send_queue = 64u,
+    .deadline_ms = 33u,
+};
+
+static const VkrNetChannelConfig bench_video_control = {
+    .delivery = VKR_NET_RELIABLE_ORDERED,
+    .max_message_size = 256u,
+};
+
+typedef struct BenchVideo {
+  /* The client core sends frames; the server core plays the viewer. */
+  VkrEditorRemoteOrder order;
+  /* The stream's target, and what the encoder is asked for: the target
+     over the overshoot measured on the frames sent. */
+  uint32_t bitrate;
+  uint32_t encode_bitrate;
+  float64_t measured_overshoot;
+  bool8_t key_wanted;
+  uint64_t frame_number;
+  uint64_t frames_sent;
+  uint64_t key_frames;
+  uint64_t bytes_offered;
+  uint64_t send_failures;
+  uint64_t skipped;
+  uint64_t frames_received;
+  uint64_t frames_decoded;
+  uint64_t refreshes;
+  float64_t bitrate_sum;
+  uint64_t bitrate_samples;
+  uint32_t latency_count;
+  float32_t latency_ms[VIDEO_SAMPLES];
+} BenchVideo;
+
+static int bench_compare_f32(const void *a, const void *b) {
+  const float32_t x = *(const float32_t *)a;
+  const float32_t y = *(const float32_t *)b;
+  return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* Sends one frame as the view server does (editor_remote_view.c): skipped
+   while the channel's backlog is over a frame interval, sized by the
+   encoder's rate and `--overshoot`, on the editor's frame deadline. */
+static void bench_video_send(BenchVideo *video, VkrNetCore *sender,
+                             VkrNetConnectionId connection,
+                             const BenchOptions *options, uint64_t now) {
+  static uint8_t frame[VIDEO_FRAME_MAX];
+  const uint64_t unsent =
+      vkr_net_core_unsent_bytes(sender, connection, VIDEO_FRAME_CHANNEL);
+  if (vkr_editor_remote_backlogged(unsent, video->bitrate, VIDEO_FRAME_US)) {
+    video->skipped += 1u;
+    return;
+  }
+  const bool8_t key = video->key_wanted || video->frame_number == 0u;
+  const float64_t share = (float64_t)video->encode_bitrate / 8.0 / 60.0;
+  const float64_t scaled =
+      share * options->overshoot * (key ? options->key_ratio : 1.0);
+  const uint32_t length =
+      (uint32_t)Min(Max(scaled, (float64_t)VIDEO_HEADER), VIDEO_FRAME_MAX);
+  MemCopy(frame, &video->frame_number, sizeof(uint64_t));
+  MemCopy(frame + 8u, &now, sizeof(uint64_t));
+  frame[16] = key ? 1u : 0u;
+  const uint64_t queued =
+      vkr_net_core_queued_bytes(sender, connection, VIDEO_FRAME_CHANNEL);
+  const VkrNetSendOptions send = {
+      .flags = VKR_NET_SEND_IMMEDIATE,
+      .deadline_us = now + vkr_editor_remote_frame_deadline_us(
+                               length, queued, video->bitrate,
+                               VIDEO_DEADLINE_US, VIDEO_DEADLINE_MAX_US),
+  };
+  if (vkr_net_core_send(sender, connection, VIDEO_FRAME_CHANNEL, frame, length,
+                        &send, now) != VKR_NET_SEND_OK) {
+    video->send_failures += 1u;
+    return;
+  }
+  video->key_wanted = false_v;
+  video->frame_number += 1u;
+  video->frames_sent += 1u;
+  video->key_frames += key ? 1u : 0u;
+  video->bytes_offered += length;
+  video->measured_overshoot = vkr_editor_remote_overshoot(
+      video->measured_overshoot, length, video->encode_bitrate, 60u);
+}
+
+/* The viewer's side: the editor's frame order decides what decodes. */
+static void bench_video_receive(BenchVideo *video, const VkrNetEvent *event,
+                                uint64_t now) {
+  if (event->size < VIDEO_HEADER) {
+    return;
+  }
+  VkrEditorRemoteOrderFrame frame = {.received_us = now};
+  MemCopy(&frame.number, event->data, sizeof(uint64_t));
+  uint64_t sent_us = 0u;
+  MemCopy(&sent_us, event->data + 8u, sizeof(uint64_t));
+  frame.key_frame = event->data[16] != 0u;
+  frame.payload = (void *)(uintptr_t)sent_us;
+  video->frames_received += 1u;
+  (void)vkr_editor_remote_order_push(&video->order, &frame);
+}
+
+static void bench_video_decode(BenchVideo *video, uint64_t now) {
+  VkrEditorRemoteOrderFrame frame;
+  VkrEditorRemoteOrderStep step;
+  while ((step = vkr_editor_remote_order_next(&video->order, now, &frame)) !=
+         VKR_EDITOR_REMOTE_ORDER_WAIT) {
+    if (step != VKR_EDITOR_REMOTE_ORDER_DECODE) {
+      continue;
+    }
+    video->frames_decoded += 1u;
+    const uint64_t sent_us = (uint64_t)(uintptr_t)frame.payload;
+    if (video->latency_count < VIDEO_SAMPLES) {
+      video->latency_ms[video->latency_count++] =
+          (float32_t)(now - sent_us) / 1000.0f;
+    }
+  }
+}
+
+static int bench_sim_video(VkrAllocator *allocator,
+                           const BenchOptions *options) {
+  VkrNetCoreConfig server_config = {.accept_incoming = true_v,
+                                    .accept = bench_accept,
+                                    .sent_packet_capacity = 16384u};
+  VkrNetCoreConfig client_config = {.sent_packet_capacity = 16384u};
+  vkr_net_keypair_generate(&server_config.static_keys);
+  vkr_net_keypair_generate(&client_config.static_keys);
+  VkrNetCore *viewer = vkr_net_core_create(allocator, &server_config);
+  VkrNetCore *sender = vkr_net_core_create(allocator, &client_config);
+  VkrNetSim *sim = vkr_net_sim_create(allocator, 1u);
+  BenchVideo *video = vkr_allocator_alloc(allocator, sizeof(BenchVideo),
+                                          VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
+  if (!viewer || !sender || !sim || !video) {
+    fprintf(stderr, "sim setup failed\n");
+    return 1;
+  }
+  MemZero(video, sizeof(BenchVideo));
+  VkrNetAddress viewer_address, sender_address;
+  (void)vkr_net_address_parse("10.0.0.1:1", 0u, &viewer_address);
+  (void)vkr_net_address_parse("10.0.0.2:2", 0u, &sender_address);
+  const uint32_t v = vkr_net_sim_add(sim, viewer, &viewer_address);
+  const uint32_t c = vkr_net_sim_add(sim, sender, &sender_address);
+  const VkrNetSimLink link = {
+      .latency_us = (uint64_t)(options->latency_ms * 1000.0),
+      .jitter_us = (uint64_t)(options->jitter_ms * 1000.0),
+      .loss = (float32_t)options->loss,
+      .bandwidth = (uint64_t)(options->bandwidth_mb * 1e6),
+      .queue_bytes = (uint64_t)(options->queue_kb * 1000.0),
+  };
+  vkr_net_sim_set_link(sim, v, c, &link);
+  vkr_net_sim_set_link(sim, c, v, &link);
+
+  VkrNetConnectionId connection = VKR_NET_CONNECTION_NONE;
+  VkrNetConnectionId accepted = VKR_NET_CONNECTION_NONE;
+  (void)vkr_net_core_connect(sender, &viewer_address,
+                             server_config.static_keys.public_key, NULL, 0u, 0u,
+                             &connection);
+  const uint64_t duration_us =
+      (uint64_t)((options->seconds > 0.0 ? options->seconds : 30.0) * 1e6);
+  video->bitrate = (uint32_t)VIDEO_BITRATE_START;
+  video->encode_bitrate = video->bitrate;
+  video->measured_overshoot = 1.0;
+  uint64_t now = 0u;
+  uint64_t start = 0u;
+  uint64_t next_frame = UINT64_MAX;
+  uint64_t next_rate = UINT64_MAX;
+  bool8_t ready = false_v;
+  while (!ready || now < start + duration_us) {
+    if (now > 60ull * 1000000ull && !ready) {
+      fprintf(stderr, "sim connect timed out\n");
+      return 1;
+    }
+    const uint64_t next = vkr_net_sim_next_time(sim);
+    const uint64_t due = Min(next, Min(next_frame, next_rate));
+    now = Max(now, due == UINT64_MAX ? now + 1000u : due);
+    vkr_net_sim_step(sim, now);
+    VkrNetEvent event;
+    while (vkr_net_core_poll(viewer, &event)) {
+      if (event.type == VKR_NET_EVENT_CONNECTED) {
+        accepted = event.connection;
+        (void)vkr_net_core_open_channel(viewer, accepted, VIDEO_FRAME_CHANNEL,
+                                        &bench_video_frames);
+        (void)vkr_net_core_open_channel(viewer, accepted, VIDEO_CONTROL_CHANNEL,
+                                        &bench_video_control);
+      } else if (event.type == VKR_NET_EVENT_MESSAGE &&
+                 event.channel == VIDEO_FRAME_CHANNEL) {
+        bench_video_receive(video, &event, now);
+      }
+    }
+    while (vkr_net_core_poll(sender, &event)) {
+      if (event.type == VKR_NET_EVENT_CONNECTED) {
+        (void)vkr_net_core_open_channel(sender, connection, VIDEO_FRAME_CHANNEL,
+                                        &bench_video_frames);
+        (void)vkr_net_core_open_channel(
+            sender, connection, VIDEO_CONTROL_CHANNEL, &bench_video_control);
+        ready = true_v;
+        start = now;
+        next_frame = now;
+        next_rate = now + VIDEO_RATE_PERIOD_US;
+        vkr_editor_remote_order_init(&video->order, now, VIDEO_DEADLINE_US,
+                                     VIDEO_REFRESH_US);
+      } else if (event.type == VKR_NET_EVENT_MESSAGE &&
+                 event.channel == VIDEO_CONTROL_CHANNEL) {
+        video->key_wanted = true_v;
+      }
+    }
+    if (!ready) {
+      vkr_net_core_flush(sender);
+      continue;
+    }
+    bench_video_decode(video, now);
+    if (vkr_editor_remote_order_want_key(&video->order, now)) {
+      static const uint8_t refresh = 1u;
+      if (vkr_net_core_send(viewer, accepted, VIDEO_CONTROL_CHANNEL, &refresh,
+                            1u, NULL, now) == VKR_NET_SEND_OK) {
+        video->refreshes += 1u;
+      }
+    }
+    if (now >= next_rate) {
+      next_rate += VIDEO_RATE_PERIOD_US;
+      VkrNetPathStats path = {0};
+      if (vkr_net_core_path(sender, connection, &path) && path.bandwidth) {
+        const float64_t rate =
+            VIDEO_RATE_SHARE * (float64_t)path.bandwidth * 8.0;
+        video->bitrate =
+            (uint32_t)Min(Max(rate, VIDEO_BITRATE_MIN), VIDEO_BITRATE_MAX);
+      }
+      video->encode_bitrate = (uint32_t)Max(
+          (float64_t)video->bitrate / video->measured_overshoot, 1.0);
+      video->bitrate_sum += video->bitrate;
+      video->bitrate_samples += 1u;
+    }
+    if (now >= next_frame) {
+      next_frame += VIDEO_FRAME_US;
+      bench_video_send(video, sender, connection, options, now);
+    }
+    vkr_net_core_flush(sender);
+    vkr_net_core_flush(viewer);
+  }
+
+  VkrNetPathStats path = {0};
+  (void)vkr_net_core_path(sender, connection, &path);
+  qsort(video->latency_ms, video->latency_count, sizeof(float32_t),
+        bench_compare_f32);
+  const uint32_t n = video->latency_count;
+  const float32_t p50 = n ? video->latency_ms[n / 2u] : 0.0f;
+  const float32_t p95 =
+      n ? video->latency_ms[Min(n - 1u, n * 95u / 100u)] : 0.0f;
+  const float64_t seconds = (float64_t)duration_us / 1e6;
+  printf("result test=sim_video link_mbit=%.1f latency_ms=%.1f jitter_ms=%.1f "
+         "loss=%.3f overshoot=%.2f key_ratio=%.1f sent=%llu key_frames=%llu "
+         "received=%llu decoded=%llu gaps=%llu dropped=%llu late=%llu "
+         "reordered=%llu refreshes=%llu expired_unsent=%llu "
+         "expired_resend=%llu packets_lost=%llu send_failures=%llu "
+         "offered_mbit=%.2f mean_bitrate_mbit=%.2f bandwidth_mbit=%.2f "
+         "srtt_ms=%.1f latency_p50_ms=%.1f latency_p95_ms=%.1f skipped=%llu "
+         "measured_overshoot=%.2f\n",
+         options->bandwidth_mb * 8.0, options->latency_ms, options->jitter_ms,
+         options->loss, options->overshoot, options->key_ratio,
+         (unsigned long long)video->frames_sent,
+         (unsigned long long)video->key_frames,
+         (unsigned long long)video->frames_received,
+         (unsigned long long)video->frames_decoded,
+         (unsigned long long)video->order.frame_gaps,
+         (unsigned long long)video->order.frames_dropped,
+         (unsigned long long)video->order.frames_late,
+         (unsigned long long)video->order.frames_reordered,
+         (unsigned long long)video->refreshes,
+         (unsigned long long)path.expired_unsent,
+         (unsigned long long)path.expired_resend,
+         (unsigned long long)path.packets_lost,
+         (unsigned long long)video->send_failures,
+         (float64_t)video->bytes_offered * 8.0 / seconds / 1e6,
+         video->bitrate_samples
+             ? video->bitrate_sum / (float64_t)video->bitrate_samples / 1e6
+             : 0.0,
+         (float64_t)path.bandwidth * 8.0 / 1e6,
+         (float64_t)path.srtt_us / 1000.0, p50, p95,
+         (unsigned long long)video->skipped, video->measured_overshoot);
+  vkr_allocator_free(allocator, video, sizeof(BenchVideo),
+                     VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
+  vkr_net_sim_destroy(sim);
+  vkr_net_core_destroy(sender);
+  vkr_net_core_destroy(viewer);
+  return 0;
+}
+
 static void bench_usage(void) {
   fprintf(
       stderr,
@@ -863,7 +1190,9 @@ static void bench_usage(void) {
       "[options]\n"
       "  --bind ADDR --connect ADDR --key HEX --secret HEX --mode bulk|rtt\n"
       "  --seconds S --size B --background --threaded --mtu N\n"
-      "  --latency-ms X --loss P --bandwidth-mb B --megabytes N\n");
+      "  --latency-ms X --loss P --bandwidth-mb B --megabytes N\n"
+      "  sim --mode video: --jitter-ms X --queue-kb K --overshoot F "
+      "--key-ratio F\n");
 }
 
 VKR_MAIN(argc, argv) {
@@ -871,7 +1200,7 @@ VKR_MAIN(argc, argv) {
     bench_usage();
     return 1;
   }
-  BenchOptions options = {0};
+  BenchOptions options = {.overshoot = 1.0, .key_ratio = 5.0};
   for (int i = 2; i < argc; ++i) {
     const char *arg = argv[i];
     const char *value = i + 1 < argc ? argv[i + 1] : NULL;
@@ -912,6 +1241,14 @@ VKR_MAIN(argc, argv) {
       options.bandwidth_mb = atof(value);
     } else if (strcmp(arg, "--megabytes") == 0) {
       options.megabytes = (uint32_t)strtoul(value, NULL, 10);
+    } else if (strcmp(arg, "--jitter-ms") == 0) {
+      options.jitter_ms = atof(value);
+    } else if (strcmp(arg, "--queue-kb") == 0) {
+      options.queue_kb = atof(value);
+    } else if (strcmp(arg, "--overshoot") == 0) {
+      options.overshoot = atof(value);
+    } else if (strcmp(arg, "--key-ratio") == 0) {
+      options.key_ratio = atof(value);
     } else {
       bench_usage();
       return 1;
@@ -944,7 +1281,9 @@ VKR_MAIN(argc, argv) {
   } else if (strcmp(command, "client") == 0) {
     result = bench_client(&allocator, &options);
   } else if (strcmp(command, "sim") == 0) {
-    result = bench_sim(&allocator, &options);
+    result = options.mode && strcmp(options.mode, "video") == 0
+                 ? bench_sim_video(&allocator, &options)
+                 : bench_sim(&allocator, &options);
   } else {
     bench_usage();
   }

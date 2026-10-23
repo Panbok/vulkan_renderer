@@ -2,17 +2,19 @@
 
 #include "defines.h"
 
-/* The order in which a view streaming client decodes frames (ADR-131).
+/* The view stream's timing rules (ADR-131): the order in which a client
+ * decodes frames, and the sender's frame deadline, frame skipping and
+ * encoder overshoot. They read no clock and do no I/O, so vkr_net_bench's
+ * simulated stream runs the editor's rules.
  *
- * H.264 frames decode only in stream order, each after the one before it,
- * from a key frame on. The view service delivers frames on a deadline in
- * any order: a frame can arrive before the one before it, whose lost packet
- * is being resent, or never, when its deadline passed. The order holds an
- * early frame for a reorder window, hands frames out in stream order, drops
- * those that cannot decode, and wants a key frame after a gap the window
- * did not close, again every `refresh_us` until one arrives.
- *
- * One thread at a time; the caller locks. */
+ * Client order: H.264 frames decode only in stream order, each after the
+ * one before it, from a key frame on. The view service delivers frames on
+ * a deadline in any order: a frame can arrive before the one before it,
+ * whose lost packet is being resent, or never, when its deadline passed.
+ * The order holds an early frame for a reorder window, hands frames out in
+ * stream order, drops those that cannot decode, and wants a key frame
+ * after a gap the window did not close, again every `refresh_us` until one
+ * arrives. One thread at a time; the caller locks. */
 
 /* Frames held at once: one second at 60 Hz, which covers the decoder's
    start on the first key frame. A full order means the decoder fell far
@@ -81,3 +83,26 @@ void vkr_editor_remote_order_decode_failed(VkrEditorRemoteOrder *order);
    asked. */
 bool8_t vkr_editor_remote_order_want_key(VkrEditorRemoteOrder *order,
                                          uint64_t now_us);
+
+/* The sender's deadline, from now, for a frame of `length` bytes with
+   `queued` bytes not yet acknowledged ahead of it on its channel: twice the
+   time those bytes take at `bitrate_bps`, from `floor_us` to `cap_us`.
+   Counting the bytes ahead keeps the frames behind a key frame from
+   expiring, each gap asking for another key frame. */
+uint64_t vkr_editor_remote_frame_deadline_us(uint64_t length, uint64_t queued,
+                                             uint32_t bitrate_bps,
+                                             uint64_t floor_us,
+                                             uint64_t cap_us);
+/* Whether the sender skips the next frame before it is encoded: the bytes
+   that have not left its channel yet would take longer than `interval_us`
+   at `bitrate_bps`. A skipped frame costs one frame of motion; a frame
+   that waits behind a backlog costs latency, or a gap when it expires. */
+bool8_t vkr_editor_remote_backlogged(uint64_t unsent, uint32_t bitrate_bps,
+                                     uint64_t interval_us);
+/* The encoder's overshoot after a frame of `bytes`, encoded at `asked_bps`
+   and `frame_rate`: a moving average, over about fifty frames, of each
+   frame's size against its share of the asked rate, from 1 to 4. The
+   sender asks for its target divided by it. Key frames count, so the
+   frames after one pay for it. */
+float64_t vkr_editor_remote_overshoot(float64_t overshoot, uint64_t bytes,
+                                      uint32_t asked_bps, uint32_t frame_rate);

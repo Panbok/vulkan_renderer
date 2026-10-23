@@ -61,14 +61,16 @@ static uint64_t cc_min_window(const VkrNetCc *cc) {
 
 static void cc_update_bandwidth(VkrNetCc *cc, const VkrNetCcSample *sample,
                                 bool8_t round_start) {
-  const uint32_t slot = (uint32_t)(cc->round_count % VKR_NET_CC_BW_ROUNDS);
-  if (round_start) {
-    cc->bw_rounds[slot] = 0u;
+  if (round_start && cc->bw_slot_counted) {
+    cc->bw_slot = (cc->bw_slot + 1u) % VKR_NET_CC_BW_ROUNDS;
+    cc->bw_rounds[cc->bw_slot] = 0u;
+    cc->bw_slot_counted = false_v;
   }
   /* An app-limited sample only counts when it raises the estimate. */
   if (sample->rate > 0u &&
       (!sample->rate_app_limited || sample->rate >= cc->bandwidth)) {
-    cc->bw_rounds[slot] = Max(cc->bw_rounds[slot], sample->rate);
+    cc->bw_rounds[cc->bw_slot] = Max(cc->bw_rounds[cc->bw_slot], sample->rate);
+    cc->bw_slot_counted = true_v;
   }
   uint64_t best = 0u;
   for (uint32_t i = 0u; i < VKR_NET_CC_BW_ROUNDS; ++i) {
