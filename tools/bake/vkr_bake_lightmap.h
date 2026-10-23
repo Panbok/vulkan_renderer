@@ -215,6 +215,15 @@ void vkr_bake_lightmap_page_get_tile(const uint8_t *page, uint32_t page_size,
                                      uint32_t tile_x, uint32_t tile_y,
                                      uint8_t *out_tile);
 
+/* Copies the `tiles_x` by `tiles_y` tiles at (from_x, from_y) of encoded
+   page `from` to (to_x, to_y) of `to`, both of `page_size` texels in
+   `format`, as vkr_bake_lightmap_page_get_tile and _put_tile would one tile
+   at a time. */
+void vkr_bake_lightmap_page_copy_tiles(
+    const uint8_t *from, std::vector<uint8_t> *to, uint32_t page_size,
+    VkrLightmapPlaneFormat format, uint32_t from_x, uint32_t from_y,
+    uint32_t to_x, uint32_t to_y, uint32_t tiles_x, uint32_t tiles_y);
+
 /*
  * Writes a lamp layer's direction page (ADR-104) into
  * `out_rgba` as vkr_bake_lightmap_compose_page lays a page out: each texel's

@@ -69,6 +69,11 @@ typedef struct VkrBake {
   bool8_t failed;
   /* Exit status of the last baker vkr_bake_run_baker ran. */
   int32_t baker_code;
+  /* The bakery's source index, opened at the first digest: one bake checks
+     an unchanged file, such as the previous set or a texture, several
+     times, and the next bake checks it again (vkr_bake_digest). */
+  VkrBakeryIndex *index;
+  bool8_t index_opened;
 } VkrBake;
 
 #define VKR_BAKE_TRY(expression)                                               \
@@ -137,14 +142,68 @@ vkr_internal bool8_t vkr_bake_int(const VkrBakeryJson *value, int64_t *out) {
 }
 
 /* sha256:<hex> of a file. */
+/* The source index the run's digests use, NULL with --no-cache or when
+   it does not open. */
+vkr_internal VkrBakeryIndex *vkr_bake_index(VkrBake *bake) {
+  if (!bake->index_opened) {
+    bake->index_opened = true_v;
+    bake->index = bake->config->no_cache
+                      ? NULL
+                      : vkr_bakery_index_open(bake->config->cache_dir);
+  }
+  return bake->index;
+}
+
+/* The sha256 of `path`, from the source index while the file keeps the
+   size, time and identity it had when it was last hashed. */
 vkr_internal bool8_t vkr_bake_digest(VkrBake *bake, const char *path,
                                      char out[72]) {
+  VkrBakeryIndex *index = vkr_bake_index(bake);
   char hex[VKR_BAKERY_SHA256_HEX];
-  if (!vkr_bakery_hash_file(path, hex, NULL)) {
+  if (!(index ? vkr_bakery_index_hash(index, path, hex, NULL)
+              : vkr_bakery_hash_file(path, hex, NULL))) {
     return vkr_bake_fail(bake, "[Errno 2] No such file or directory: '%s'",
                          path);
   }
   (void)snprintf(out, 72, "sha256:%s", hex);
+  return true_v;
+}
+
+/* Brings the source index's digests of `paths` up to date on worker
+   threads, so the digests a check then takes in order are lookups. */
+vkr_internal void vkr_bake_prefetch(VkrBake *bake, const char *const *paths,
+                                    uint32_t count) {
+  VkrBakeryIndex *index = vkr_bake_index(bake);
+  if (index && count) {
+    vkr_bakery_index_prefetch(index, paths, count);
+  }
+}
+
+/* Reads `path` whole into `out_data` (freed by the caller) and takes its
+   sha256 from the bytes read; the source index keeps it when the file did
+   not change while it was read. */
+vkr_internal bool8_t vkr_bake_read_digest(VkrBake *bake, const char *path,
+                                          uint8_t **out_data,
+                                          uint64_t *out_length,
+                                          char out_digest[72]) {
+  VkrBakeryStat before = {0};
+  const bool8_t stated = vkr_bakery_stat(path, &before);
+  if (!vkr_bakery_read_file(path, 0u, out_data, out_length)) {
+    return vkr_bake_fail(bake, "[Errno 2] No such file or directory: '%s'",
+                         path);
+  }
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  char hex[VKR_SHA256_HEX_SIZE];
+  vkr_sha256(*out_data, *out_length, digest);
+  vkr_sha256_hex(digest, hex);
+  (void)snprintf(out_digest, 72, "sha256:%s", hex);
+  VkrBakeryStat after = {0};
+  VkrBakeryIndex *index = vkr_bake_index(bake);
+  if (index && stated && vkr_bakery_stat(path, &after) && after.exists &&
+      after.size == *out_length && after.size == before.size &&
+      after.mtime_ns == before.mtime_ns && after.file_id == before.file_id) {
+    vkr_bakery_index_record(index, path, hex);
+  }
   return true_v;
 }
 
@@ -670,6 +729,7 @@ vkr_internal bool8_t vkr_bake_inspect_manifest(
                          kind->label);
   }
   qsort((void *)paths, path_count, sizeof(paths[0]), vkr_bake_compare_paths);
+  vkr_bake_prefetch(bake, paths, path_count);
   VkrBakeryJson *records = vkr_bakery_json_array(arena);
   for (uint32_t i = 0u; i < path_count; ++i) {
     VkrBakeryStat info;
@@ -722,18 +782,14 @@ vkr_internal VkrBakeryJson *vkr_bake_verify_dvol(VkrBake *bake,
   Arena *arena = bake->arena;
   uint8_t *data = NULL;
   uint64_t length = 0u;
-  if (!vkr_bakery_read_file(path, 0u, &data, &length)) {
-    vkr_bake_fail(bake, "[Errno 2] No such file or directory: '%s'", path);
+  char digest[72];
+  if (!vkr_bake_read_digest(bake, path, &data, &length, digest)) {
     return NULL;
   }
   VkrBakeryJson *result = NULL;
   VkrDiffuseVolume volume = {0};
-  char digest[72];
   if (!vkr_diffuse_volume_decode(data, length, arena, &volume)) {
     vkr_bake_fail(bake, "DVOL output is invalid: %s", path);
-    goto cleanup;
-  }
-  if (!vkr_bake_digest(bake, path, digest)) {
     goto cleanup;
   }
   result = vkr_bakery_json_object(arena);
@@ -1129,20 +1185,24 @@ vkr_internal bool8_t vkr_bake_closure_current(VkrBake *bake,
                          previous_scene);
   vkr_bakery_path_parent(scene_directory, sizeof(scene_directory), scene);
   const uint64_t prefix = strlen(previous_directory);
-  bool8_t current =
-      vkr_bake_digest(bake, previous, out_sha256) &&
-      vkr_bakery_json_is_string(vkr_bakery_json_get(metadata, "output_sha256"),
-                                out_sha256);
+  /* The cheap answers first: every file's size, then the scene's bytes,
+     which an edit changes, then the other files' bytes and last the
+     previous output's, which is the largest. */
+  const char *now_paths[4096];
+  const VkrBakeryJson *now_records[ArrayCount(now_paths)];
+  uint32_t now_count = 0u;
+  bool8_t current = true_v;
   bool8_t scene_seen = false_v;
   for (const VkrBakeryJson *record = records->first; current && record;
        record = record->next) {
     const char *path = vkr_bake_text(record, "path");
-    if (!path) {
+    if (!path || now_count == ArrayCount(now_records)) {
       current = false_v;
       break;
     }
     const char *now = path;
-    if (strcmp(path, previous_scene) == 0) {
+    const bool8_t is_scene = strcmp(path, previous_scene) == 0;
+    if (is_scene) {
       now = scene;
       scene_seen = true_v;
     } else if (strncmp(path, previous_directory, prefix) == 0 &&
@@ -1151,14 +1211,32 @@ vkr_internal bool8_t vkr_bake_closure_current(VkrBake *bake,
     }
     int64_t bytes = -1;
     VkrBakeryStat info;
-    char digest[72];
     current = vkr_bakery_stat(now, &info) && info.exists &&
               vkr_bake_int(vkr_bakery_json_get(record, "bytes"), &bytes) &&
-              bytes == (int64_t)info.size &&
-              vkr_bake_digest(bake, now, digest) &&
-              vkr_bakery_json_is_string(vkr_bakery_json_get(record, "sha256"),
-                                        digest);
+              bytes == (int64_t)info.size;
+    /* The scene goes first. */
+    const uint32_t slot = is_scene && now_count ? 0u : now_count;
+    if (slot != now_count) {
+      now_paths[now_count] = now_paths[0];
+      now_records[now_count] = now_records[0];
+    }
+    now_paths[slot] = now;
+    now_records[slot] = record;
+    now_count += 1u;
   }
+  current = current && scene_seen;
+  if (current) {
+    vkr_bake_prefetch(bake, now_paths, now_count);
+  }
+  for (uint32_t i = 0u; current && i < now_count; ++i) {
+    char digest[72];
+    current = vkr_bake_digest(bake, now_paths[i], digest) &&
+              vkr_bakery_json_is_string(
+                  vkr_bakery_json_get(now_records[i], "sha256"), digest);
+  }
+  current = current && vkr_bake_digest(bake, previous, out_sha256) &&
+            vkr_bakery_json_is_string(
+                vkr_bakery_json_get(metadata, "output_sha256"), out_sha256);
   bake->failed = failed_before;
   return current && scene_seen;
 }
@@ -1888,18 +1966,14 @@ vkr_internal VkrBakeryJson *vkr_bake_verify_vklm(VkrBake *bake,
   Arena *arena = bake->arena;
   uint8_t *data = NULL;
   uint64_t length = 0u;
-  if (!vkr_bakery_read_file(path, 0u, &data, &length)) {
-    vkr_bake_fail(bake, "[Errno 2] No such file or directory: '%s'", path);
+  char digest[72];
+  if (!vkr_bake_read_digest(bake, path, &data, &length, digest)) {
     return NULL;
   }
   VkrBakeryJson *result = NULL;
   VkrLightmapSet set = {0};
-  char digest[72];
   if (!vkr_lightmap_set_decode(data, length, arena, &set)) {
     vkr_bake_fail(bake, "VKLM output is invalid: %s", path);
-    goto cleanup;
-  }
-  if (!vkr_bake_digest(bake, path, digest)) {
     goto cleanup;
   }
   result = vkr_bakery_json_object(arena);
@@ -3603,6 +3677,7 @@ int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv) {
           ? vkr_bake_lightmap_main(&bake, argc, argv)
           : vkr_bake_proxies_main(&bake, argc, argv);
   fflush(stdout);
+  vkr_bakery_index_close(bake.index);
   arena_destroy(bake.arena);
   return code;
 }
@@ -5074,6 +5149,7 @@ int vkr_bakery_preview_main(const VkrBakeryConfig *config, int argc,
     }
   }
   fflush(stdout);
+  vkr_bakery_index_close(bake.index);
   arena_destroy(bake.arena);
   return code;
 }

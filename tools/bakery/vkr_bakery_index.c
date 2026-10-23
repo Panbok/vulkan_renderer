@@ -390,11 +390,46 @@ void vkr_bakery_index_record(VkrBakeryIndex *index, const char *path,
   index->dirty = true_v;
 }
 
+void vkr_bakery_index_merge_disk(VkrBakeryIndex *index) {
+  if (!index || !index->file_path[0]) {
+    return;
+  }
+  VkrBakeryIndex disk = {0};
+  MemCopy(disk.file_path, index->file_path, sizeof(disk.file_path));
+  if (!vkr_bakery_index_grow(&disk)) {
+    return;
+  }
+  vkr_bakery_index_load(&disk);
+  for (uint32_t i = 0u; i < disk.capacity; ++i) {
+    const VkrBakeryIndexEntry *theirs = &disk.slots[i];
+    if (!theirs->path) {
+      continue;
+    }
+    const VkrBakeryIndexEntry *mine =
+        vkr_bakery_index_slot(index, theirs->path);
+    if (theirs->hash[0] && (!mine->path || !mine->hash[0])) {
+      VkrBakeryIndexEntry *entry = vkr_bakery_index_put(index, theirs->path);
+      if (entry) {
+        entry->size = theirs->size;
+        entry->mtime_ns = theirs->mtime_ns;
+        entry->device = theirs->device;
+        entry->file_id = theirs->file_id;
+        MemCopy(entry->hash, theirs->hash, VKR_BAKERY_KEY_SIZE);
+      }
+    }
+  }
+  for (uint32_t i = 0u; i < disk.capacity; ++i) {
+    free(disk.slots[i].path);
+  }
+  free(disk.slots);
+}
+
 void vkr_bakery_index_close(VkrBakeryIndex *index) {
   if (!index) {
     return;
   }
   if (index->dirty && index->file_path[0]) {
+    vkr_bakery_index_merge_disk(index);
     VkrBakeryBuffer buffer = {0};
     vkr_bakery_buffer_append_cstr(&buffer, VKR_BAKERY_INDEX_FORMAT);
     for (uint32_t i = 0u; i < index->capacity; ++i) {

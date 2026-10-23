@@ -2000,30 +2000,25 @@ bool write_plane_page(SetPageBake *bake, VkrLightmapPlaneFormat format,
   const uint32_t tile_bytes = vkr_bake_lightmap_tile_bytes(format);
   const uint32_t tiles_per_row = page_size / 4u;
   const size_t page_tiles = (size_t)tiles_per_row * tiles_per_row;
-  scratch.image.resize(page_tiles * tile_bytes);
-  for (size_t t = 0u; t < page_tiles; ++t) {
-    std::memcpy(scratch.image.data() + t * tile_bytes, empty->data(),
-                tile_bytes);
+  /* The empty tile, then the filled part doubled until the page is full. */
+  const size_t page_bytes = page_tiles * tile_bytes;
+  scratch.image.resize(page_bytes);
+  std::memcpy(scratch.image.data(), empty->data(), tile_bytes);
+  for (size_t filled = tile_bytes; filled < page_bytes; filled *= 2u) {
+    std::memcpy(scratch.image.data() + filled, scratch.image.data(),
+                std::min(filled, page_bytes - filled));
   }
   StripBatch &batch = scratch.batch;
   batch.tiles.reserve(kStripBatchTiles * 64u);
   batch.tile_x.reserve(kStripBatchTiles);
   batch.tile_y.reserve(kStripBatchTiles);
-  uint8_t bytes[64];
   for (const PlaneRect &plane_rect : rects) {
     const VkrBakeLightmapRect &rect = *plane_rect.rect;
     if (!plane_rect.relit) {
-      for (uint32_t ty = 0u; ty < rect.height / 4u; ++ty) {
-        for (uint32_t tx = 0u; tx < rect.width / 4u; ++tx) {
-          vkr_bake_lightmap_page_get_tile(
-              plane_rect.previous_page, page_size, format,
-              plane_rect.previous_x / 4u + tx, plane_rect.previous_y / 4u + ty,
-              bytes);
-          vkr_bake_lightmap_page_put_tile(&scratch.image, page_size, format,
-                                          rect.x / 4u + tx, rect.y / 4u + ty,
-                                          bytes);
-        }
-      }
+      vkr_bake_lightmap_page_copy_tiles(
+          plane_rect.previous_page, &scratch.image, page_size, format,
+          plane_rect.previous_x / 4u, plane_rect.previous_y / 4u, rect.x / 4u,
+          rect.y / 4u, rect.width / 4u, rect.height / 4u);
       bake->copied_rects += 1u;
       continue;
     }

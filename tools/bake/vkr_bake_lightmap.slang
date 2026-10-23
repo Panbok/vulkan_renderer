@@ -14,6 +14,9 @@
 static const float kPi = 3.14159265358979323846f;
 static const float kEpsilon = 1.0e-4f;
 static const uint kMaxSkips = 16u;
+/* beyond_range's squared-range factor: past it, a light's distance exceeds
+   its range whatever the rounding of sample_light's own test. */
+static const float kRangeCullMargin = 1.001f;
 
 float infinity()
 {
@@ -850,6 +853,23 @@ float3 sphere_light_point(float3 center, float radius, float3 toward_receiver,
    leaves on the light's side. With a positive `direction_weight`, each
    light's contribution also adds its luminance times that weight, times its
    direction, to `direction_sum` (w the weighted luminance). */
+/* Whether a point or spot light's range ends short of `position` by more
+   than float rounding, read from its position and range alone. Such a light
+   is one sample_light rejects before drawing a random number, so skipping
+   it changes nothing but the loads a far light costs. */
+bool beyond_range(uint index, float3 position)
+{
+    float4 position_kind = lights[index].position_kind;
+    float range = lights[index].direction_range.w;
+    uint kind = uint(position_kind.w);
+    if ((kind != 1u && kind != 2u) || !(range > 0.0f))
+    {
+        return false;
+    }
+    float3 to_light = position_kind.xyz - position;
+    return dot(to_light, to_light) > range * range * kRangeCullMargin;
+}
+
 float3 direct_irradiance(Transport transport, uint first_light, uint end_light,
                          float3 position, float3 normal, float3 geometric,
                          inout Rng rng, inout float4 direction_sum,
@@ -859,7 +879,12 @@ float3 direct_irradiance(Transport transport, uint first_light, uint end_light,
     float3 result = float3(0.0f);
     for (uint i = first_light; i < end_light; ++i)
     {
-        GpuLight light = lights[layer_lights[i]];
+        uint index = layer_lights[i];
+        if (beyond_range(index, position))
+        {
+            continue;
+        }
+        GpuLight light = lights[index];
         LightSample sample = sample_light(light, position, rng);
         if (!sample.valid)
         {

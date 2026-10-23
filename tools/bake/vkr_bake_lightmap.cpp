@@ -1233,6 +1233,30 @@ void vkr_bake_lightmap_page_get_tile(const uint8_t *page, uint32_t page_size,
   }
 }
 
+void vkr_bake_lightmap_page_copy_tiles(
+    const uint8_t *from, std::vector<uint8_t> *to, uint32_t page_size,
+    VkrLightmapPlaneFormat format, uint32_t from_x, uint32_t from_y,
+    uint32_t to_x, uint32_t to_y, uint32_t tiles_x, uint32_t tiles_y) {
+  /* A row of block tiles is contiguous, and so is a texel row of the
+     uncompressed formats. */
+  const uint32_t bytes = vkr_bake_lightmap_tile_bytes(format);
+  if (bytes == 16u) {
+    const size_t row = page_size / 4u;
+    for (uint32_t y = 0u; y < tiles_y; ++y) {
+      std::memcpy(to->data() + 16u * ((size_t)(to_y + y) * row + to_x),
+                  from + 16u * ((size_t)(from_y + y) * row + from_x),
+                  16u * (size_t)tiles_x);
+    }
+    return;
+  }
+  for (uint32_t y = 0u; y < 4u * tiles_y; ++y) {
+    std::memcpy(
+        to->data() + 4u * (((size_t)to_y * 4u + y) * page_size + to_x * 4u),
+        from + 4u * (((size_t)from_y * 4u + y) * page_size + from_x * 4u),
+        16u * (size_t)tiles_x);
+  }
+}
+
 namespace {
 
 /* Runs one astcenc compression or decompression over `threads` workers;

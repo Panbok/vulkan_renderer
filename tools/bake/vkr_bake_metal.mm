@@ -6,11 +6,13 @@
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <new>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -44,6 +46,8 @@ constexpr uint32_t kProbeSamplesPerDispatch = 1u;
 /* Material textures are resampled to this edge for transport: bounce light
    needs their low frequencies only. */
 constexpr uint32_t kTextureEdge = 128u;
+/* The most threads resampling material texture layers at once. */
+constexpr uint32_t kResampleWorkers = 8u;
 constexpr uint32_t kSkyWidth = 512u;
 constexpr uint32_t kSkyHeight = 256u;
 constexpr float kPi = 3.14159265358979323846f;
@@ -59,6 +63,9 @@ using namespace raytracing;
 constant float kPi = 3.14159265358979323846f;
 constant float kEpsilon = 1.0e-4f;
 constant uint kMaxSkips = 16u;
+/* beyond_range's squared-range factor: past it, a light's distance exceeds
+   its range whatever the rounding of sample_light's own test. */
+constant float kRangeCullMargin = 1.001f;
 
 static uint mix_seed(uint x) {
   x ^= x >> 16;
@@ -742,6 +749,20 @@ static float3 sphere_light_point(float3 center, float radius,
   return center + (u * cos(angle) + v * sin(angle)) * r;
 }
 
+/* Whether a point or spot light's range ends short of `position` by more
+   than float rounding, read from its position and range alone. Such a light
+   is one sample_light rejects before drawing a random number, so skipping
+   it changes nothing but the loads a far light costs. */
+static bool beyond_range(device const GpuLight &light, float3 position) {
+  uint kind = uint(light.position_kind.w);
+  float range = light.direction_range.w;
+  if ((kind != 1u && kind != 2u) || !(range > 0.0f)) {
+    return false;
+  }
+  float3 to_light = light.position_kind.xyz - position;
+  return dot(to_light, to_light) > range * range * kRangeCullMargin;
+}
+
 /* Direct irradiance from the layer lights [first_light, end_light) at a
    point with this normal. A point or spot light with an emitter radius is
    seen through `soft_rays` shadow rays across its disc, so its shadow takes
@@ -765,7 +786,11 @@ static float3 direct_irradiance(thread const Scene &scene,
                                 float soft_turn) {
   float3 result = float3(0.0f);
   for (uint i = first_light; i < end_light; ++i) {
-    GpuLight light = lights[layer_lights[i]];
+    device const GpuLight &candidate = lights[layer_lights[i]];
+    if (beyond_range(candidate, position)) {
+      continue;
+    }
+    GpuLight light = candidate;
     LightSample sample = sample_light(light, position, rng);
     if (!sample.valid) {
       continue;
@@ -1611,28 +1636,55 @@ bool upload_materials(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
   if (!context->textures) {
     return false;
   }
-  std::vector<float> rgba(4u * kTextureEdge * kTextureEdge, 1.0f);
-  std::vector<uint16_t> halves(rgba.size());
+  /* Each layer resamples on its own, so workers take layers in any order
+     and the halves come out the same. */
+  const size_t layer_values = 4u * kTextureEdge * kTextureEdge;
+  std::vector<uint16_t> halves(layers * layer_values);
   std::vector<float> layer_min_alpha(layers, 1.0f);
-  for (NSUInteger layer = 0u; layer < layers; ++layer) {
-    if (layer < layer_refs.size() &&
-        !vkr_bake_texture_store_resample(scene.texture_store, layer_refs[layer],
-                                         kTextureEdge, kTextureEdge,
-                                         rgba.data())) {
-      return false;
-    }
-    for (size_t i = 0u; i < rgba.size(); ++i) {
-      _Float16 half = (_Float16)rgba[i];
-      std::memcpy(&halves[i], &half, sizeof(uint16_t));
-      if (i % 4u == 3u) {
-        layer_min_alpha[layer] = std::fmin(layer_min_alpha[layer], (float)half);
+  std::atomic<NSUInteger> next_layer{0u};
+  std::atomic<bool> resampled{true};
+  auto resample_layers = [&]() {
+    std::vector<float> rgba(layer_values, 1.0f);
+    for (NSUInteger layer = next_layer++; layer < layers && resampled.load();
+         layer = next_layer++) {
+      if (layer < layer_refs.size() &&
+          !vkr_bake_texture_store_resample(scene.texture_store,
+                                           layer_refs[layer], kTextureEdge,
+                                           kTextureEdge, rgba.data())) {
+        resampled.store(false);
+        return;
+      }
+      uint16_t *target = &halves[layer * layer_values];
+      for (size_t i = 0u; i < layer_values; ++i) {
+        _Float16 half = (_Float16)rgba[i];
+        std::memcpy(&target[i], &half, sizeof(uint16_t));
+        if (i % 4u == 3u) {
+          layer_min_alpha[layer] =
+              std::fmin(layer_min_alpha[layer], (float)half);
+        }
       }
     }
+  };
+  const uint32_t workers =
+      std::max(1u, std::min({std::thread::hardware_concurrency(),
+                             kResampleWorkers, (uint32_t)layers}));
+  std::vector<std::thread> threads;
+  threads.reserve(workers);
+  for (uint32_t worker = 0u; worker < workers; ++worker) {
+    threads.emplace_back(resample_layers);
+  }
+  for (std::thread &thread : threads) {
+    thread.join();
+  }
+  if (!resampled.load()) {
+    return false;
+  }
+  for (NSUInteger layer = 0u; layer < layers; ++layer) {
     [context->textures
         replaceRegion:MTLRegionMake2D(0u, 0u, kTextureEdge, kTextureEdge)
           mipmapLevel:0u
                 slice:layer
-            withBytes:halves.data()
+            withBytes:&halves[layer * layer_values]
           bytesPerRow:kTextureEdge * 4u * sizeof(uint16_t)
         bytesPerImage:0u];
   }

@@ -580,6 +580,28 @@ volume, which a bake otherwise keeps when nothing it reads changed
   diffuse volume 47 s; peak footprint 2.72 GB. The Editor runs a project
   job until it finishes or is cancelled; a 30-minute limit stopped full
   bakes of about 38 minutes.
+- **Fixed costs, second pass (2026-10-23).** The bake commands take file
+  digests from the bakery's source index (`<cache>/index/paths.v1`, the
+  user cache unless `VKR_BAKERY_CACHE` names another): a file keeps its
+  digest while its size, time and file identity stay, and an index merges
+  the entries another process wrote when it closes, so a project job reads
+  the digests its bakes took. The closure check compares every size first,
+  then the scene's bytes, then the other files' and last the previous
+  output's; the published output's digest is taken from the bytes the bake
+  verified. The scene load decodes only the base level of an ASTC texture,
+  on up to eight threads with one decode context per block format, which
+  took 7.4 of its 15.5 s; material texture layers resample on eight
+  threads; the CPU BVH builds its top subtrees on threads into their own
+  nodes and appends them in the sequential order, node for node the tree
+  one thread builds; a copied rectangle copies whole rows of tiles; and a
+  gather skips a point or spot light whose range ends short of the point
+  before reading the rest of the light. On the Level Design Test copy above
+  the scene load took 6–7 s, GPU setup 1.5 s against 3.1 s, plane assembly
+  0.8 s against 4.9 s, the one-prop edit's gathers 23.4 s against 25.4 s,
+  and the job 90 s against 108 s (lightmaps 51 s, volume 27 s); an
+  unchanged job took 6 s, its two bake commands 0.25 s each. The same edit
+  from the same state gave the same set and volume bytes before and after
+  these cuts (sha256 `0720bed0…` and `fa589a69…`).
 - **Bake geometry.** A model with source-node edits bakes from a variant
   of its cooked mesh with the edits patched in. The project runner keeps
   variants and model inspections in the workspace's `jobs/variants`, named

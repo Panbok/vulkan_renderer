@@ -327,21 +327,14 @@ vkr_internal int vkr_bakery_parse(int argc, char **argv, VkrBakeryCli *cli) {
   return 0;
 }
 
-vkr_internal bool8_t vkr_bakery_resolve_config(VkrBakeryCli *cli) {
-  VkrBakeryConfig *config = &cli->config;
-  if (!vkr_bakery_executable_path(config->self_path,
-                                  sizeof(config->self_path))) {
-    fprintf(stderr, "error: cannot locate the vkr_bakery executable\n");
-    return false_v;
-  }
-  if (!vkr_bakery_path_absolute(cli->root_option ? cli->root_option : ".",
-                                config->root, sizeof(config->root))) {
-    return false_v;
-  }
+/* The cache root: `option`, else $VKR_BAKERY_CACHE, else the user's cache
+   folder, made absolute. */
+vkr_internal bool8_t vkr_bakery_cache_directory(const char *option, char *out,
+                                                uint32_t capacity) {
   /* The variable is read as UTF-8: getenv would hand Windows a cache under a
      non-ASCII profile folder in the active code page, which names no folder. */
   char environment_cache[VKR_BAKERY_PATH_CAPACITY];
-  const char *cache = cli->cache_option;
+  const char *cache = option;
   if (!cache) {
     if (!vkr_platform_environment_variable(
             "VKR_BAKERY_CACHE", environment_cache, sizeof(environment_cache))) {
@@ -361,8 +354,22 @@ vkr_internal bool8_t vkr_bakery_resolve_config(VkrBakeryCli *cli) {
     }
     cache = default_cache;
   }
-  if (!vkr_bakery_path_absolute(cache, config->cache_dir,
-                                sizeof(config->cache_dir))) {
+  return vkr_bakery_path_absolute(cache, out, capacity);
+}
+
+vkr_internal bool8_t vkr_bakery_resolve_config(VkrBakeryCli *cli) {
+  VkrBakeryConfig *config = &cli->config;
+  if (!vkr_bakery_executable_path(config->self_path,
+                                  sizeof(config->self_path))) {
+    fprintf(stderr, "error: cannot locate the vkr_bakery executable\n");
+    return false_v;
+  }
+  if (!vkr_bakery_path_absolute(cli->root_option ? cli->root_option : ".",
+                                config->root, sizeof(config->root))) {
+    return false_v;
+  }
+  if (!vkr_bakery_cache_directory(cli->cache_option, config->cache_dir,
+                                  sizeof(config->cache_dir))) {
     return false_v;
   }
   if (!config->platform[0]) {
@@ -507,8 +514,14 @@ VKR_MAIN(argc, argv) {
     bakery_sparse_open();
     VkrBakeryConfig *config = (VkrBakeryConfig *)calloc(1u, sizeof(*config));
     int code = VKR_BAKERY_EXIT_ENVIRONMENT;
+    /* The bake checks file digests against the cache's source index, as
+       a build does; without a cache folder it hashes every file. */
     if (config && vkr_bakery_executable_path(config->self_path,
                                              sizeof(config->self_path))) {
+      if (!vkr_bakery_cache_directory(NULL, config->cache_dir,
+                                      sizeof(config->cache_dir))) {
+        config->cache_dir[0] = '\0';
+      }
       code = strcmp(argv[1], "bake") == 0
                  ? vkr_bakery_bake_main(config, argc - 2, argv + 2)
                  : vkr_bakery_preview_main(config, argc - 2, argv + 2);

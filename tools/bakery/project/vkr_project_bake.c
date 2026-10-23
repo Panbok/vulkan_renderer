@@ -1217,6 +1217,8 @@ vkr_project_record_bake_artifact(VkrProjectJob *job, const char *asset_root,
   char hash[VKR_BAKERY_SHA256_HEX];
   VKR_PROJECT_TRY(vkr_project_managed_reference(job, artifact->destination,
                                                 asset_root, &path_reference));
+  /* The bake took the artifact's digest as it verified it. */
+  vkr_bakery_index_merge_disk(vkr_project_index(job));
   VKR_PROJECT_TRY(vkr_project_digest(job, artifact->destination, hash));
   char id[37];
   vkr_project_uuid4(id);

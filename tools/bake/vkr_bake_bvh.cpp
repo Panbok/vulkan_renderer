@@ -4,6 +4,10 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <new>
+#include <system_error>
+#include <thread>
 
 namespace {
 
@@ -319,6 +323,106 @@ bool8_t vkr_bake_build_range(VkrBakeBvhBuildContext *context, uint32_t first,
   return true_v;
 }
 
+/* The deepest level whose two subtrees build at once, and the fewest
+   triangles such a split takes: a large subtree keeps splitting across
+   threads however unevenly the scene's triangles fall. */
+constexpr uint32_t kBvhParallelDepth = 8u;
+constexpr uint32_t kBvhParallelTriangles = 131072u;
+
+/* Appends the nodes `from` built from index 0 to `to`, shifting their child
+   indices by where they land. */
+void vkr_bake_append_subtree(VkrBakeBvhBuildContext *to,
+                             const VkrBakeBvhBuildContext &from) {
+  const uint32_t base = to->node_count;
+  for (uint32_t i = 0u; i < from.node_count; ++i) {
+    VkrBakeBvhNode node = from.nodes[i];
+    if (node.left_child != VKR_BAKE_BVH_INVALID_NODE) {
+      node.left_child += base;
+      node.right_child += base;
+    }
+    to->nodes[base + i] = node;
+  }
+  to->node_count += from.node_count;
+}
+
+/*
+ * As vkr_bake_build_range, with the two subtrees of each of the top
+ * `parallel_depth` levels built at once, each into its own nodes, and then
+ * appended in the order the sequential build writes them: a node, its whole
+ * left subtree, then its right subtree. Subtrees partition disjoint
+ * triangle ranges, so the tree and triangle order are the ones
+ * vkr_bake_build_range builds, node for node.
+ */
+bool8_t vkr_bake_build_range_parallel(VkrBakeBvhBuildContext *context,
+                                      uint32_t first, uint32_t count,
+                                      uint32_t depth, uint32_t parallel_depth,
+                                      uint32_t *out_node_index) {
+  if (parallel_depth == 0u || count < kBvhParallelTriangles) {
+    return vkr_bake_build_range(context, first, count, depth, out_node_index);
+  }
+  if (context->node_count >= context->node_capacity ||
+      depth > VKR_BAKE_BVH_MAX_DEPTH)
+    return false_v;
+  const uint32_t node_index = context->node_count++;
+  context->nodes[node_index] = VkrBakeBvhNode{
+      vkr_bake_range_bounds(&context->geometry, first, count),
+      VKR_BAKE_BVH_INVALID_NODE, VKR_BAKE_BVH_INVALID_NODE, 0u, 0u};
+  const VkrBakeAabb centroid_bounds =
+      vkr_bake_range_centroid_bounds(&context->geometry, first, count);
+  const VkrBakeBvhSplit split =
+      vkr_bake_choose_split(&context->geometry, first, count, centroid_bounds);
+  uint32_t left_count =
+      split.found ? vkr_bake_partition_for_split(&context->geometry, first,
+                                                 count, centroid_bounds, split)
+                  : 0u;
+  if (left_count == 0u || left_count == count)
+    left_count = count / 2u;
+  const uint32_t right_count = count - left_count;
+  if (!left_count || !right_count)
+    return false_v;
+
+  std::unique_ptr<VkrBakeBvhNode[]> left_nodes(
+      new (std::nothrow) VkrBakeBvhNode[2u * (size_t)left_count - 1u]);
+  std::unique_ptr<VkrBakeBvhNode[]> right_nodes(
+      new (std::nothrow) VkrBakeBvhNode[2u * (size_t)right_count - 1u]);
+  if (!left_nodes || !right_nodes)
+    return false_v;
+  VkrBakeBvhBuildContext left = {context->geometry, left_nodes.get(),
+                                 2u * left_count - 1u, 0u};
+  VkrBakeBvhBuildContext right = {context->geometry, right_nodes.get(),
+                                  2u * right_count - 1u, 0u};
+  uint32_t left_root = VKR_BAKE_BVH_INVALID_NODE;
+  uint32_t right_root = VKR_BAKE_BVH_INVALID_NODE;
+  bool8_t left_built = false_v;
+  auto build_left = [&]() {
+    left_built = vkr_bake_build_range_parallel(
+        &left, first, left_count, depth + 1u, parallel_depth - 1u, &left_root);
+  };
+  std::thread left_thread;
+  try {
+    left_thread = std::thread(build_left);
+  } catch (const std::system_error &) {
+    build_left();
+  }
+  const bool8_t right_built = vkr_bake_build_range_parallel(
+      &right, first + left_count, right_count, depth + 1u, parallel_depth - 1u,
+      &right_root);
+  if (left_thread.joinable())
+    left_thread.join();
+  if (!left_built || !right_built || left_root != 0u || right_root != 0u ||
+      context->node_count + left.node_count + right.node_count >
+          context->node_capacity)
+    return false_v;
+  const uint32_t left_child = context->node_count;
+  vkr_bake_append_subtree(context, left);
+  const uint32_t right_child = context->node_count;
+  vkr_bake_append_subtree(context, right);
+  context->nodes[node_index].left_child = left_child;
+  context->nodes[node_index].right_child = right_child;
+  *out_node_index = node_index;
+  return true_v;
+}
+
 bool8_t vkr_bake_ray_valid(VkrBakeRay ray) {
   return vkr_bake_finite_vec3(ray.origin) &&
          vkr_bake_finite_vec3(ray.direction) && std::isfinite(ray.t_min) &&
@@ -450,7 +554,8 @@ bool8_t vkr_bake_bvh_build(VkrBakeGeometry geometry, Arena *arena,
   VkrBakeBvhBuildContext context = {geometry, nodes, (uint32_t)node_capacity,
                                     0u};
   uint32_t root = VKR_BAKE_BVH_INVALID_NODE;
-  if (!vkr_bake_build_range(&context, 0u, geometry.triangle_count, 0u, &root) ||
+  if (!vkr_bake_build_range_parallel(&context, 0u, geometry.triangle_count, 0u,
+                                     kBvhParallelDepth, &root) ||
       root != 0u) {
     scratch_destroy(allocation, ARENA_MEMORY_TAG_ARRAY);
     return false_v;

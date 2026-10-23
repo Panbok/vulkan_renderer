@@ -232,6 +232,9 @@ same stored offset. On the Level Design Test copy above (285,765 probes)
 visibility took 5.7 s against 20.6 s and the volume bake after a one-prop
 move 47 s against 84 s, gathering 0.9% of the probe-bands; the job's other
 cuts are in [ADR-088](088-baked-lightmap-sets.md) Rebakes (fixed costs).
+Since a second pass of those cuts the CPU BVH that placement and
+visibility read builds on threads, the same tree node for node: placement
+took 2.7 s against 6.6 s and the one-prop volume bake 27 s (2026-10-23).
 
 ### Runtime
 

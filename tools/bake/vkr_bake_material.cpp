@@ -10,13 +10,16 @@ extern "C" {
 #include "memory/vkr_arena_allocator.h"
 }
 
+#include <ktx-software/external/astc-encoder/Source/astcenc.h>
 #include <ktx-software/external/basisu/encoder/basisu_gpu_texture.h>
 #include <ktx.h>
 #include <vulkan/vulkan_core.h>
 
 #include <stb_image.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -25,6 +28,7 @@ extern "C" {
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -47,11 +51,18 @@ struct VkrBakeTextureEntry {
   bool8_t alpha_mask;
 };
 
+/* LDR ASTC block formats: 14 block sizes, each UNORM then sRGB. */
+constexpr uint32_t k_astc_format_count = 28u;
+
 struct VkrBakeTextureStore {
   VkrAllocator *allocator;
   VkrBakeTextureEntry *entries;
   uint32_t count;
   uint32_t capacity;
+  /* Per LDR ASTC format, the decode context its textures share, made at
+     its first texture with k_astc_workers threads; a context costs about
+     a millisecond to build. */
+  astcenc_context *astc_contexts[k_astc_format_count];
 };
 
 namespace {
@@ -518,6 +529,102 @@ bool8_t decode_bc_level(uint32_t vk_format, const uint8_t *blocks,
   return true_v;
 }
 
+/* Texture rows of ASTC blocks per decode worker below which one worker
+   decodes the whole image, and the most workers a decode takes. */
+constexpr uint32_t k_astc_rows_per_worker = 32u;
+constexpr uint32_t k_astc_workers = 8u;
+
+/* Decodes the base level of an LDR ASTC texture to RGBA8 on several
+   workers, as ktxTexture2_DecodeAstc decodes each level on one: the same
+   profile (sRGB by the format), swizzle and 8-bit output, so the texels
+   match byte for byte. The other levels are never sampled, so they are not
+   decoded. False for a format this does not decode, such as HDR ASTC. */
+bool8_t decode_astc_base_level(ktxTexture2 *texture, VkrBakeTextureStore *store,
+                               VkrBakeTextureEntry *entry) {
+  static constexpr uint8_t k_block_sizes[][2] = {
+      {4u, 4u},  {5u, 4u},   {5u, 5u},   {6u, 5u},  {6u, 6u},
+      {8u, 5u},  {8u, 6u},   {8u, 8u},   {10u, 5u}, {10u, 6u},
+      {10u, 8u}, {10u, 10u}, {12u, 10u}, {12u, 12u}};
+  if (texture->vkFormat < VK_FORMAT_ASTC_4x4_UNORM_BLOCK ||
+      texture->vkFormat > VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+    return false_v;
+  }
+  const uint32_t format = texture->vkFormat - VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+  const uint32_t block_x = k_block_sizes[format / 2u][0];
+  const uint32_t block_y = k_block_sizes[format / 2u][1];
+  const bool8_t srgb = (format & 1u) != 0u;
+  ktxTexture *base = ktxTexture(texture);
+  const uint32_t width = base->baseWidth;
+  const uint32_t height = base->baseHeight;
+  const uint64_t blocks = (uint64_t)((width + block_x - 1u) / block_x) *
+                          ((height + block_y - 1u) / block_y);
+  ktx_size_t offset = 0u;
+  uint64_t expected = 0u;
+  const uint8_t *data = ktxTexture_GetData(base);
+  if (ktxTexture_GetImageOffset(base, 0u, 0u, 0u, &offset) != KTX_SUCCESS ||
+      !data || offset > ktxTexture_GetDataSize(base) ||
+      blocks * 16u > ktxTexture_GetDataSize(base) - offset ||
+      !checked_texel_bytes(width, height, 4u, &expected)) {
+    return false_v;
+  }
+  astcenc_context *&context = store->astc_contexts[format];
+  if (!context) {
+    astcenc_config config;
+    if (astcenc_config_init(srgb ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR,
+                            block_x, block_y, 1u, ASTCENC_PRE_MEDIUM,
+                            ASTCENC_FLG_DECOMPRESS_ONLY,
+                            &config) != ASTCENC_SUCCESS ||
+        astcenc_context_alloc(&config, k_astc_workers, &context) !=
+            ASTCENC_SUCCESS) {
+      context = nullptr;
+      return false_v;
+    }
+  }
+  const uint32_t block_rows = (height + block_y - 1u) / block_y;
+  const uint32_t workers = std::max(
+      1u, std::min({std::thread::hardware_concurrency(), k_astc_workers,
+                    block_rows / k_astc_rows_per_worker}));
+  /* A context made for several threads starts each image after a reset. */
+  astcenc_decompress_reset(context);
+  entry->rgba8 = (uint8_t *)vkr_allocator_alloc(
+      store->allocator, expected, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  bool8_t decoded = entry->rgba8 != nullptr;
+  if (decoded) {
+    void *slice = entry->rgba8;
+    astcenc_image image = {width, height, 1u, ASTCENC_TYPE_U8, &slice};
+    const astcenc_swizzle swizzle = {ASTCENC_SWZ_R, ASTCENC_SWZ_G,
+                                     ASTCENC_SWZ_B, ASTCENC_SWZ_A};
+    std::atomic<bool> failed{false};
+    auto decode = [&](uint32_t worker) {
+      if (astcenc_decompress_image(context, data + offset, blocks * 16u, &image,
+                                   &swizzle, worker) != ASTCENC_SUCCESS) {
+        failed.store(true);
+      }
+    };
+    if (workers == 1u) {
+      decode(0u);
+    } else {
+      std::vector<std::thread> threads;
+      threads.reserve(workers);
+      for (uint32_t worker = 0u; worker < workers; ++worker) {
+        threads.emplace_back(decode, worker);
+      }
+      for (std::thread &thread : threads) {
+        thread.join();
+      }
+    }
+    decoded = !failed.load();
+  }
+  if (!decoded) {
+    return false_v;
+  }
+  entry->texel_bytes = expected;
+  entry->width = width;
+  entry->height = height;
+  entry->face_count = 1u;
+  return true_v;
+}
+
 bool8_t decode_ktx2(VkrBakeTextureStore *store, const fs::path &path,
                     VkrBakeTextureEntry *entry) {
   ktxTexture2 *texture = nullptr;
@@ -543,11 +650,12 @@ bool8_t decode_ktx2(VkrBakeTextureStore *store, const fs::path &path,
                               &hint_size, &hint) == KTX_SUCCESS &&
         hint && hint_size == 5u && memcmp(hint, "srgb", 5u) == 0)
       entry->srgb_hint = true_v;
-    // Native ASTC blocks decode to RGBA8 through libktx, in place.
+    // LDR ASTC blocks decode to RGBA8, the base level only.
     if (texture->vkFormat >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK &&
-        texture->vkFormat <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK &&
-        ktxTexture2_DecodeAstc(texture) != KTX_SUCCESS)
+        texture->vkFormat <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+      success = decode_astc_base_level(texture, store, entry);
       break;
+    }
     ktx_size_t offset = 0u;
     if (ktxTexture_GetImageOffset(base, 0u, 0u, 0u, &offset) != KTX_SUCCESS)
       break;
@@ -617,10 +725,23 @@ void analyze_alpha(VkrBakeTextureEntry *entry) {
   entry->alpha_mask = true_v;
   const uint64_t pixels =
       (uint64_t)entry->width * entry->height * entry->face_count;
+  if (!entry->is_float) {
+    /* An 8-bit alpha a reads as a / 255: below 0.999 means a <= 254, above
+       0.001 means a >= 1. Once a texel is partial, nothing changes. */
+    for (uint64_t i = 0u; i < pixels; ++i) {
+      const uint8_t alpha = entry->rgba8[i * 4u + 3u];
+      if (alpha != 255u) {
+        entry->has_transparency = true_v;
+        if (alpha != 0u) {
+          entry->alpha_mask = false_v;
+          return;
+        }
+      }
+    }
+    return;
+  }
   for (uint64_t i = 0u; i < pixels; ++i) {
-    const float32_t alpha = entry->is_float
-                                ? entry->rgba32[i * 4u + 3u]
-                                : entry->rgba8[i * 4u + 3u] / 255.0f;
+    const float32_t alpha = entry->rgba32[i * 4u + 3u];
     if (alpha < 0.999f)
       entry->has_transparency = true_v;
     if (alpha > 0.001f && alpha < 0.999f)
@@ -906,6 +1027,9 @@ extern "C" void vkr_bake_texture_store_release(VkrBakeTextureStore *store) {
     return;
   for (uint32_t i = 0u; i < store->count; ++i)
     texture_entry_release(store->allocator, &store->entries[i]);
+  for (astcenc_context *context : store->astc_contexts)
+    if (context)
+      astcenc_context_free(context);
   if (store->entries)
     vkr_allocator_free(store->allocator, store->entries,
                        (uint64_t)store->capacity * sizeof(*store->entries),

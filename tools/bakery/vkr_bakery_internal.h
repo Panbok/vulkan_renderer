@@ -81,6 +81,12 @@ void vkr_bakery_index_prefetch(VkrBakeryIndex *index, const char *const *paths,
  * Main thread only. */
 void vkr_bakery_index_move_tree(VkrBakeryIndex *index, const char *from,
                                 const char *to);
+/** Adds the entries the index file on disk holds for paths this index has
+ * no hash for: another process, such as a bake a project job ran, may have
+ * written them since this index loaded. Close merges the same way, so
+ * concurrent runs keep each other's hashes; an entry is checked against its
+ * file whenever it is used. Main thread only. */
+void vkr_bakery_index_merge_disk(VkrBakeryIndex *index);
 /** Records a known hash for a file just written by this process. */
 void vkr_bakery_index_record(VkrBakeryIndex *index, const char *path,
                              const char *hash);
