@@ -592,6 +592,15 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
     uint32_t height, VkrDeviceRequirements *device_requirements,
     const VkrRendererBackendConfig *backend_config,
     VkrRendererError *out_error);
+
+/* Whether texture reloads copy the levels the replaced texture holds on the
+   GPU (VkrDeviceInformation.supports_texture_level_copy, ADR-012). Both
+   backends copy; the VKR_TEXTURE_LEVEL_COPY_DISABLED diagnostic makes every
+   reload read its levels, for copies on/off comparisons. */
+vkr_internal bool8_t vkr_renderer_texture_level_copy(void) {
+  return !vkr_platform_environment_flag("VKR_TEXTURE_LEVEL_COPY_DISABLED");
+}
+
 vkr_internal void vkr_renderer_backend_destroy(VkrRenderer *renderer);
 vkr_internal void vkr_renderer_backend_get_device_information(
     VkrRenderer *renderer, VkrDeviceInformation *device_information,
@@ -1910,6 +1919,7 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .supports_texture_astc_hdr = true_v,
       .supports_texture_bc7 = true_v,
       .supports_texture_bc5 = true_v,
+      .supports_texture_level_copy = vkr_renderer_texture_level_copy(),
       .graphics_pipeline = renderer->graphics_pipeline,
       .actual_target_kind = renderer->present_target.kind,
       .actual_present_mode = actual_present_mode,
@@ -2013,7 +2023,7 @@ vkr_internal void vkr_renderer_backend_get_device_information(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC7_UNORM),
       .supports_texture_bc5 = vkr_vulkan_renderer_texture_format_supported(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC5_UNORM),
-      .supports_texture_level_copy = true_v,
+      .supports_texture_level_copy = vkr_renderer_texture_level_copy(),
       .graphics_pipeline = renderer->graphics_pipeline,
       .actual_target_kind = renderer->present_target.kind,
       .actual_present_mode = present_mode,

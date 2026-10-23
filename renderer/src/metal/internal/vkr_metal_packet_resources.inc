@@ -1395,16 +1395,64 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
   }
 }
 
+/* The published texture whose smallest levels `prepared` copies, NULL with
+   `out_error` when it cannot serve: it must be live, a one-layer 2D texture
+   in the same pixel format whose upload has completed on the GPU, and hold
+   the copied levels at the extents the new texture gives them. A source
+   whose upload is still in flight is RESOURCE_BUSY, so the publication
+   retries while the old texture keeps drawing (owner decision 2026-10-23). */
+vkr_internal VkrMetalPacketTexture *vkr_metal_packet_texture_copy_source(
+    VkrMetalPacketRenderer *renderer, const VkrTexturePreparedLoad *prepared,
+    MTLPixelFormat pixel_format, VkrRendererError *out_error)
+    API_AVAILABLE(macos(26.0)) {
+  *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  VkrMetalPacketTexture *source =
+      vkr_metal_packet_resolve_texture(renderer, prepared->copy_source);
+  if (!source || !source->resource.metal_texture) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    return NULL;
+  }
+  if (source->upload_submit_value > vkr_metal_packet_completed(renderer)) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_BUSY;
+    return NULL;
+  }
+  id<MTLTexture> image = (id<MTLTexture>)source->resource.metal_texture;
+  const uint32_t copied = prepared->copy_mip_levels;
+  const uint32_t source_level = (uint32_t)image.mipmapLevelCount - copied;
+  const uint32_t destination_level = prepared->upload_mip_levels - copied;
+  if (!copied || prepared->description.type != VKR_TEXTURE_TYPE_2D ||
+      prepared->upload_array_layers != 1u ||
+      image.textureType != MTLTextureType2D || image.arrayLength != 1u ||
+      image.pixelFormat != pixel_format || image.mipmapLevelCount < copied ||
+      Max(1u, (uint32_t)image.width >> source_level) !=
+          Max(1u, prepared->description.width >> destination_level) ||
+      Max(1u, (uint32_t)image.height >> source_level) !=
+          Max(1u, prepared->description.height >> destination_level)) {
+    log_error("Metal cannot copy %u levels from texture %u:%u", copied,
+              prepared->copy_source.id, prepared->copy_source.generation);
+    return NULL;
+  }
+  return source;
+}
+
 VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *prepared) {
   @autoreleasepool {
+    /* Levels copied from another texture (copy_source) take no upload; a
+       load that copies every level uploads nothing. */
+    const bool8_t copies_all =
+        prepared && prepared->copy_source.id != 0u &&
+        prepared->copy_mip_levels == prepared->upload_mip_levels;
     if (!renderer || !prepared ||
         (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
         handle.id == 0 || handle.id > renderer->max_textures ||
-        handle.generation == VKR_INVALID_ID || !prepared->upload_data ||
-        prepared->upload_data_size == 0 || !prepared->upload_regions ||
-        prepared->upload_region_count == 0 ||
+        handle.generation == VKR_INVALID_ID ||
+        (!copies_all &&
+         (!prepared->upload_data || prepared->upload_data_size == 0 ||
+          !prepared->upload_regions || prepared->upload_region_count == 0)) ||
+        (prepared->copy_source.id != 0u) != (prepared->copy_mip_levels != 0u) ||
+        prepared->copy_mip_levels > prepared->upload_mip_levels ||
         prepared->description.width == 0 || prepared->description.height == 0 ||
         prepared->description.width > VKR_TEXTURE_MAX_DIMENSION ||
         prepared->description.height > VKR_TEXTURE_MAX_DIMENSION ||
@@ -1423,6 +1471,14 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
         vkr_metal_packet_pixel_format(prepared->description.format);
     if (pixel_format == MTLPixelFormatInvalid)
       return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    VkrMetalPacketTexture *copy_source = NULL;
+    if (prepared->copy_source.id != 0u) {
+      VkrRendererError copy_error = VKR_RENDERER_ERROR_NONE;
+      copy_source = vkr_metal_packet_texture_copy_source(
+          renderer, prepared, pixel_format, &copy_error);
+      if (!copy_source)
+        return copy_error;
+    }
     const VkrMetalPacketTextureUpload payload = {
         .data = prepared->upload_data,
         .data_size = prepared->upload_data_size,
@@ -1431,6 +1487,8 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
         .is_compressed = prepared->upload_is_compressed,
         .region_count = prepared->upload_region_count,
         .regions = prepared->upload_regions,
+        .copy_source = copy_source ? copy_source->resource.metal_texture : NULL,
+        .copy_mip_levels = copy_source ? prepared->copy_mip_levels : 0u,
     };
     /* An upload in chunks takes no batch and the publication slot of its
        largest chunk. */
@@ -1552,6 +1610,11 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
     slot->last_use_submit_value =
         batched ? renderer->submit_value + 1u : renderer->submit_value;
     slot->upload_submit_value = slot->last_use_submit_value;
+    /* The copy read the source in that submission, which its retirement
+       waits for. */
+    if (copy_source)
+      copy_source->last_use_submit_value =
+          Max(copy_source->last_use_submit_value, slot->last_use_submit_value);
     slot->live = true_v;
     VKR_METAL_DIAGNOSTIC(
         renderer, "texture_publish",

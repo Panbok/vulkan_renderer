@@ -55,6 +55,12 @@ typedef struct VkrMetalPacketTextureUpload {
   bool8_t is_compressed;
   uint32_t region_count;
   const VkrTextureUploadRegion *regions;
+  /** An id<MTLTexture> whose smallest `copy_mip_levels` levels a blit copies
+      into the destination's smallest levels before the regions fill the
+      larger ones (VkrTexturePreparedLoad.copy_source); NULL for none. The
+      regions then cover only the larger levels, or none. */
+  void *copy_source;
+  uint32_t copy_mip_levels;
 } VkrMetalPacketTextureUpload;
 
 typedef enum VkrMetalPacketTargetKind {

@@ -234,13 +234,11 @@ the budget, and over the budget only reloads that shrink may start. A raise
 scan, at most once per 16 epochs, doubles the caps of drawn textures, newest
 demand and smallest first, while the projected bytes stay under 7/8 of the
 budget, and clears a cap that reaches the source extent or the material limit.
-Each reload allocates a new image. On Vulkan it copies the levels the
-replaced texture already holds on the GPU and reads and uploads only the
-levels it adds ([ADR-012](012-texture-compression-pipeline.md)); Metal
-reloads every kept level. The order follows the
-material's draw epoch, not the mip a view needs; GPU feedback (the
-[texture streaming proposal](../proposals/texture-streaming.md)) would replace
-it. `asset.material.texture_stream.mip_lowered_total` and `mip_raised_total`
+Each reload allocates a new image. Both backends copy the levels the
+replaced texture already holds on the GPU and read and upload only the
+levels it adds ([ADR-012](012-texture-compression-pipeline.md)). Without a
+measured need the order follows the material's draw epoch, not the mip a
+view needs; the GPU demand below supplies that need. `asset.material.texture_stream.mip_lowered_total` and `mip_raised_total`
 count the steps.
 
 On the desktop pipeline the GPU measures what each material needs
@@ -331,7 +329,9 @@ and the texture load retries on a later frame.
 
 A texture publication can name a copy source
 (`VkrTexturePreparedLoad.copy_source`, only where the device reports
-`supports_texture_level_copy`; Vulkan does, Metal does not yet). Vulkan
+`supports_texture_level_copy`; both backends do, and the
+`VKR_TEXTURE_LEVEL_COPY_DISABLED` diagnostic turns it off for comparisons).
+Vulkan
 accepts a live, initialized source of the same format whose smallest levels
 match the new image's at the same extents, and returns
 `VKR_RENDERER_ERROR_RESOURCE_BUSY` while the source still initializes. The
@@ -344,6 +344,23 @@ the frame's passes. The commit after that submission drops the reference and
 raises the source's last use to the submission; uploads of the larger levels
 then follow through the bounded staging chunks. Texture images carry
 `TRANSFER_SRC` usage where their format allows it.
+
+Metal accepts a live one-layer 2D source in the same pixel format whose
+copied levels sit at the new texture's extents and whose own upload has
+completed on the GPU; one whose upload is still in flight returns
+`VKR_RENDERER_ERROR_RESOURCE_BUSY`, so the load retries while the old
+texture keeps drawing (owner decision, 2026-10-23;
+`vkr_metal_packet_texture_copy_source`). The new texture's upload command
+buffer copies the levels with its compute encoder's `copyFromTexture` before
+the buffer copies of the larger levels, which fill other levels, so neither
+waits for the other; a shrink submits the copy alone, and a batched upload
+copies in the batch's encoder. The source's last use rises to that
+submission, which its retirement waits for. Evidence (2026-10-23, M1 Pro,
+Release, `metal_bistro_texture_pressure` at
+`VKR_TEXTURE_STREAM_BUDGET_MB=1200`): 418 to 430 copying publications of
+about 1,120 applied per run, all 632 textures resident, none evicted; a
+base-colour capture with copies matched one without bit for bit; one Metal
+API validation run reported no error.
 
 Evidence (2026-10-22, RX 6700 XT 12 GB, Windows 10, Release,
 `vkr_harness profile --case tools/cases/local/vulkan_bistro_texture_pressure.case.json

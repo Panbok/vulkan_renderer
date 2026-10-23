@@ -209,7 +209,7 @@ proposal).
 
 A material texture reload names the texture it replaces in its request,
 `from=<id>.<generation>.<levels>`, when the renderer reports
-`supports_texture_level_copy` (Vulkan; Metal does not yet) and that texture
+`supports_texture_level_copy` (both backends) and that texture
 is a confirmed 2D texture a limit can shorten. Both hold suffixes of one
 stored chain, so the replaced texture already holds the reload's smallest
 levels, or all of them for a shrink. The load reads the header, level index
@@ -225,6 +225,11 @@ never read. A path too long for the query, a file still arriving from a
 remote, or a supercompressed file reloads by reading as before. The backend
 copies on the GPU ([ADR-024](024-shared-bindless-gpu-cores.md)).
 `asset.texture.level_copy_total` counts confirmed copying publications.
+On the M1 Pro (Release, `metal_bistro_texture_pressure`,
+`VKR_TEXTURE_STREAM_BUDGET_MB=1200`, 2026-10-23): 422 and 430 of about 1,118
+applied reloads copied, and all 632 textures were ready after 6.7 and 7.6 s;
+with `VKR_TEXTURE_LEVEL_COPY_DISABLED` they were ready after 6.5 and 7.4 s,
+so copying does not shorten that time on Metal either.
 Bistro on the RX 6700 XT (Release, `vulkan_bistro_texture_pressure`,
 `VKR_VULKAN_MEMORY_BUDGET_MB=6000`, 2026-10-23, Chrome open): about 470
 reloads applied per run, 419 and 431 of them copying, 605 and 615 lowering

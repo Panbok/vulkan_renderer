@@ -61,10 +61,9 @@ owns fetching bytes from a remote depot and their transport order, and
   real budget increase or a Scene memory-relief generation
   ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). On both pipelines
   the budget lowers mips beyond each material's measured extent first; the
-  tiled pipeline measures it only while the budget binds. On Vulkan a step's
+  tiled pipeline measures it only while the budget binds. Each step's
   reload copies the levels the replaced texture holds on the GPU and reads
-  and uploads only the levels it adds, none for a shrink (ADR-012); Metal
-  reloads every kept level.
+  and uploads only the levels it adds, none for a shrink (ADR-012).
 - **Budget owner.** The automatic policy derives the texture allowance from
   the heaps' usage and budget: pressure starts at 90% of the budget, ends below
   75% and targets 80%; under Metal's cap the allowance never drops below the
@@ -127,20 +126,15 @@ demand keeps resident.
 1. **Trim without pressure.** Lower textures to their measured need with no
    budget pressure, so only the mips the camera needs stay resident
    (deferred by the owner on 2026-10-22 because each step republishes the
-   texture). On Vulkan a step now copies the kept levels and reads only
-   added ones (item 2), but still publishes a new texture.
-2. **Grow and shrink on Metal.** Vulkan reloads copy the levels the replaced
-   texture holds and read and upload only the added ones (ADR-012, ADR-024).
-   Metal reports no `supports_texture_level_copy`; its adapter would copy
-   the levels with a blit encoder, retain the source until that command
-   buffer completes, and then report the capability.
-3. **Floor first.** Load each new texture first at its 128-texel floor, so
+   texture). A step now copies the kept levels and reads only added ones
+   on both pipelines (ADR-012), but still publishes a new texture.
+2. **Floor first.** Load each new texture first at its 128-texel floor, so
    it appears at once at low detail. Done as a second full load it took
    Bistro's full detail from 27 to 35 s on the RX 6700 XT, and the owner
    deferred it on 2026-10-22 (ADR-012). The second step now uploads only the
    levels above the floor, but each texture still publishes twice, which
    that cost came from; it needs a measurement before it returns.
-4. **One priority for local and remote loads.** Done for ordering: local
+3. **One priority for local and remote loads.** Done for ordering: local
    reloads and remote whole-file downloads follow one order from the
    measured demand (ADR-012). A remote texture still downloads whole once
    drawn; fetching only the mips its need holds would trim without pressure
