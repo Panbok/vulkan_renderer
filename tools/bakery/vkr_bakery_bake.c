@@ -1119,6 +1119,71 @@ vkr_internal bool8_t vkr_bake_previous_current(VkrBake *bake,
   return current;
 }
 
+/*
+ * Whether `previous`, baked with this fingerprint, is current without a
+ * scene load: it is still the file its sidecar describes, `scene` has the
+ * bytes the scene it was baked from had, and every other file it read
+ * still has the bytes it recorded. A recorded file beside the previous
+ * scene is checked beside `scene`, where the same scene text would find
+ * it. Any doubt means it is not; the inspection then decides.
+ */
+vkr_internal bool8_t vkr_bake_closure_current(VkrBake *bake,
+                                              const char *previous,
+                                              const char *fingerprint,
+                                              const char *scene,
+                                              char out_sha256[72]) {
+  const VkrBakeryJson *metadata =
+      vkr_bake_previous_metadata(bake, previous, fingerprint);
+  const char *previous_scene =
+      metadata
+          ? vkr_bake_text(vkr_bakery_json_get(metadata, "scene"), "canonical")
+          : NULL;
+  const VkrBakeryJson *records =
+      metadata ? vkr_bakery_json_get(metadata, "dependencies") : NULL;
+  if (!previous_scene || !records || records->type != VKR_BAKERY_JSON_ARRAY) {
+    return false_v;
+  }
+  const bool8_t failed_before = bake->failed;
+  char previous_directory[VKR_BAKE_PATH];
+  char scene_directory[VKR_BAKE_PATH];
+  vkr_bakery_path_parent(previous_directory, sizeof(previous_directory),
+                         previous_scene);
+  vkr_bakery_path_parent(scene_directory, sizeof(scene_directory), scene);
+  const uint64_t prefix = strlen(previous_directory);
+  bool8_t current =
+      vkr_bake_digest(bake, previous, out_sha256) &&
+      vkr_bakery_json_is_string(vkr_bakery_json_get(metadata, "output_sha256"),
+                                out_sha256);
+  bool8_t scene_seen = false_v;
+  for (const VkrBakeryJson *record = records->first; current && record;
+       record = record->next) {
+    const char *path = vkr_bake_text(record, "path");
+    if (!path) {
+      current = false_v;
+      break;
+    }
+    const char *now = path;
+    if (strcmp(path, previous_scene) == 0) {
+      now = scene;
+      scene_seen = true_v;
+    } else if (strncmp(path, previous_directory, prefix) == 0 &&
+               path[prefix] == '/') {
+      now = vkr_bake_printf(bake, "%s%s", scene_directory, path + prefix);
+    }
+    int64_t bytes = -1;
+    VkrBakeryStat info;
+    char digest[72];
+    current = vkr_bakery_stat(now, &info) && info.exists &&
+              vkr_bake_int(vkr_bakery_json_get(record, "bytes"), &bytes) &&
+              bytes == (int64_t)info.size &&
+              vkr_bake_digest(bake, now, digest) &&
+              vkr_bakery_json_is_string(vkr_bakery_json_get(record, "sha256"),
+                                        digest);
+  }
+  bake->failed = failed_before;
+  return current && scene_seen;
+}
+
 /* The fingerprint of how a bake output is made: its baker's identity, the
    output format's version and the recipe, under `kind`. With an inspection
    that finds the inputs matching the previous output's input index, a
@@ -1180,6 +1245,39 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   const bool8_t indexed = !args->full && previous_index &&
                           vkr_bakery_is_file(previous) &&
                           vkr_bakery_is_file(previous_index);
+  /* The same inputs, byte for byte, keep the volume without a scene load.
+     Without an explicit photon radius the recipe takes the previous
+     volume's, which its spacing derived: equal spacings give equal radii,
+     and the fingerprint covers the spacing. */
+  if (indexed) {
+    const bool8_t failed_before = bake->failed;
+    VkrBakeryJson *metadata = vkr_bake_load(
+        bake, vkr_bake_printf(bake, "%s.bake.json", previous), "metadata");
+    bake->failed = failed_before;
+    float64_t previous_radius = 0.0;
+    if (metadata && vkr_bake_number(vkr_bakery_json_get(
+                                        vkr_bakery_json_get(metadata, "recipe"),
+                                        "photon_radius"),
+                                    &previous_radius)) {
+      char fast_fingerprint[72];
+      char current_sha256[72];
+      VkrBakeryJson *fast_recipe = vkr_bake_recipe_record(
+          bake, args,
+          args->has_photon_radius ? args->photon_radius : previous_radius);
+      if (vkr_bake_recipe_fingerprint(
+              bake, "diffuse", VKR_BAKERY_IDENTITY_DIFFUSE,
+              VKR_DIFFUSE_VOLUME_VERSION, fast_recipe, fast_fingerprint) &&
+          vkr_bake_closure_current(bake, previous, fast_fingerprint, scene,
+                                   current_sha256)) {
+        *out_unchanged = strcmp(previous, output) != 0;
+        printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":"
+               "\"%s\",\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
+               previous, current_sha256, fast_fingerprint, job);
+        return true_v;
+      }
+      bake->failed = failed_before;
+    }
+  }
   VkrBakeArguments inspection = {0};
   VKR_BAKE_TRY(
       vkr_bake_recipe_arguments(bake, args, scene, false_v, &inspection));
@@ -1859,6 +1957,16 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
   const bool8_t indexed =
       has_previous &&
       vkr_bake_previous_metadata(bake, previous, fingerprint) != NULL;
+  /* The same inputs, byte for byte, keep the set without a scene load. */
+  char current_sha256[72];
+  if (indexed && vkr_bake_closure_current(bake, previous, fingerprint, scene,
+                                          current_sha256)) {
+    *out_unchanged = strcmp(previous, output) != 0;
+    printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":\"%s\","
+           "\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
+           previous, current_sha256, fingerprint, job);
+    return true_v;
+  }
   VkrBakeArguments inspection = recipe;
   if (indexed) {
     vkr_bake_push(&inspection, "--previous-index");
