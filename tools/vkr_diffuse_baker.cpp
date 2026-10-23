@@ -12,10 +12,13 @@
 #include "bake/vkr_bake_lightmap_inputs.h"
 #include "bake/vkr_bake_scene.h"
 #include "bake/vkr_bake_sh.h"
+#include "vkr_ibl_math.h"
 
 extern "C" {
 #include "core/logger.h"
 #include "core/vkr_byte_io.h"
+#include "core/vkr_hash.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 }
 
@@ -34,6 +37,7 @@ extern "C" {
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -69,6 +73,13 @@ struct Options {
      volume nothing it reads changed for. */
   const char *index = nullptr;
   const char *previous_index = nullptr;
+  /* An incremental bake (ADR-054): the previous volume, whose index is
+     `previous_index`. Probes the edits cannot reach within `reach` world
+     units, by the lightmap plan's rules, keep their SH; the others gather
+     again. `report` takes how the volume was made. */
+  const char *previous_volume = nullptr;
+  float reach = 4.0f;
+  const char *report = nullptr;
 };
 
 bool number(const char *text, float *out) {
@@ -98,7 +109,11 @@ void usage() {
                "layer on the CPU and the GPU and compares them\n"
                "Rebakes: --index <inputs.vkli> writes the bake's input index; "
                "--previous-index <inputs.vkli> reports whether the inputs "
-               "match it\n");
+               "match it; with --previous-volume <volume.vkdv> a bake gathers "
+               "only the probes the edits reach [--reach 4] [--report "
+               "file.json]\n"
+               "Compare: --compare <a.vkdv> <b.vkdv> reports how the bands "
+               "differ probe by probe\n");
 }
 bool parse(int argc, char **argv, Options *out) {
   for (int i = 1; i < argc; ++i) {
@@ -158,8 +173,20 @@ bool parse(int argc, char **argv, Options *out) {
       out->index = argv[++i];
     } else if (std::strcmp(argv[i], "--previous-index") == 0 && i + 1 < argc) {
       out->previous_index = argv[++i];
+    } else if (std::strcmp(argv[i], "--previous-volume") == 0 && i + 1 < argc) {
+      out->previous_volume = argv[++i];
+    } else if (std::strcmp(argv[i], "--reach") == 0 && i + 1 < argc) {
+      if (!number(argv[++i], &out->reach) || out->reach < 0.0f)
+        return false;
+    } else if (std::strcmp(argv[i], "--report") == 0 && i + 1 < argc) {
+      out->report = argv[++i];
     } else
       return false;
+  }
+  /* A previous volume comes with its index and a bake's output. */
+  if (out->previous_volume &&
+      (!out->previous_index || !out->output || out->inspect)) {
+    return false;
   }
   return out->scene && (out->inspect || out->output || out->gpu_parity) &&
          !(out->gpu_parity && (out->cpu || out->inspect || out->output)) &&
@@ -916,23 +943,365 @@ void store_half(uint8_t *dst, float value) {
   dst[1] = (uint8_t)(half >> 8u);
 }
 
+float load_half(const uint8_t *src) {
+  return vkr_float16_to_float32((uint16_t)(src[0] | (src[1] << 8u)));
+}
+
+/* A probe's identity across bakes: its lattice position and level. */
+uint64_t probe_key(const VkrBakeBrickProbe &probe) {
+  return (uint64_t)probe.lattice[0] | ((uint64_t)probe.lattice[1] << 20u) |
+         ((uint64_t)probe.lattice[2] << 40u) | ((uint64_t)probe.level << 60u);
+}
+
+/* What an incremental bake keeps of the previous volume (ADR-054). */
+struct ProbeReuse {
+  FileMapping mapping = {};
+  VkrDiffuseVolume previous = {};
+  /* By current probe: the previous slot that holds its own SH, or
+     UINT32_MAX when it gathers in every band. */
+  std::vector<uint32_t> previous_slot;
+  /* By band, then by current probe: nonzero when the band gathers it. */
+  std::vector<std::vector<uint8_t>> dirty;
+  uint32_t changed_instances = 0u;
+  uint32_t changed_lights = 0u;
+  ~ProbeReuse() {
+    if (mapping.data) {
+      file_unmap(&mapping);
+    }
+  }
+};
+
+/*
+ * The previous volume's slots that hold their probe's own SH, by probe key:
+ * every slot but the face fills, which interpolate a coarser brick (the
+ * same face_fills a bake of that volume ran), and only valid probes'.
+ */
+bool previous_probe_slots(const VkrDiffuseVolume &previous, Arena *arena,
+                          std::unordered_map<uint64_t, uint32_t> *out) {
+  Volume volume;
+  VkrBakeBrickLayout &layout = volume.layout;
+  layout.origin = previous.origin;
+  layout.spacing = previous.spacing;
+  layout.level_count = previous.level_count;
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    layout.dimensions[axis] = previous.dimensions[axis];
+  }
+  std::vector<uint32_t> entries(previous.entry_count);
+  for (uint32_t i = 0u; i < previous.entry_count; ++i) {
+    entries[i] = vkr_diffuse_volume_entry(&previous, i);
+  }
+  layout.entries = entries.data();
+  layout.entry_count = previous.entry_count;
+  layout.bricks = const_cast<VkrDiffuseVolumeBrick *>(previous.bricks);
+  layout.brick_count = previous.brick_count;
+  const uint32_t slot_count =
+      previous.brick_count * VKR_DIFFUSE_VOLUME_BRICK_PROBES;
+  if (slot_count != previous.probe_count) {
+    return false;
+  }
+  std::vector<uint32_t> brick_probes(slot_count);
+  std::vector<VkrBakeBrickProbe> probes;
+  std::unordered_map<uint64_t, uint32_t> probe_by_key;
+  for (uint32_t b = 0u; b < previous.brick_count; ++b) {
+    const VkrDiffuseVolumeBrick &brick = previous.bricks[b];
+    const uint32_t step = level_span(brick.level);
+    for (uint32_t i = 0u; i < VKR_DIFFUSE_VOLUME_BRICK_PROBES; ++i) {
+      const uint32_t local[3] = {i % 4u, (i / 4u) % 4u, i / 16u};
+      VkrBakeBrickProbe probe = {};
+      for (uint32_t axis = 0u; axis < 3u; ++axis) {
+        probe.lattice[axis] = 3u * brick.entry[axis] + step * local[axis];
+      }
+      probe.level = brick.level;
+      const auto inserted =
+          probe_by_key.emplace(probe_key(probe), (uint32_t)probes.size());
+      if (inserted.second) {
+        probes.push_back(probe);
+      }
+      brick_probes[b * VKR_DIFFUSE_VOLUME_BRICK_PROBES + i] =
+          inserted.first->second;
+    }
+  }
+  layout.brick_probes = brick_probes.data();
+  layout.probes = probes.data();
+  layout.probe_count = (uint32_t)probes.size();
+  volume.baked.assign(probes.size(), 0u);
+  for (uint32_t slot = 0u; slot < slot_count; ++slot) {
+    const uint8_t *aux =
+        previous.probe_aux + (size_t)slot * VKR_DIFFUSE_VOLUME_AUX_BYTES;
+    if (load_half(aux + 6u) > 0.5f) {
+      volume.baked[brick_probes[slot]] = 1u;
+    }
+  }
+  std::vector<uint8_t> fill(slot_count, 0u);
+  for (const FaceFill &face : face_fills(volume)) {
+    fill[face.slot] = 1u;
+  }
+  (void)arena;
+  out->clear();
+  for (uint32_t slot = 0u; slot < slot_count; ++slot) {
+    const uint32_t probe = brick_probes[slot];
+    if (!fill[slot] && volume.baked[probe]) {
+      out->emplace(probe_key(probes[probe]), slot);
+    }
+  }
+  return true;
+}
+
+/*
+ * Plans an incremental bake over the previous volume: false with `reason`
+ * when it must bake in full. A probe keeps its previous SH in a band when
+ * the previous volume holds its own SH at the same relocated position and
+ * the band's light there cannot have changed by the lightmap plan's rules
+ * (vkr_bake_plan_receivers); the gathered band of a lamp group follows its
+ * irradiance rule and its direct band the lamp-direct rule.
+ */
+bool plan_probe_reuse(const Options &options, const Volume &volume,
+                      const VkrBakeLightmapInputs &inputs,
+                      const std::vector<VkrBakeLayerPlan> &plans,
+                      const std::vector<VkrBakeAtmosphere> &key_atmospheres,
+                      const std::vector<VkrLightLayer> &records,
+                      uint32_t lamp_direct_count, Arena *arena, ProbeReuse *out,
+                      std::string *reason) {
+  VkrBakeLightmapInputs previous_inputs;
+  uint32_t previous_crc = 0u;
+  uint64_t previous_bytes = 0u;
+  if (!vkr_bake_lightmap_index_read(options.previous_index, &previous_inputs,
+                                    &previous_crc, &previous_bytes)) {
+    *reason = "the previous volume's input index does not read";
+    return false;
+  }
+  if (previous_inputs.globals != inputs.globals) {
+    *reason = "settings, sky, sun keys or directional lights changed";
+    return false;
+  }
+  const FilePath path = file_path_view(options.previous_volume);
+  if (file_map_readonly(&path, &out->mapping) != FILE_ERROR_NONE ||
+      previous_bytes == 0u || out->mapping.size != previous_bytes ||
+      vkr_crc32(out->mapping.data, out->mapping.size) != previous_crc ||
+      !vkr_diffuse_volume_decode(out->mapping.data, out->mapping.size, arena,
+                                 &out->previous)) {
+    *reason = "the previous volume does not map, decode or match its index";
+    return false;
+  }
+  const VkrDiffuseVolume &previous = out->previous;
+  const VkrBakeBrickLayout &layout = volume.layout;
+  bool same_layers = previous.layer_count == records.size() &&
+                     previous.lamp_direct_count == lamp_direct_count;
+  for (uint32_t l = 0u; same_layers && l < records.size(); ++l) {
+    const VkrLightLayer &a = previous.layers[l];
+    const VkrLightLayer &b = records[l];
+    same_layers = a.kind == b.kind && a.index == b.index &&
+                  vec3_equal(a.sun_direction, b.sun_direction, 1.0e-6f) &&
+                  std::strncmp(a.name, b.name, sizeof(a.name)) == 0;
+  }
+  if (!same_layers || !vec3_equal(previous.origin, layout.origin, 0.0f) ||
+      previous.spacing != layout.spacing ||
+      previous.level_count != layout.level_count) {
+    *reason = "the previous volume's grid or layers differ";
+    return false;
+  }
+  std::unordered_map<uint64_t, uint32_t> slots;
+  if (!previous_probe_slots(previous, arena, &slots)) {
+    *reason = "the previous volume's bricks do not read";
+    return false;
+  }
+  /* A probe the previous volume holds at the same relocated position. */
+  out->previous_slot.assign(layout.probe_count, UINT32_MAX);
+  for (uint32_t p = 0u; p < layout.probe_count; ++p) {
+    if (!volume.baked[p]) {
+      continue;
+    }
+    const auto found = slots.find(probe_key(layout.probes[p]));
+    if (found == slots.end()) {
+      continue;
+    }
+    const uint8_t *aux = previous.probe_aux +
+                         (size_t)found->second * VKR_DIFFUSE_VOLUME_AUX_BYTES;
+    bool same_place = true;
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      const uint16_t now =
+          vkr_float32_to_float16(volume.visibility[p].offset.elements[axis]);
+      same_place = same_place && now == (uint16_t)(aux[axis * 2u] |
+                                                   (aux[axis * 2u + 1u] << 8u));
+    }
+    if (same_place) {
+      out->previous_slot[p] = found->second;
+    }
+  }
+  std::vector<VkrBakeLightmapPlanLayer> layers(plans.size());
+  for (size_t l = 0u; l < plans.size(); ++l) {
+    const VkrBakeLayerPlan &plan = plans[l];
+    layers[l].kind = plan.record.kind;
+    layers[l].lights = plan.lights;
+    layers[l].texel_direct = false;
+    layers[l].lamp_direct = plan.record.kind == VKR_LIGHT_LAYER_LAMP_GROUP;
+    layers[l].key_light_direction =
+        plan.sun_key >= 0 && (size_t)plan.sun_key < key_atmospheres.size()
+            ? key_atmospheres[(size_t)plan.sun_key].key_light_direction
+            : plan.record.sun_direction;
+  }
+  std::vector<Vec3> positions(layout.probe_count);
+  for (uint32_t p = 0u; p < layout.probe_count; ++p) {
+    positions[p] = probe_origin(volume, p);
+  }
+  VkrBakeReceiverPlan plan;
+  if (!vkr_bake_plan_receivers(previous_inputs, inputs, layers, positions,
+                               std::max(options.reach, options.spacing),
+                               &plan)) {
+    *reason = "planning the incremental bake failed";
+    return false;
+  }
+  out->changed_instances = plan.changed_boxes;
+  out->changed_lights = plan.changed_lights;
+  /* Bands in file order: the layers, then each lamp group's direct band. */
+  out->dirty.clear();
+  for (size_t l = 0u; l < plans.size(); ++l) {
+    out->dirty.push_back(plan.gathered_dirty[l]);
+  }
+  for (size_t l = 0u; l < plans.size(); ++l) {
+    if (plans[l].record.kind == VKR_LIGHT_LAYER_LAMP_GROUP) {
+      out->dirty.push_back(plan.direct_dirty[l]);
+    }
+  }
+  for (std::vector<uint8_t> &band : out->dirty) {
+    for (uint32_t p = 0u; p < layout.probe_count; ++p) {
+      if (out->previous_slot[p] == UINT32_MAX) {
+        band[p] = 1u;
+      }
+    }
+  }
+  return true;
+}
+
+/* The previous volume's SH of `slot` in band `band`, as it was stored. */
+ProbeSh previous_sh(const VkrDiffuseVolume &previous, uint32_t band,
+                    uint32_t slot) {
+  const uint8_t *record =
+      previous.layer_sh + ((size_t)band * previous.probe_count + slot) *
+                              VKR_DIFFUSE_VOLUME_SH_BYTES;
+  ProbeSh value;
+  for (uint32_t c = 0u; c < 3u; ++c)
+    for (uint32_t k = 0u; k < 4u; ++k)
+      value.v[c][k] = load_half(record + (c * 4u + k) * 2u) * previous.sh_scale;
+  return value;
+}
+
+/* How a volume was made, for the bakery's sidecar `production`. */
+struct VolumeReport {
+  bool incremental = false;
+  std::string full_reason = "no previous volume";
+  uint32_t changed_instances = 0u;
+  uint32_t changed_lights = 0u;
+  uint64_t gathered = 0u;
+  uint64_t total = 0u;
+  std::vector<uint32_t> band_gathered;
+  uint32_t crc = 0u;
+  uint64_t bytes = 0u;
+};
+
 /*
  * Bakes the volume's light layers (ADR-088): in an atmosphere scene one per
  * sun key, each under its key's atmosphere, then one per static light group.
- * The runtime weights them by the current sun and light group factors.
+ * The runtime weights them by the current sun and light group factors. With
+ * a previous volume, each band gathers only the probes the edits reach and
+ * copies the others' SH as the previous volume stored it.
  */
 int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
-                const Volume &volume, Arena *arena) {
+                const Volume &volume, const VkrBakeLightmapInputs &inputs,
+                Arena *arena, VolumeReport *report) {
   std::vector<VkrBakeLayerPlan> plans;
   std::vector<VkrBakeAtmosphere> key_atmospheres;
   if (!plan_volume_layers(scene, &plans, &key_atmospheres)) {
     return 1;
   }
+  const VkrBakeBrickLayout &layout = volume.layout;
+  const uint32_t layer_count = (uint32_t)plans.size();
+  const uint32_t slot_count =
+      layout.brick_count * VKR_DIFFUSE_VOLUME_BRICK_PROBES;
+  const std::vector<FaceFill> fills = face_fills(volume);
+  /* The baked probes the file reads: each slot's that is not a face fill
+     and each face fill's sources. A probe whose every slot interpolates a
+     coarser brick and that no fill reads would gather for nothing. */
+  std::vector<uint8_t> read(layout.probe_count, 0u);
+  {
+    std::vector<uint8_t> fill_slot(slot_count, 0u);
+    for (const FaceFill &fill : fills) {
+      fill_slot[fill.slot] = 1u;
+      for (uint32_t corner = 0u; corner < 8u; ++corner) {
+        if (fill.weights[corner] > 0.0f) {
+          read[fill.probes[corner]] = 1u;
+        }
+      }
+    }
+    for (uint32_t slot = 0u; slot < slot_count; ++slot) {
+      if (!fill_slot[slot]) {
+        read[layout.brick_probes[slot]] = 1u;
+      }
+    }
+  }
+  std::vector<uint32_t> probes;
+  for (uint32_t probe : baked_probes(volume)) {
+    if (read[probe]) {
+      probes.push_back(probe);
+    }
+  }
+  std::vector<VkrLightLayer> layers;
+  /* A lamp group's direct light follows the layers as its own band. */
+  uint32_t lamp_direct_count = 0u;
+  for (const VkrBakeLayerPlan &plan : plans) {
+    layers.push_back(plan.record);
+    if (plan.record.kind == VKR_LIGHT_LAYER_LAMP_GROUP) {
+      ++lamp_direct_count;
+    }
+  }
+  const uint32_t band_count = layer_count + lamp_direct_count;
+
+  ProbeReuse reuse;
+  if (options.previous_volume) {
+    report->incremental = plan_probe_reuse(
+        options, volume, inputs, plans, key_atmospheres, layers,
+        lamp_direct_count, arena, &reuse, &report->full_reason);
+  }
+  if (report->incremental) {
+    report->full_reason.clear();
+    report->changed_instances = reuse.changed_instances;
+    report->changed_lights = reuse.changed_lights;
+    std::printf("incremental base=%s changed_instances=%u changed_lights=%u "
+                "reach=%g\n",
+                options.previous_volume, reuse.changed_instances,
+                reuse.changed_lights, std::max(options.reach, options.spacing));
+  } else if (options.previous_volume) {
+    std::printf("full reason=%s\n", report->full_reason.c_str());
+  }
+  /* The probes band `band` gathers; every baked probe without a plan. */
+  auto band_probes = [&](uint32_t band) {
+    if (!report->incremental) {
+      return probes;
+    }
+    std::vector<uint32_t> gather;
+    for (uint32_t probe : probes) {
+      if (reuse.dirty[band][probe]) {
+        gather.push_back(probe);
+      }
+    }
+    return gather;
+  };
+  std::vector<std::vector<uint32_t>> gathered(band_count);
+  bool any_gathered = false;
+  for (uint32_t band = 0u; band < band_count; ++band) {
+    gathered[band] = band_probes(band);
+    any_gathered =
+        any_gathered || (band < layer_count && !gathered[band].empty());
+    report->gathered += gathered[band].size();
+    report->total += probes.size();
+    report->band_gathered.push_back((uint32_t)gathered[band].size());
+  }
+
   /* The GPU probe gather bakes when the host has it, unless --cpu asks for
-     the reference integrator. */
+     the reference integrator; nothing to gather needs no GPU scene. */
   const bool use_gpu = !options.cpu && vkr_bake_gpu_probe_gather_available();
   GpuContext gpu(nullptr, vkr_bake_gpu_destroy);
-  if (use_gpu) {
+  if (use_gpu && any_gathered) {
     const auto setup_start = std::chrono::steady_clock::now();
     gpu.reset(vkr_bake_gpu_create(scene));
     if (!gpu) {
@@ -942,35 +1311,33 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
     }
     std::printf("gpu_setup_s=%.2f\n", seconds_since(setup_start));
   }
-  const std::vector<uint32_t> probes = baked_probes(volume);
-  std::printf("probe_transport=%s baked_probes=%zu caustic_photons=%s\n",
+  std::printf("probe_transport=%s baked_probes=%zu gathered_probe_bands=%llu/"
+              "%llu caustic_photons=%s\n",
               use_gpu ? "gpu" : "cpu", probes.size(),
+              (unsigned long long)report->gathered,
+              (unsigned long long)report->total,
               !use_gpu && options.photons ? "on" : "off");
   std::vector<ProbeSh> baked_sh(probes.size());
-  const VkrBakeBrickLayout &layout = volume.layout;
-  const uint32_t layer_count = (uint32_t)plans.size();
-  const uint32_t slot_count =
-      layout.brick_count * VKR_DIFFUSE_VOLUME_BRICK_PROBES;
-  const std::vector<FaceFill> fills = face_fills(volume);
-  std::vector<VkrLightLayer> layers;
-  /* A lamp group's direct light follows the layers as its own band. */
-  uint32_t lamp_direct_count = 0u;
-  for (const VkrBakeLayerPlan &plan : plans) {
-    if (plan.record.kind == VKR_LIGHT_LAYER_LAMP_GROUP) {
-      ++lamp_direct_count;
-    }
-  }
-  const uint32_t band_count = layer_count + lamp_direct_count;
   /* Brick-major SH of every band, band-major as the file stores it. */
   std::vector<ProbeSh> slot_sh((size_t)slot_count * band_count);
   std::vector<ProbeSh> probe_sh(layout.probe_count);
-  /* Stores the baked probes' SH as band `band`, non-negative; face-fill
-     slots interpolate their source probes. */
+  /* Stores band `band`: the gathered probes' SH, non-negative, and the
+     other baked probes' previous SH as stored; face-fill slots interpolate
+     their source probes. */
   auto store_band = [&](uint32_t band) {
     std::fill(probe_sh.begin(), probe_sh.end(), ProbeSh{});
-    for (size_t i = 0u; i < probes.size(); ++i) {
-      probe_sh[probes[i]] = baked_sh[i];
-      clamp_l1_nonnegative(&probe_sh[probes[i]]);
+    if (report->incremental) {
+      for (uint32_t probe : probes) {
+        if (!reuse.dirty[band][probe]) {
+          probe_sh[probe] =
+              previous_sh(reuse.previous, band, reuse.previous_slot[probe]);
+        }
+      }
+    }
+    const std::vector<uint32_t> &list = gathered[band];
+    for (size_t i = 0u; i < list.size(); ++i) {
+      probe_sh[list[i]] = baked_sh[i];
+      clamp_l1_nonnegative(&probe_sh[list[i]]);
     }
     ProbeSh *slots = slot_sh.data() + (size_t)band * slot_count;
     for (uint32_t slot = 0u; slot < slot_count; ++slot) {
@@ -990,44 +1357,48 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
   uint32_t direct_band = layer_count;
   for (uint32_t l = 0u; l < layer_count; ++l) {
     const VkrBakeLayerPlan &plan = plans[l];
-    layers.push_back(plan.record);
-    if (!use_layer_lighting(scene, plan, key_atmospheres, gpu.get())) {
-      return 1;
-    }
     const auto start = std::chrono::steady_clock::now();
     double gpu_seconds = 0.0;
-    const bool baked =
-        use_gpu
-            ? bake_layer_gpu(options, scene, gpu.get(), volume, plan, probes,
-                             options.seed, baked_sh.data(), &gpu_seconds)
-            : bake_layer_cpu(options, scene, bvh, volume, plan, probes,
-                             options.seed, arena, baked_sh.data());
-    if (!baked) {
-      return 1;
+    const std::vector<uint32_t> &list = gathered[l];
+    if (!list.empty()) {
+      if (!use_layer_lighting(scene, plan, key_atmospheres, gpu.get())) {
+        return 1;
+      }
+      const bool baked =
+          use_gpu
+              ? bake_layer_gpu(options, scene, gpu.get(), volume, plan, list,
+                               options.seed, baked_sh.data(), &gpu_seconds)
+              : bake_layer_cpu(options, scene, bvh, volume, plan, list,
+                               options.seed, arena, baked_sh.data());
+      if (!baked) {
+        return 1;
+      }
     }
     store_band(l);
-    std::printf("baked_layer=%u/%u %s=%s lights=%zu transport=%s seconds=%.2f "
-                "gpu_s=%.2f\n",
+    std::printf("baked_layer=%u/%u %s=%s lights=%zu transport=%s "
+                "gathered=%zu seconds=%.2f gpu_s=%.2f\n",
                 l + 1u, layer_count,
                 plan.record.kind == VKR_LIGHT_LAYER_SUN_KEY ? "sun_key"
                                                             : "lamp_group",
                 plan.record.kind == VKR_LIGHT_LAYER_SUN_KEY
                     ? std::to_string(plan.record.index).c_str()
                     : plan.record.name,
-                plan.lights.size(), use_gpu ? "gpu" : "cpu",
+                plan.lights.size(), use_gpu ? "gpu" : "cpu", list.size(),
                 seconds_since(start), gpu_seconds);
     std::fflush(stdout);
     if (plan.record.kind == VKR_LIGHT_LAYER_LAMP_GROUP) {
       const auto direct_start = std::chrono::steady_clock::now();
-      if (!bake_lamp_direct(options, scene, bvh, volume, plan, probes,
+      const std::vector<uint32_t> &direct = gathered[direct_band];
+      if (!direct.empty() &&
+          !bake_lamp_direct(options, scene, bvh, volume, plan, direct,
                             options.seed, baked_sh.data())) {
         return 1;
       }
       store_band(direct_band++);
       std::printf("baked_direct_band=%u lamp_group=%s lights=%zu "
-                  "seconds=%.2f\n",
+                  "gathered=%zu seconds=%.2f\n",
                   direct_band, plan.record.name, plan.lights.size(),
-                  seconds_since(direct_start));
+                  direct.size(), seconds_since(direct_start));
       std::fflush(stdout);
     }
   }
@@ -1111,6 +1482,8 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
     std::fprintf(stderr, "Volume write failed: %s\n", options.output);
     return 1;
   }
+  report->crc = vkr_crc32(bytes, size);
+  report->bytes = size;
   std::printf("saved=%s bytes=%llu sh_scale=%g face_fills=%zu\n",
               options.output, (unsigned long long)size, sh_scale, fills.size());
   return 0;
@@ -1260,6 +1633,26 @@ bool volume_inputs(const Options &options, const VkrBakeScene &scene,
       out);
 }
 
+/* Writes how the volume was made: `kind` (`full`, with the reason, or
+   `incremental`), what changed, and the probes gathered per band. */
+bool write_report(const Options &options, const VolumeReport &report) {
+  std::ostringstream out;
+  out << "{\"version\":1,\"kind\":\""
+      << (report.incremental ? "incremental" : "full")
+      << "\",\"full_reason\":" << json_string(report.full_reason)
+      << ",\"reach\":" << std::max(options.reach, options.spacing)
+      << ",\"changed_instances\":" << report.changed_instances
+      << ",\"changed_lights\":" << report.changed_lights
+      << ",\"gathered_probes\":" << report.gathered
+      << ",\"total_probes\":" << report.total << ",\"bands\":[";
+  for (size_t b = 0u; b < report.band_gathered.size(); ++b) {
+    out << (b ? "," : "") << report.band_gathered[b];
+  }
+  out << "]}\n";
+  const std::string text = out.str();
+  return write_atomic(options.report, text.data(), text.size());
+}
+
 int inspect_scene(const Options &options, VkrAllocator *allocator,
                   Arena *arena) {
   VkrBakeScene scene(allocator);
@@ -1384,20 +1777,182 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
   if (options.gpu_parity) {
     return run_gpu_parity(options, scene, bvh, volume, arena);
   }
-  const int baked = bake_volume(options, scene, bvh, volume, arena);
-  /* A volume's index needs no payload checksum: nothing copies from it. */
+  VolumeReport report;
+  const int baked =
+      bake_volume(options, scene, bvh, volume, inputs, arena, &report);
+  /* The index names the volume's checksum and size, so a later bake copies
+     probes only from the volume it describes. */
   if (baked == 0 && options.index &&
-      !vkr_bake_lightmap_index_write(options.index, inputs, 0u, 0u)) {
+      !vkr_bake_lightmap_index_write(options.index, inputs, report.crc,
+                                     report.bytes)) {
     std::fprintf(stderr, "Writing the input index failed: %s\n", options.index);
+    return 1;
+  }
+  if (baked == 0 && options.report && !write_report(options, report)) {
+    std::fprintf(stderr, "Writing the bake report failed: %s\n",
+                 options.report);
     return 1;
   }
   return baked;
 }
+/* Constant-term luminance of a stored SH record of E/pi. */
+double record_luminance(const uint8_t *record, float sh_scale) {
+  return sh_scale * (0.2126 * load_half(record + 3u * 2u) +
+                     0.7152 * load_half(record + 7u * 2u) +
+                     0.0722 * load_half(record + 11u * 2u));
+}
+
+/* One compared probe slot of a band, for the worst-probe lines. */
+struct SlotDifference {
+  uint32_t brick = 0u;
+  uint32_t slot = 0u;
+  double a = 0.0;
+  double b = 0.0;
+  double relative = 0.0;
+};
+
+/*
+ * Compares two volumes band by band (ADR-054 incremental bakes): bricks
+ * match by their entry and level, so the volumes may place different
+ * bricks. Per band it prints the slots compared and identical, the
+ * luminance-weighted error of the constant term (the summed absolute
+ * difference over the summed luminance of `a`), the mean per-slot relative
+ * error, and the five worst slots by their difference relative to
+ * `max(a, floor)`, where the floor (1% of the band's mean) keeps dark
+ * probes from ranking first, each with its world position.
+ */
+int compare_volumes(const char *path_a, const char *path_b, Arena *arena) {
+  FileMapping mappings[2] = {};
+  VkrDiffuseVolume volumes[2] = {};
+  const char *paths[2] = {path_a, path_b};
+  int result = 0;
+  for (uint32_t k = 0u; k < 2u && result == 0; ++k) {
+    const FilePath path = file_path_view(paths[k]);
+    if (file_map_readonly(&path, &mappings[k]) != FILE_ERROR_NONE ||
+        !vkr_diffuse_volume_decode(mappings[k].data, mappings[k].size, arena,
+                                   &volumes[k])) {
+      std::fprintf(stderr, "Cannot read the volume %s\n", paths[k]);
+      result = 1;
+    }
+  }
+  const VkrDiffuseVolume &a = volumes[0];
+  const VkrDiffuseVolume &b = volumes[1];
+  const uint32_t bands =
+      result == 0 ? vkr_diffuse_volume_sh_band_count(&a) : 0u;
+  if (result == 0 && bands != vkr_diffuse_volume_sh_band_count(&b)) {
+    std::fprintf(stderr, "The volumes hold different bands\n");
+    result = 1;
+  }
+  std::unordered_map<uint64_t, uint32_t> b_bricks;
+  for (uint32_t i = 0u; result == 0 && i < b.brick_count; ++i) {
+    VkrBakeBrickProbe key = {};
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      key.lattice[axis] = b.bricks[i].entry[axis];
+    }
+    key.level = b.bricks[i].level;
+    b_bricks[probe_key(key)] = i;
+  }
+  double worst = 0.0;
+  for (uint32_t band = 0u; result == 0 && band < bands; ++band) {
+    std::vector<SlotDifference> compared;
+    uint64_t identical = 0u;
+    double luminance_sum = 0.0;
+    double difference_sum = 0.0;
+    for (uint32_t i = 0u; i < a.brick_count; ++i) {
+      VkrBakeBrickProbe key = {};
+      for (uint32_t axis = 0u; axis < 3u; ++axis) {
+        key.lattice[axis] = a.bricks[i].entry[axis];
+      }
+      key.level = a.bricks[i].level;
+      const auto found = b_bricks.find(probe_key(key));
+      if (found == b_bricks.end()) {
+        continue;
+      }
+      for (uint32_t p = 0u; p < VKR_DIFFUSE_VOLUME_BRICK_PROBES; ++p) {
+        const uint8_t *ra =
+            a.layer_sh + ((size_t)band * a.probe_count +
+                          (size_t)i * VKR_DIFFUSE_VOLUME_BRICK_PROBES + p) *
+                             VKR_DIFFUSE_VOLUME_SH_BYTES;
+        const uint8_t *rb =
+            b.layer_sh +
+            ((size_t)band * b.probe_count +
+             (size_t)found->second * VKR_DIFFUSE_VOLUME_BRICK_PROBES + p) *
+                VKR_DIFFUSE_VOLUME_SH_BYTES;
+        SlotDifference entry;
+        entry.brick = i;
+        entry.slot = p;
+        entry.a = record_luminance(ra, a.sh_scale);
+        entry.b = record_luminance(rb, b.sh_scale);
+        identical +=
+            a.sh_scale == b.sh_scale &&
+                    std::memcmp(ra, rb, VKR_DIFFUSE_VOLUME_SH_BYTES) == 0
+                ? 1u
+                : 0u;
+        luminance_sum += std::fabs(entry.a);
+        difference_sum += std::fabs(entry.b - entry.a);
+        compared.push_back(entry);
+      }
+    }
+    const double mean =
+        compared.empty() ? 0.0 : luminance_sum / compared.size();
+    const double floor = std::max(0.01 * mean, 1.0e-9);
+    double relative_sum = 0.0;
+    for (SlotDifference &entry : compared) {
+      entry.relative =
+          std::fabs(entry.b - entry.a) / std::max(std::fabs(entry.a), floor);
+      relative_sum += entry.relative;
+    }
+    std::sort(compared.begin(), compared.end(),
+              [](const SlotDifference &x, const SlotDifference &y) {
+                return x.relative > y.relative;
+              });
+    const double band_worst = compared.empty() ? 0.0 : compared[0].relative;
+    worst = std::max(worst, band_worst);
+    std::printf("compare band=%u slots=%zu identical=%llu "
+                "luminance_weighted_error=%.6f mean_slot_relative_error=%.6f "
+                "worst_slot_relative_error=%.6f\n",
+                band, compared.size(), (unsigned long long)identical,
+                luminance_sum > 0.0 ? difference_sum / luminance_sum : 0.0,
+                compared.empty() ? 0.0 : relative_sum / compared.size(),
+                band_worst);
+    for (size_t w = 0u; w < 5u && w < compared.size(); ++w) {
+      const SlotDifference &entry = compared[w];
+      if (entry.a == entry.b) {
+        break;
+      }
+      const VkrDiffuseVolumeBrick &brick = a.bricks[entry.brick];
+      const uint32_t step = level_span(brick.level);
+      const uint32_t local[3] = {entry.slot % 4u, (entry.slot / 4u) % 4u,
+                                 entry.slot / 16u};
+      float position[3];
+      for (uint32_t axis = 0u; axis < 3u; ++axis) {
+        position[axis] =
+            a.origin.elements[axis] +
+            a.spacing * (float)(3u * brick.entry[axis] + step * local[axis]);
+      }
+      std::printf("  worst band=%u position=%.2f,%.2f,%.2f level=%u a=%.6g "
+                  "b=%.6g relative=%.4f\n",
+                  band, position[0], position[1], position[2], brick.level,
+                  entry.a, entry.b, entry.relative);
+    }
+  }
+  if (result == 0) {
+    std::printf("compare worst_slot_relative_error=%.6f\n", worst);
+  }
+  for (FileMapping &mapping : mappings) {
+    if (mapping.data) {
+      file_unmap(&mapping);
+    }
+  }
+  return result;
+}
+
 } // namespace
 
 VKR_TOOL_ENTRY(vkr_diffuse_baker_tool_main) {
   Options options;
-  if (!parse(argc, argv, &options)) {
+  const bool compare = argc == 4 && std::strcmp(argv[1], "--compare") == 0;
+  if (!compare && !parse(argc, argv, &options)) {
     usage();
     return 2;
   }
@@ -1412,7 +1967,8 @@ VKR_TOOL_ENTRY(vkr_diffuse_baker_tool_main) {
   }
   int result = 1;
   try {
-    result = inspect_scene(options, &allocator, arena);
+    result = compare ? compare_volumes(argv[2], argv[3], arena)
+                     : inspect_scene(options, &allocator, arena);
   } catch (const std::bad_alloc &) {
     std::fprintf(stderr, "Bake allocation failed\n");
   } catch (const fs::filesystem_error &error) {

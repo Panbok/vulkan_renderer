@@ -203,3 +203,27 @@ bool vkr_bake_lightmap_plan_incremental(
     const std::vector<uint8_t> &previous_has_rect,
     const std::vector<uint8_t> &previous_has_direct_rect, float32_t reach,
     VkrBakeLightmapIncrementalPlan *out_plan);
+
+/* Which receivers each layer relights: by layer, then by receiver,
+   nonzero when its gathered light, or its lamp-direct light, changes. */
+struct VkrBakeReceiverPlan {
+  std::vector<std::vector<uint8_t>> gathered_dirty;
+  std::vector<std::vector<uint8_t>> direct_dirty;
+  uint32_t changed_boxes = 0u;
+  uint32_t changed_lights = 0u;
+};
+
+/*
+ * Plans which of `receivers`, points such as a diffuse volume's probes, an
+ * incremental bake of `current` over `previous` (equal globals) relights
+ * per layer, by the rules vkr_bake_lightmap_plan_incremental applies to an
+ * instance that did not change: a layer's gathered light by its sun-key or
+ * lamp-group rule, its lamp-direct light, for a layer with `lamp_direct`,
+ * by the lamp-direct rule. A receiver is never itself a changed instance;
+ * the caller relights receivers whose own inputs changed.
+ */
+bool vkr_bake_plan_receivers(
+    const VkrBakeLightmapInputs &previous, const VkrBakeLightmapInputs &current,
+    const std::vector<VkrBakeLightmapPlanLayer> &layers,
+    const std::vector<Vec3> &receivers, float32_t reach,
+    VkrBakeReceiverPlan *out_plan);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""GPU check of project lightmap rebakes (ADR-088): unchanged skips, full
-rebakes and build pruning.
+"""GPU check of project lightmap and diffuse volume rebakes (ADR-088,
+ADR-054): unchanged skips, full rebakes, incremental bakes and build
+pruning.
 
 Through `vkr_bakery project` on a small managed scene of box brushes, four
 static lamps and an atmosphere sun, this checks that:
@@ -12,7 +13,10 @@ static lamps and an atmosphere sun, this checks that:
   which its record names as `previous_build`, and the revision before that
   goes while the current and previous revisions stay;
 - every record carries the set's input index as its `lightmap_index`
-  artifact and says how the set was produced.
+  artifact and says how the set was produced;
+- the diffuse volume follows the same flow: kept when unchanged, baked again
+  by `full`, and after the lamp edit gathered again only at the probes the
+  lamp reaches, with its `volume_index`.
 
 It bakes on the host's GPU (Metal ray tracing or Vulkan ray queries) in a few
 seconds per bake and needs a Release vkr_bakery.
@@ -68,6 +72,12 @@ def lightmap_record(scene_path):
     return next(record for record in scene['assets'] if record['id'] == reference['id'])
 
 
+def volume_record(scene_path):
+    scene = jobs.read_managed_scene(scene_path)
+    reference = scene['diffuse_volume']['asset']
+    return next(record for record in scene['assets'] if record['id'] == reference['id'])
+
+
 def host_class():
     return 'tiled' if sys.platform == 'darwin' else 'desktop'
 
@@ -106,7 +116,10 @@ def main():
 
         def bake(**extra):
             request = dict(create, operation='bake_scene', scene_path=str(scene_path),
-                           bakes={'lightmap': True}, **extra)
+                           bakes={'lightmap': True, 'diffuse': True},
+                           diffuse_settings={'spacing': 1.0,
+                                             'bounds': [-7, -1, -12, 7, 5, 12]},
+                           **extra)
             started = time.monotonic()
             job = jobs.Job(request, result_path)
             assert job.execute() == 0, result_path.read_text() + job.output
@@ -118,13 +131,20 @@ def main():
         assert 'previous_build' not in first, first
         assert [artifact['role'] for artifact in first['artifacts']] == ['lightmap', 'lightmap_index']
         assert first['production']['kind'] == 'full', first['production']
-        assert sorted(path.name for path in builds.iterdir()) == [revision(first)]
+        first_volume = volume_record(scene_path)
+        assert [artifact['role'] for artifact in first_volume['artifacts']] == ['volume', 'volume_index']
+        assert first_volume['production']['kind'] == 'full', first_volume['production']
+        assert sorted(path.name for path in builds.iterdir()) == sorted(
+            [revision(first), revision(first_volume)])
 
         # Nothing changed: the set, its record and its revision stay.
         output, unchanged_seconds = bake()
         assert 'Lightmaps unchanged' in output, output
+        assert 'Diffuse volume unchanged' in output, output
         assert lightmap_record(scene_path) == first
-        assert sorted(path.name for path in builds.iterdir()) == [revision(first)]
+        assert volume_record(scene_path) == first_volume
+        assert sorted(path.name for path in builds.iterdir()) == sorted(
+            [revision(first), revision(first_volume)])
 
         # A full rebake bakes again though nothing changed; it names the set
         # it replaced as its previous build.
@@ -134,6 +154,9 @@ def main():
         assert second['id'] == first['id'] and revision(second) != revision(first)
         assert second['previous_build'] == first['artifacts'][0]['path'], second
         assert second['production']['kind'] == 'full', second['production']
+        second_volume = volume_record(scene_path)
+        assert revision(second_volume) != revision(first_volume)
+        assert second_volume['production']['kind'] == 'full', second_volume['production']
 
         # A lamp edit bakes a third revision; the first, two revisions back,
         # goes, and the current and previous ones stay.
@@ -145,8 +168,15 @@ def main():
         assert production['kind'] == 'incremental', production
         assert production['base_sha256'] == second['fingerprint'], production
         assert production['gathered_texels'] < production['total_texels'], production
+        third_volume = volume_record(scene_path)
+        volume_production = third_volume['production']
+        assert volume_production['kind'] == 'incremental', volume_production
+        assert volume_production['base_sha256'] == second_volume['fingerprint'], volume_production
+        assert 0 < volume_production['gathered_probes'] < volume_production['total_probes'], \
+            volume_production
         kept = sorted(path.name for path in builds.iterdir())
-        assert kept == sorted([revision(second), revision(third)]), kept
+        assert kept == sorted([revision(second), revision(third), revision(second_volume),
+                               revision(third_volume)]), kept
         print(f'check_lightmap_rebake: passed ({host_class()} host; first bake '
               f'{first_seconds:.1f} s, unchanged {unchanged_seconds:.1f} s, full '
               f'{full_seconds:.1f} s, after a lamp edit {edited_seconds:.1f} s)')

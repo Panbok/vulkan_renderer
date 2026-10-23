@@ -336,8 +336,8 @@ VkrBakeLightmapInputInstance input_box(uint32_t entity, float32_t x,
    bounce reach and the lamp layer's within the reach, and no lamp-direct
    texel of a lamp it does not shadow; editing a lamp relights its layer
    within its range plus the reach and its direct texels within its range,
-   and no sun key. Catches dirty rules that miss a shadow or relight the
-   whole scene. */
+   and no sun key; probes, as points, follow the same rules. Catches
+   dirty rules that miss a shadow or relight the whole scene. */
 void test_incremental_plan_relights_what_edits_reach() {
   printf("  test_incremental_plan_relights_what_edits_reach...\n");
   VkrBakeLightmapInputs previous;
@@ -388,6 +388,21 @@ void test_incremental_plan_relights_what_edits_reach() {
     assert(plan.layer_dirty[1][i] == near);
     assert(plan.direct_dirty[1][i] == near);
   }
+
+  /* Points, such as volume probes, follow the same rules. */
+  const std::vector<Vec3> probes = {vec3_new(20.0f, -1.0f, 0.0f),
+                                    vec3_new(0.0f, 0.0f, 0.0f),
+                                    vec3_new(49.0f, 1.0f, 0.0f)};
+  VkrBakeReceiverPlan points;
+  assert(
+      vkr_bake_plan_receivers(previous, moved, layers, probes, 4.0f, &points));
+  assert(points.gathered_dirty[0][0] && points.gathered_dirty[1][0]);
+  assert(!points.gathered_dirty[0][1] && !points.gathered_dirty[1][1]);
+  assert(!points.direct_dirty[1][2]);
+  assert(
+      vkr_bake_plan_receivers(previous, relit, layers, probes, 4.0f, &points));
+  assert(!points.gathered_dirty[0][2] && points.gathered_dirty[1][2] &&
+         points.direct_dirty[1][2] && !points.gathered_dirty[1][1]);
 
   /* An instance the previous set lacks relights everywhere. */
   std::vector<uint8_t> missing = found;

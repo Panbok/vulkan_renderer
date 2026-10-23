@@ -845,6 +845,222 @@ bool vkr_bake_lightmap_inputs_match(const VkrBakeLightmapInputs &previous,
   }
 }
 
+namespace {
+
+/* What changed between two inputs with equal globals, as every incremental
+   plan reads it: the old and new bounds of the instances, lightmapped or
+   not, that changed, appeared or went; by current instance whether its
+   geometry changed or it is new, or only its rectangles' sizes; the lamps
+   of either side the other has no matching lamp for; and the length of a
+   sun key's sweep across the scene. */
+struct InputChanges {
+  std::vector<ChangedBox> boxes;
+  std::vector<uint8_t> changed;
+  std::vector<uint8_t> resized;
+  std::vector<const VkrBakeLightmapInputLight *> lamps;
+  float32_t sweep = 0.0f;
+};
+
+void collect_changes(const VkrBakeLightmapInputs &previous,
+                     const VkrBakeLightmapInputs &current, float32_t reach,
+                     InputChanges *out) {
+  const size_t count = current.instances.size();
+  std::map<std::string, uint32_t> previous_by_key;
+  for (uint32_t i = 0u; i < previous.instances.size(); ++i) {
+    previous_by_key[key_string(previous.instances[i].key)] = i;
+  }
+  std::vector<uint8_t> matched(previous.instances.size(), 0u);
+  out->changed.assign(count, 0u);
+  out->resized.assign(count, 0u);
+  Vec3 scene_min = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 scene_max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  auto grow = [&](Vec3 lo, Vec3 hi) {
+    scene_min =
+        vec3_new(std::min(scene_min.x, lo.x), std::min(scene_min.y, lo.y),
+                 std::min(scene_min.z, lo.z));
+    scene_max =
+        vec3_new(std::max(scene_max.x, hi.x), std::max(scene_max.y, hi.y),
+                 std::max(scene_max.z, hi.z));
+  };
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrBakeLightmapInputInstance &now = current.instances[i];
+    grow(now.bounds_min, now.bounds_max);
+    const auto found = previous_by_key.find(key_string(now.key));
+    if (found == previous_by_key.end()) {
+      out->changed[i] = 1u;
+      out->boxes.push_back({now.bounds_min, now.bounds_max});
+      continue;
+    }
+    matched[found->second] = 1u;
+    const VkrBakeLightmapInputInstance &before =
+        previous.instances[found->second];
+    if (!vkr_bake_lightmap_instance_same(before, now)) {
+      out->changed[i] = 1u;
+      out->boxes.push_back({before.bounds_min, before.bounds_max});
+      out->boxes.push_back({now.bounds_min, now.bounds_max});
+    } else if (before.width != now.width || before.height != now.height ||
+               before.direct_width != now.direct_width ||
+               before.direct_height != now.direct_height) {
+      /* Same geometry on a resized rectangle: only its own texels. */
+      out->resized[i] = 1u;
+    }
+  }
+  for (uint32_t i = 0u; i < previous.instances.size(); ++i) {
+    if (!matched[i]) {
+      out->boxes.push_back(
+          {previous.instances[i].bounds_min, previous.instances[i].bounds_max});
+    }
+  }
+  for (const ChangedBox &box : out->boxes) {
+    grow(box.min, box.max);
+  }
+  unmatched_lamps(previous.lights, current.lights, &out->lamps);
+  unmatched_lamps(current.lights, previous.lights, &out->lamps);
+  const Vec3 extent = vec3_sub(scene_max, scene_min);
+  out->sweep = std::isfinite(extent.x) ? vec3_length(extent) + reach : 0.0f;
+}
+
+/* One layer's rules for a receiver that did not change itself: a lightmap
+   instance or a volume probe, by its bounds. `bounce_lamps` holds the
+   layer's lamps a changed box lies within the range of, whose bounced
+   light changes through their reach. */
+struct LayerRules {
+  const VkrBakeLightmapPlanLayer *layer = nullptr;
+  const VkrBakeLightmapInputs *current = nullptr;
+  const InputChanges *changes = nullptr;
+  bool sun_key = false;
+  Vec3 away = {};
+  std::vector<const VkrBakeLightmapInputLight *> changed_lamps;
+  std::vector<const VkrBakeLightmapInputLight *> bounce_lamps;
+  float32_t reach = 0.0f;
+};
+
+LayerRules layer_rules(const VkrBakeLightmapPlanLayer &layer,
+                       const VkrBakeLightmapInputs &current,
+                       const InputChanges &changes, float32_t reach) {
+  LayerRules rules;
+  rules.layer = &layer;
+  rules.current = &current;
+  rules.changes = &changes;
+  rules.sun_key = layer.kind == VKR_LIGHT_LAYER_SUN_KEY;
+  rules.away = vec3_scale(layer.key_light_direction, -1.0f);
+  rules.reach = reach;
+  /* This layer's group name, from its first light, for its changed lamps;
+     a lamp layer without lights has none. */
+  const char *group = nullptr;
+  for (uint32_t light : layer.lights) {
+    if (light < current.lights.size() && current.lights[light].lamp) {
+      group = current.lights[light].group;
+      break;
+    }
+  }
+  for (const VkrBakeLightmapInputLight *light : changes.lamps) {
+    if (!rules.sun_key && group && std::strcmp(light->group, group) == 0) {
+      rules.changed_lamps.push_back(light);
+    }
+  }
+  if (!rules.sun_key && !changes.boxes.empty()) {
+    for (uint32_t light_index : layer.lights) {
+      const VkrBakeLightmapInputLight &light = current.lights[light_index];
+      if (!light.lamp) {
+        continue;
+      }
+      bool within = light.unbounded;
+      for (size_t b = 0u; !within && b < changes.boxes.size(); ++b) {
+        within = point_box_distance(light.position, changes.boxes[b].min,
+                                    changes.boxes[b].max) < light.range;
+      }
+      if (within) {
+        rules.bounce_lamps.push_back(&light);
+      }
+    }
+  }
+  return rules;
+}
+
+/* The lamp-direct rule: a changed lamp reaches the receiver, or a changed
+   box meets the box spanning a reaching lamp's emitter and the receiver. */
+bool direct_changes(const LayerRules &rules, Vec3 lo, Vec3 hi) {
+  for (const VkrBakeLightmapInputLight *light : rules.changed_lamps) {
+    if (light->unbounded ||
+        point_box_distance(light->position, lo, hi) < light->range) {
+      return true;
+    }
+  }
+  if (rules.changes->boxes.empty()) {
+    return false;
+  }
+  for (uint32_t light_index : rules.layer->lights) {
+    const VkrBakeLightmapInputLight &light = rules.current->lights[light_index];
+    if (!light.lamp ||
+        (!light.unbounded &&
+         point_box_distance(light.position, lo, hi) >= light.range)) {
+      continue;
+    }
+    if (light.unbounded) {
+      return true;
+    }
+    const float32_t r = light.source_radius;
+    const Vec3 span_min = vec3_new(std::min(lo.x, light.position.x - r),
+                                   std::min(lo.y, light.position.y - r),
+                                   std::min(lo.z, light.position.z - r));
+    const Vec3 span_max = vec3_new(std::max(hi.x, light.position.x + r),
+                                   std::max(hi.y, light.position.y + r),
+                                   std::max(hi.z, light.position.z + r));
+    for (const ChangedBox &box : rules.changes->boxes) {
+      if (box_distance_squared(span_min, span_max, box.min, box.max) == 0.0f) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/* Whether the layer's gathered light changes at the receiver. */
+bool gathered_changes(const LayerRules &rules, Vec3 lo, Vec3 hi) {
+  const std::vector<ChangedBox> &boxes = rules.changes->boxes;
+  const float32_t reach = rules.reach;
+  if (rules.sun_key) {
+    /* A changed box's shadow runs away from the key light; its bounce and
+       its sky occlusion stay near it. */
+    for (const ChangedBox &box : boxes) {
+      const Vec3 center = vec3_scale(vec3_add(box.min, box.max), 0.5f);
+      const Vec3 half = vec3_scale(vec3_sub(box.max, box.min), 0.5f);
+      const Vec3 grown_min = vec3_new(
+          lo.x - half.x - reach, lo.y - half.y - reach, lo.z - half.z - reach);
+      const Vec3 grown_max = vec3_new(
+          hi.x + half.x + reach, hi.y + half.y + reach, hi.z + half.z + reach);
+      if (segment_meets_box(center, rules.away, rules.changes->sweep, grown_min,
+                            grown_max)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  for (const VkrBakeLightmapInputLight *light : rules.changed_lamps) {
+    if (light->unbounded ||
+        point_box_distance(light->position, lo, hi) < light->range + reach) {
+      return true;
+    }
+  }
+  for (const ChangedBox &box : boxes) {
+    if (box_distance_squared(lo, hi, box.min, box.max) < reach * reach) {
+      return true;
+    }
+  }
+  /* A box within a lamp's range changes how that lamp's light bounces
+     through the lamp's reach. */
+  for (const VkrBakeLightmapInputLight *light : rules.bounce_lamps) {
+    if (light->unbounded ||
+        point_box_distance(light->position, lo, hi) < light->range + reach) {
+      return true;
+    }
+  }
+  return rules.layer->texel_direct && direct_changes(rules, lo, hi);
+}
+
+} // namespace
+
 bool vkr_bake_lightmap_plan_incremental(
     const VkrBakeLightmapInputs &previous, const VkrBakeLightmapInputs &current,
     const std::vector<VkrBakeLightmapPlanLayer> &layers,
@@ -862,97 +1078,21 @@ bool vkr_bake_lightmap_plan_incremental(
     const size_t count = current.instances.size();
     plan.layer_dirty.assign(layers.size(), std::vector<uint8_t>(count, 0u));
     plan.direct_dirty.assign(layers.size(), std::vector<uint8_t>(count, 0u));
-
-    /* Instances by key in the previous inputs, then what changed: an
-       instance's old and new boxes, and the instances relit everywhere. */
-    std::map<std::string, uint32_t> previous_by_key;
-    for (uint32_t i = 0u; i < previous.instances.size(); ++i) {
-      previous_by_key[key_string(previous.instances[i].key)] = i;
-    }
-    std::vector<ChangedBox> boxes;
-    std::vector<uint8_t> matched(previous.instances.size(), 0u);
-    std::vector<uint8_t> changed(count, 0u);
-    Vec3 scene_min = vec3_new(INFINITY, INFINITY, INFINITY);
-    Vec3 scene_max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
-    auto grow = [&](Vec3 lo, Vec3 hi) {
-      scene_min =
-          vec3_new(std::min(scene_min.x, lo.x), std::min(scene_min.y, lo.y),
-                   std::min(scene_min.z, lo.z));
-      scene_max =
-          vec3_new(std::max(scene_max.x, hi.x), std::max(scene_max.y, hi.y),
-                   std::max(scene_max.z, hi.z));
-    };
-    for (uint32_t i = 0u; i < count; ++i) {
-      const VkrBakeLightmapInputInstance &now = current.instances[i];
-      grow(now.bounds_min, now.bounds_max);
-      const auto found = previous_by_key.find(key_string(now.key));
-      if (found == previous_by_key.end()) {
-        changed[i] = 1u;
-        boxes.push_back({now.bounds_min, now.bounds_max});
-        continue;
-      }
-      matched[found->second] = 1u;
-      const VkrBakeLightmapInputInstance &before =
-          previous.instances[found->second];
-      const bool same = vkr_bake_lightmap_instance_same(before, now);
-      if (!same) {
-        changed[i] = 1u;
-        boxes.push_back({before.bounds_min, before.bounds_max});
-        boxes.push_back({now.bounds_min, now.bounds_max});
-      } else if (before.width != now.width || before.height != now.height ||
-                 before.direct_width != now.direct_width ||
-                 before.direct_height != now.direct_height) {
-        /* Same geometry on a resized rectangle: only its own texels. */
-        changed[i] = 1u;
-      }
-    }
-    for (uint32_t i = 0u; i < previous.instances.size(); ++i) {
-      if (!matched[i]) {
-        boxes.push_back({previous.instances[i].bounds_min,
-                         previous.instances[i].bounds_max});
-      }
-    }
-    for (const ChangedBox &box : boxes) {
-      grow(box.min, box.max);
-    }
-    plan.changed_boxes = (uint32_t)boxes.size();
+    InputChanges changes;
+    collect_changes(previous, current, reach, &changes);
+    plan.changed_boxes = (uint32_t)changes.boxes.size();
+    plan.changed_lights = (uint32_t)changes.lamps.size();
     for (uint32_t i = 0u; i < count; ++i) {
       const bool lightmapped =
           current.instances[i].width != 0u && current.instances[i].height != 0u;
-      if (lightmapped && (changed[i] || !previous_has_rect[i])) {
+      if (lightmapped &&
+          (changes.changed[i] || changes.resized[i] || !previous_has_rect[i])) {
         plan.changed_instances += 1u;
       }
     }
-
-    /* Changed lamps: those of either input set the other has no matching
-       lamp for, each with its group. */
-    std::vector<const VkrBakeLightmapInputLight *> lamps_changed;
-    unmatched_lamps(previous.lights, current.lights, &lamps_changed);
-    unmatched_lamps(current.lights, previous.lights, &lamps_changed);
-    plan.changed_lights = (uint32_t)lamps_changed.size();
-
-    const Vec3 extent = vec3_sub(scene_max, scene_min);
-    const float32_t sweep =
-        std::isfinite(extent.x) ? vec3_length(extent) + reach : 0.0f;
-    const float32_t reach_squared = reach * reach;
     for (size_t l = 0u; l < layers.size(); ++l) {
       const VkrBakeLightmapPlanLayer &layer = layers[l];
-      const bool sun_key = layer.kind == VKR_LIGHT_LAYER_SUN_KEY;
-      /* This layer's group name, from its first light, for its changed
-         lamps; a lamp layer without lights has none. */
-      const char *group = nullptr;
-      for (uint32_t light : layer.lights) {
-        if (light < current.lights.size() && current.lights[light].lamp) {
-          group = current.lights[light].group;
-          break;
-        }
-      }
-      std::vector<const VkrBakeLightmapInputLight *> layer_changed;
-      for (const VkrBakeLightmapInputLight *light : lamps_changed) {
-        if (!sun_key && group && std::strcmp(light->group, group) == 0) {
-          layer_changed.push_back(light);
-        }
-      }
+      const LayerRules rules = layer_rules(layer, current, changes, reach);
       for (uint32_t i = 0u; i < count; ++i) {
         const VkrBakeLightmapInputInstance &instance = current.instances[i];
         if (instance.width == 0u || instance.height == 0u) {
@@ -960,108 +1100,54 @@ bool vkr_bake_lightmap_plan_incremental(
         }
         const Vec3 lo = instance.bounds_min;
         const Vec3 hi = instance.bounds_max;
-        if (changed[i] || !previous_has_rect[i]) {
+        if (changes.changed[i] || changes.resized[i] || !previous_has_rect[i]) {
           plan.layer_dirty[l][i] = 1u;
           plan.direct_dirty[l][i] =
               layer.lamp_direct && instance.direct_width != 0u;
           continue;
         }
-        /* The lamp-direct rule: a changed lamp reaches the instance, or a
-           changed box meets the box spanning a reaching lamp's emitter and
-           the instance. */
-        auto direct_changes = [&]() {
-          for (const VkrBakeLightmapInputLight *light : layer_changed) {
-            if (light->unbounded ||
-                point_box_distance(light->position, lo, hi) < light->range) {
-              return true;
-            }
-          }
-          for (uint32_t light_index : layer.lights) {
-            const VkrBakeLightmapInputLight &light =
-                current.lights[light_index];
-            if (!light.lamp ||
-                (!light.unbounded &&
-                 point_box_distance(light.position, lo, hi) >= light.range)) {
-              continue;
-            }
-            const float32_t r = light.source_radius;
-            const Vec3 span_min =
-                vec3_new(std::min(lo.x, light.position.x - r),
-                         std::min(lo.y, light.position.y - r),
-                         std::min(lo.z, light.position.z - r));
-            const Vec3 span_max =
-                vec3_new(std::max(hi.x, light.position.x + r),
-                         std::max(hi.y, light.position.y + r),
-                         std::max(hi.z, light.position.z + r));
-            for (const ChangedBox &box : boxes) {
-              if (light.unbounded ||
-                  box_distance_squared(span_min, span_max, box.min, box.max) ==
-                      0.0f) {
-                return true;
-              }
-            }
-          }
-          return false;
-        };
-        bool dirty = false;
-        if (sun_key) {
-          /* A changed box's shadow runs away from the key light; its bounce
-             and its sky occlusion stay near it. */
-          const Vec3 away = vec3_scale(layer.key_light_direction, -1.0f);
-          for (const ChangedBox &box : boxes) {
-            const Vec3 center = vec3_scale(vec3_add(box.min, box.max), 0.5f);
-            const Vec3 half = vec3_scale(vec3_sub(box.max, box.min), 0.5f);
-            const Vec3 grown_min =
-                vec3_new(lo.x - half.x - reach, lo.y - half.y - reach,
-                         lo.z - half.z - reach);
-            const Vec3 grown_max =
-                vec3_new(hi.x + half.x + reach, hi.y + half.y + reach,
-                         hi.z + half.z + reach);
-            if (segment_meets_box(center, away, sweep, grown_min, grown_max)) {
-              dirty = true;
-              break;
-            }
-          }
-        } else {
-          for (const VkrBakeLightmapInputLight *light : layer_changed) {
-            if (light->unbounded ||
-                point_box_distance(light->position, lo, hi) <
-                    light->range + reach) {
-              dirty = true;
-              break;
-            }
-          }
-          for (size_t b = 0u; !dirty && b < boxes.size(); ++b) {
-            const ChangedBox &box = boxes[b];
-            if (box_distance_squared(lo, hi, box.min, box.max) <
-                reach_squared) {
-              dirty = true;
-              break;
-            }
-            /* A box within a lamp's range changes how that lamp's light
-               bounces through the lamp's reach. */
-            for (uint32_t light_index : layer.lights) {
-              const VkrBakeLightmapInputLight &light =
-                  current.lights[light_index];
-              if (!light.lamp) {
-                continue;
-              }
-              if (light.unbounded ||
-                  (point_box_distance(light.position, box.min, box.max) <
-                       light.range &&
-                   point_box_distance(light.position, lo, hi) <
-                       light.range + reach)) {
-                dirty = true;
-                break;
-              }
-            }
-          }
-          dirty = dirty || (layer.texel_direct && direct_changes());
-        }
-        plan.layer_dirty[l][i] = dirty ? 1u : 0u;
+        plan.layer_dirty[l][i] = gathered_changes(rules, lo, hi) ? 1u : 0u;
         if (layer.lamp_direct && instance.direct_width != 0u) {
           plan.direct_dirty[l][i] =
-              (!previous_has_direct_rect[i] || direct_changes()) ? 1u : 0u;
+              (!previous_has_direct_rect[i] || direct_changes(rules, lo, hi))
+                  ? 1u
+                  : 0u;
+        }
+      }
+    }
+    *out_plan = std::move(plan);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool vkr_bake_plan_receivers(
+    const VkrBakeLightmapInputs &previous, const VkrBakeLightmapInputs &current,
+    const std::vector<VkrBakeLightmapPlanLayer> &layers,
+    const std::vector<Vec3> &receivers, float32_t reach,
+    VkrBakeReceiverPlan *out_plan) {
+  if (!out_plan || previous.globals != current.globals ||
+      !std::isfinite(reach) || reach < 0.0f) {
+    return false;
+  }
+  try {
+    VkrBakeReceiverPlan plan;
+    InputChanges changes;
+    collect_changes(previous, current, reach, &changes);
+    plan.changed_boxes = (uint32_t)changes.boxes.size();
+    plan.changed_lights = (uint32_t)changes.lamps.size();
+    plan.gathered_dirty.assign(layers.size(),
+                               std::vector<uint8_t>(receivers.size(), 0u));
+    plan.direct_dirty.assign(layers.size(),
+                             std::vector<uint8_t>(receivers.size(), 0u));
+    for (size_t l = 0u; l < layers.size(); ++l) {
+      const LayerRules rules = layer_rules(layers[l], current, changes, reach);
+      for (size_t r = 0u; r < receivers.size(); ++r) {
+        const Vec3 p = receivers[r];
+        plan.gathered_dirty[l][r] = gathered_changes(rules, p, p) ? 1u : 0u;
+        if (layers[l].lamp_direct) {
+          plan.direct_dirty[l][r] = direct_changes(rules, p, p) ? 1u : 0u;
         }
       }
     }

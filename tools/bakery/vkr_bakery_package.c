@@ -1113,14 +1113,34 @@ vkr_internal void vkr_package_collect_text_fonts(VkrPackage *package,
 
 /* Portable lowering of one included scene; its runtime document and overlay
    take their identities below the staged content. */
-/* Warns when the lowered scene's lightmap set was baked incrementally
-   (ADR-088): its sidecar names an incremental production, which keeps the
-   light earlier sets left beyond the edits' reach, so a shipped package
-   should carry a full bake. */
+/* Whether the sidecar of the baked artifact at `path` names an incremental
+   production. */
+vkr_internal bool8_t vkr_package_incremental(VkrPackage *package,
+                                             const char *path) {
+  const VkrBakeryJson *metadata = vkr_package_read_json(
+      package, vkr_package_printf(package, "%s.bake.json", path), false_v);
+  const char *kind = vkr_package_text(
+      package, vkr_bakery_json_get(metadata, "production"), "kind");
+  return kind && strcmp(kind, "incremental") == 0;
+}
+
+/* Warns when the lowered scene's lightmap set or diffuse volume was baked
+   incrementally (ADR-088, ADR-054): its sidecar names an incremental
+   production, which keeps the light earlier bakes left beyond the edits'
+   reach, so a shipped package should carry a full bake. */
 vkr_internal void
 vkr_package_warn_incremental_lightmaps(VkrPackage *package,
                                        const VkrPackageScene *scene,
                                        const VkrBakeryJson *document) {
+  const char *volume = vkr_package_text(
+      package, vkr_bakery_json_get(document, "diffuse_volume"), "path");
+  if (volume && vkr_package_incremental(package, volume)) {
+    vkr_package_warn(package,
+                     "Scene %s ships a diffuse volume baked incrementally; "
+                     "bake it in full (Full rebake in Bake settings, or "
+                     "lighting.bake with full: true) before shipping",
+                     scene->name ? scene->name : scene->id);
+  }
   const VkrBakeryJson *lightmaps = vkr_bakery_json_get(document, "lightmaps");
   for (const VkrBakeryJson *block = lightmaps ? lightmaps->first : NULL; block;
        block = block->next) {
@@ -1128,11 +1148,7 @@ vkr_package_warn_incremental_lightmaps(VkrPackage *package,
     if (!set) {
       continue;
     }
-    const VkrBakeryJson *metadata = vkr_package_read_json(
-        package, vkr_package_printf(package, "%s.bake.json", set), false_v);
-    const char *kind = vkr_package_text(
-        package, vkr_bakery_json_get(metadata, "production"), "kind");
-    if (kind && strcmp(kind, "incremental") == 0) {
+    if (vkr_package_incremental(package, set)) {
       vkr_package_warn(package,
                        "Scene %s ships lightmaps baked incrementally; bake "
                        "them in full (Full rebake in Bake settings, or "

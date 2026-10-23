@@ -1270,6 +1270,20 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   vkr_bake_push(&arguments, bake_manifest);
   vkr_bake_push(&arguments, "--index");
   vkr_bake_push(&arguments, temporary_index);
+  const char *report = vkr_bake_printf(bake, "%s/bake.report.json", job);
+  vkr_bake_push(&arguments, "--report");
+  vkr_bake_push(&arguments, report);
+  /* Incremental by default: a previous volume this baker made with this
+     recipe and its index let the baker gather only the probes the edits
+     reach (ADR-054). */
+  const bool8_t reuse = indexed && vkr_bake_previous_metadata(
+                                       bake, previous, fingerprint) != NULL;
+  if (reuse) {
+    vkr_bake_push(&arguments, "--previous-volume");
+    vkr_bake_push(&arguments, vkr_bake_printf(bake, "%s", previous));
+    vkr_bake_push(&arguments, "--previous-index");
+    vkr_bake_push(&arguments, previous_index);
+  }
   VKR_BAKE_TRY(vkr_bake_write_command(
       bake, vkr_bake_printf(bake, "%s/bake.command.json", job), &arguments));
   bool8_t ok = vkr_bake_run_baker(bake, &arguments,
@@ -1290,6 +1304,31 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   if (ok && !vkr_bakery_is_file(temporary_index)) {
     ok = vkr_bake_fail(bake, "The diffuse baker wrote no input index");
   }
+  VkrBakeryJson *production = NULL;
+  if (ok) {
+    /* How the volume was made, and for an incremental volume the volume it
+       built on. Packaging and baselines read the kind. */
+    production = vkr_bake_load(bake, report, "bake report");
+    ok = production != NULL;
+    const char *kind = ok ? vkr_bake_text(production, "kind") : NULL;
+    if (ok && indexed && !reuse) {
+      vkr_bakery_json_set(
+          bake->arena, production, "full_reason",
+          vkr_bakery_json_cstr(bake->arena,
+                               "another diffuse baker version or recipe made "
+                               "the previous volume"));
+    }
+    if (ok && kind && strcmp(kind, "incremental") == 0) {
+      char base_sha256[72];
+      ok = vkr_bake_digest(bake, previous, base_sha256);
+      VkrBakeryJson *base = vkr_bakery_json_object(bake->arena);
+      vkr_bakery_json_set(bake->arena, base, "path",
+                          vkr_bakery_json_cstr(bake->arena, previous));
+      vkr_bakery_json_set(bake->arena, base, "sha256",
+                          vkr_bakery_json_cstr(bake->arena, base_sha256));
+      vkr_bakery_json_set(bake->arena, production, "base", base);
+    }
+  }
   if (ok) {
     const VkrBakePublication publication = {
         .scene_source = args->scene,
@@ -1305,6 +1344,7 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
         .manifest_destination = manifest_destination,
         .job = job,
         .input_fingerprint = fingerprint,
+        .production = production,
     };
     /* The index goes into place first: a volume without its index bakes
        again next time, never the other way round. */

@@ -1292,6 +1292,42 @@ vkr_project_record_artifact_file(VkrProjectJob *job,
   return NULL;
 }
 
+/* The record's account of how `bake lightmap` or `bake diffuse` produced
+   an artifact, from its sidecar: the kind (`full` or `incremental`), for an
+   incremental one the digest of the artifact it built on, and the share of
+   texels or probes it gathered. NULL when the sidecar does not read. */
+vkr_internal VkrBakeryJson *vkr_project_bake_production(VkrProjectJob *job,
+                                                        const char *sidecar) {
+  Arena *arena = job->arena;
+  const bool8_t failed_before = job->failed;
+  VkrBakeryJson *metadata =
+      vkr_project_load_json(job, sidecar, VKR_PROJECT_MAX_JSON_BYTES);
+  vkr_project_forgive(job, failed_before);
+  const VkrBakeryJson *production = vkr_bakery_json_get(metadata, "production");
+  const char *kind = vkr_project_json_text(production, "kind");
+  if (!kind) {
+    return NULL;
+  }
+  VkrBakeryJson *record = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, record, "kind", vkr_bakery_json_cstr(arena, kind));
+  const char *base =
+      vkr_project_json_text(vkr_bakery_json_get(production, "base"), "sha256");
+  if (base) {
+    vkr_bakery_json_set(arena, record, "base_sha256",
+                        vkr_bakery_json_cstr(arena, base));
+  }
+  static const char *const counts[] = {"gathered_texels", "total_texels",
+                                       "gathered_probes", "total_probes"};
+  for (uint32_t i = 0u; i < ArrayCount(counts); ++i) {
+    const VkrBakeryJson *value = vkr_bakery_json_get(production, counts[i]);
+    if (value) {
+      vkr_bakery_json_set(arena, record, counts[i],
+                          vkr_bakery_json_clone(arena, value));
+    }
+  }
+  return record;
+}
+
 vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
                                              VkrBakeryJson *scene,
                                              const char *asset_root) {
@@ -1440,6 +1476,8 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
         .previous = previous,
         .index = vkr_bakery_is_file(index) ? index : NULL,
         .index_role = "volume_index",
+        .production = vkr_project_bake_production(
+            job, vkr_project_printf(job, "%s.bake.json", destination)),
     };
     VKR_PROJECT_TRY(
         vkr_project_record_bake_artifact(job, asset_root, &artifact));
@@ -1481,41 +1519,6 @@ vkr_internal bool8_t vkr_project_check_lightmap_class(VkrProjectJob *job,
                             VKR_PROJECT_LIGHTMAP_CLASS, path);
   }
   return true_v;
-}
-
-/* The record's account of how `bake lightmap` produced a set, from its
-   sidecar: the kind (`full` or `incremental`), for an incremental set the
-   digest of the set it built on, and the share of texels it gathered. NULL
-   when the sidecar does not read. */
-vkr_internal VkrBakeryJson *
-vkr_project_lightmap_production(VkrProjectJob *job, const char *sidecar) {
-  Arena *arena = job->arena;
-  const bool8_t failed_before = job->failed;
-  VkrBakeryJson *metadata =
-      vkr_project_load_json(job, sidecar, VKR_PROJECT_MAX_JSON_BYTES);
-  vkr_project_forgive(job, failed_before);
-  const VkrBakeryJson *production = vkr_bakery_json_get(metadata, "production");
-  const char *kind = vkr_project_json_text(production, "kind");
-  if (!kind) {
-    return NULL;
-  }
-  VkrBakeryJson *record = vkr_bakery_json_object(arena);
-  vkr_bakery_json_set(arena, record, "kind", vkr_bakery_json_cstr(arena, kind));
-  const char *base =
-      vkr_project_json_text(vkr_bakery_json_get(production, "base"), "sha256");
-  if (base) {
-    vkr_bakery_json_set(arena, record, "base_sha256",
-                        vkr_bakery_json_cstr(arena, base));
-  }
-  static const char *const counts[] = {"gathered_texels", "total_texels"};
-  for (uint32_t i = 0u; i < ArrayCount(counts); ++i) {
-    const VkrBakeryJson *value = vkr_bakery_json_get(production, counts[i]);
-    if (value) {
-      vkr_bakery_json_set(arena, record, counts[i],
-                          vkr_bakery_json_clone(arena, value));
-    }
-  }
-  return record;
 }
 
 /* Bakes the lightmap set of this host's pipeline class (ADR-088) from the
@@ -1658,7 +1661,7 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
        previous one; the record keeps that, which packaging and baselines
        read. */
     const char *index = vkr_project_printf(job, "%s/lightmaps.vkli", directory);
-    VkrBakeryJson *production = vkr_project_lightmap_production(
+    VkrBakeryJson *production = vkr_project_bake_production(
         job, vkr_project_printf(job, "%s.bake.json", destination));
     if (!lightmaps || lightmaps->type != VKR_BAKERY_JSON_OBJECT) {
       lightmaps = vkr_bakery_json_object(arena);

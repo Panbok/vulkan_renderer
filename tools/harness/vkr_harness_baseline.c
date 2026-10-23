@@ -200,13 +200,13 @@ static bool8_t vkr_harness_baseline_barred(const uint8_t *report, uint64_t size,
   }
 }
 
-/* Finds a lightmap set of the snapshot's scene that was baked
-   incrementally (ADR-088): one whose `.bake.json` sidecar names an
-   incremental production. A baseline must show what a full bake produces,
-   since an incremental set keeps the light earlier sets left beyond the
-   edits' reach. The run's scene content manifest lists the sets; the
-   sidecars are small, so both are scanned as text. Writes the set's
-   path into `out_path`. */
+/* Finds a lightmap set or diffuse volume of the snapshot's scene that was
+   baked incrementally (ADR-088, ADR-054): one whose `.bake.json` sidecar
+   names an incremental production. A baseline must show what a full bake
+   produces, since an incremental bake keeps the light earlier bakes left
+   beyond the edits' reach. The run's scene content manifest lists the
+   files; the sidecars are small, so both are scanned as text. Writes the
+   file's path into `out_path`. */
 static bool8_t vkr_harness_baseline_incremental_lightmap(const char *repo_root,
                                                          const char *source_run,
                                                          Arena *arena,
@@ -233,7 +233,8 @@ static bool8_t vkr_harness_baseline_incremental_lightmap(const char *repo_root,
     at = close + 1u;
     const uint64_t length = close - open - 1u;
     if (length < 5u || length >= VKR_HARNESS_PATH_MAX ||
-        MemCompare(manifest + close - 5u, ".vklm", 5u) != 0) {
+        (MemCompare(manifest + close - 5u, ".vklm", 5u) != 0 &&
+         MemCompare(manifest + close - 5u, ".vkdv", 5u) != 0)) {
       continue;
     }
     char sidecar[VKR_HARNESS_PATH_MAX];
@@ -331,10 +332,10 @@ int vkr_harness_baseline_propose(const char *repo_root, const char *from_run,
   char incremental[VKR_HARNESS_PATH_MAX];
   if (vkr_harness_baseline_incremental_lightmap(
           repo_root, source_run, arena, incremental, sizeof(incremental))) {
-    vkr_harness_stderr("Snapshot renders %s, a lightmap set baked "
-                       "incrementally; bake its scene's lightmaps in full "
-                       "(Full rebake, lighting.bake full: true, or bake "
-                       "lightmap --full) before proposing a baseline\n",
+    vkr_harness_stderr("Snapshot renders %s, baked incrementally; bake its "
+                       "scene's lighting in full (Full rebake, lighting.bake "
+                       "full: true, or bake lightmap|diffuse --full) before "
+                       "proposing a baseline\n",
                        incremental);
     result = VKR_HARNESS_EXIT_FAIL;
     goto cleanup;
