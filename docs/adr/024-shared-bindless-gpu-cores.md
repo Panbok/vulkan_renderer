@@ -327,8 +327,14 @@ desktop pass groups, the `GBuffer.Resolve.Fullscreen` pass went from 1.287 to
 1.307 ms at the median and 1.406 to 1.416 ms at p95, and the Surface line's
 p95 stayed at 2.98 ms of its 3.0 ms target. The two runs came from one
 session in the shared checkout with a browser open, so they bound the cost
-but are not authoritative budget evidence. Image quality under pressure was
-not measured.
+but are not authoritative budget evidence. Image quality under pressure (2026-10-23, RX 6700 XT, Release, the texture
+pressure camera captured on its 60th measured frame with `vkr_harness
+snapshot`): at `VKR_VULKAN_MEMORY_BUDGET_MB=6000`, with 1.11 of Bistro's
+3.16 GB resident after 612 lowering steps and 40 texture slots below their
+measured need in every measured frame, G-buffer albedo differed from full
+residency at 57.8 dB PSNR, 0.09% of pixels by more than 4 of 255 and none by
+more than 16; specular 92.7 dB, normals 66.4 dB, final colour 53.2 dB. The
+differences sit in fine facade and distant cobble detail.
 
 An evicted texture is destroyed at once, and the texture system can reuse its
 id while material rows that sampled it still await retirement. Vulkan keeps
@@ -387,8 +393,8 @@ textures resident, none evicted, 1.125 GB against a 1.125 GB allowance after
 6.04 GB budget (7.09 GB before). The same run with `VK_LAYER_KHRONOS_validation`
 and synchronization validation passed with 310 steps and reported no message.
 Texture block capacity was 1.41 to 1.74 GB for 1.1 GB of textures: blocks that
-held larger chains stay while any placement in them lives. Image quality and
-frame time under pressure were not measured.
+held larger chains stay while any placement in them lives. Frame time and
+image quality under pressure are measured above.
 
 Capacity-based retries use a finite high-water allowance for the current set of
 texture streams. Returning from a lower allowance or toggling the unlimited

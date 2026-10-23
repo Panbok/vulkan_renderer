@@ -187,8 +187,13 @@ The owner accepted each recommendation below on 2026-10-20.
   (ADR-024).
 - G-buffer albedo captures along that path after streaming settles, against
   full residency, and a count of frames that sample below the required mip.
+  Static camera only so far (2026-10-23): albedo at 57.8 dB PSNR against full
+  residency under a 1.11 GB budget, with 40 texture slots below their need
+  in each of 60 frames (ADR-024); the moving path is not captured yet.
 - A budget at half of Bistro's full-resolution texture bytes, with no
-  material showing the neutral default after its first load.
+  material showing the neutral default after its first load. Met and
+  exceeded on the RX 6700 XT (2026-10-23): at 1.1 GB, 35% of the 3.16 GB,
+  all 632 textures stayed resident and none was evicted (ADR-024).
 - Matched, capture-free Release before and after reports for any speed claim.
 
 ## Risks
