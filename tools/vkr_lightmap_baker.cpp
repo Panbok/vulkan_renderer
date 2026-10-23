@@ -1765,12 +1765,30 @@ void open_previous_set(const Options &options, Arena *arena,
   previous->reason.clear();
 }
 
-/* One plane's page as it is assembled: the encoded bytes, every tile the
-   empty tile until a rectangle's tiles replace it. */
-struct PageImage {
-  VkrLightmapPlaneFormat format = VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR;
-  uint32_t page_size = 0u;
-  std::vector<uint8_t> bytes;
+/* Tiles a plane page's relit rectangles encode per strip: 65,536 tiles,
+   16 MiB of RGBA floats, so composing a page never holds all of its
+   rectangles' texels at once. */
+constexpr uint64_t kStripBatchTiles = 65536u;
+
+/* The relit tiles waiting for one strip encode, tile-major (64 floats a
+   tile), and where each lands on the page. */
+struct StripBatch {
+  std::vector<float32_t> tiles;
+  std::vector<uint32_t> tile_x;
+  std::vector<uint32_t> tile_y;
+};
+
+/* Buffers every plane page reuses: the page image, a relit rectangle's
+   RGBA floats, the strip batch and the strip and its encoding. Freed large
+   blocks stay in the process's footprint until the allocator reuses them,
+   so a buffer allocated per plane or per rectangle at a new size adds to
+   the peak; reused ones keep their largest size. */
+struct PlaneScratch {
+  std::vector<uint8_t> image;
+  std::vector<float32_t> rgba;
+  StripBatch batch;
+  std::vector<float32_t> strip;
+  std::vector<uint8_t> encoded;
 };
 
 /* What every page of a set bake reads and accumulates: the payload stream
@@ -1806,6 +1824,7 @@ struct SetPageBake {
   uint64_t copied_rects = 0u;
   /* The empty tile of each plane format, encoded once. */
   std::map<uint32_t, std::vector<uint8_t>> empty_tiles;
+  PlaneScratch scratch;
 };
 
 /* Whether layer `l` relights source instance `instance`. */
@@ -1874,172 +1893,229 @@ bool empty_tile(SetPageBake *bake, VkrLightmapPlaneFormat format,
   return true;
 }
 
-/* One rectangle of a page plane: relit from composed RGBA floats, or
-   copied from the previous set's page image of the same plane. */
+/* One rectangle of a page plane: relit, composed from the layer's texels
+   in `members`, or copied from the previous set's page image of the same
+   plane. */
 struct PlaneRect {
   const VkrBakeLightmapRect *rect = nullptr;
   bool relit = false;
-  std::vector<float32_t> rgba;
+  const std::vector<uint32_t> *members = nullptr;
   const uint8_t *previous_page = nullptr;
   uint32_t previous_x = 0u;
   uint32_t previous_y = 0u;
 };
 
-/*
- * Assembles one plane's page from its rectangles, encoding every relit
- * rectangle's tiles in one strip, and appends it to the payload.
- */
-bool write_plane_page(SetPageBake *bake, VkrLightmapPlaneFormat format,
-                      bool direction, uint32_t page_size,
-                      const std::vector<PlaneRect> &rects) {
-  const auto encode_start = std::chrono::steady_clock::now();
-  const std::vector<uint8_t> *empty = nullptr;
-  if (!empty_tile(bake, format, direction, &empty)) {
+/* What a plane page's relit rectangles compose from: the layer's texels,
+   their values (irradiance, or mean directions with `direction`) and,
+   for irradiance planes that carry it, ambient occlusion. */
+struct PlaneValues {
+  const std::vector<VkrBakeLightmapTexel> *texels = nullptr;
+  const std::vector<Vec3> *values = nullptr;
+  const std::vector<float32_t> *occlusion = nullptr;
+  bool direction = false;
+};
+
+/* Encodes the scratch batch's tiles in one strip and writes them into the
+   scratch page image. */
+bool flush_strip(SetPageBake *bake, VkrLightmapPlaneFormat format,
+                 uint32_t page_size) {
+  PlaneScratch &scratch = bake->scratch;
+  StripBatch &batch = scratch.batch;
+  const uint64_t count = batch.tile_x.size();
+  if (count == 0u) {
+    return true;
+  }
+  uint32_t strip_width = 0u;
+  uint32_t strip_height = 0u;
+  vkr_bake_lightmap_strip_size(count, &strip_width, &strip_height);
+  scratch.strip.assign((size_t)strip_width * strip_height * 4u, 0.0f);
+  for (uint64_t t = 0u; t < count; ++t) {
+    vkr_bake_lightmap_strip_put(batch.tiles.data() + 64u * t, 4u, t,
+                                strip_width, &scratch.strip);
+  }
+  if (!encode_strip(bake, format, scratch.strip, strip_width, strip_height,
+                    &scratch.encoded)) {
     return false;
   }
+  uint8_t bytes[64];
+  for (uint64_t t = 0u; t < count; ++t) {
+    vkr_bake_lightmap_strip_take(scratch.encoded, format, t, strip_width,
+                                 bytes);
+    vkr_bake_lightmap_page_put_tile(&scratch.image, page_size, format,
+                                    batch.tile_x[t], batch.tile_y[t], bytes);
+  }
+  batch.tiles.clear();
+  batch.tile_x.clear();
+  batch.tile_y.clear();
+  return true;
+}
+
+/*
+ * Assembles one plane's page from its rectangles and appends it to the
+ * payload: relit rectangles are composed one at a time and encoded in
+ * strips of at most kStripBatchTiles tiles, copied ones take the previous
+ * set's tiles, and the rest of the page the encoded empty tile.
+ */
+bool write_plane_page(SetPageBake *bake, VkrLightmapPlaneFormat format,
+                      uint32_t page_size, const std::vector<PlaneRect> &rects,
+                      const PlaneValues &values) {
+  const auto encode_start = std::chrono::steady_clock::now();
+  const std::vector<uint8_t> *empty = nullptr;
+  if (!empty_tile(bake, format, values.direction, &empty)) {
+    return false;
+  }
+  PlaneScratch &scratch = bake->scratch;
   const uint32_t tile_bytes = vkr_bake_lightmap_tile_bytes(format);
   const uint32_t tiles_per_row = page_size / 4u;
-  PageImage image;
-  image.format = format;
-  image.page_size = page_size;
-  image.bytes.resize((size_t)tiles_per_row * tiles_per_row * tile_bytes);
-  for (size_t t = 0u; t < (size_t)tiles_per_row * tiles_per_row; ++t) {
-    std::memcpy(image.bytes.data() + t * tile_bytes, empty->data(), tile_bytes);
+  const size_t page_tiles = (size_t)tiles_per_row * tiles_per_row;
+  scratch.image.resize(page_tiles * tile_bytes);
+  for (size_t t = 0u; t < page_tiles; ++t) {
+    std::memcpy(scratch.image.data() + t * tile_bytes, empty->data(),
+                tile_bytes);
   }
-  uint64_t relit_tiles = 0u;
+  StripBatch &batch = scratch.batch;
+  batch.tiles.reserve(kStripBatchTiles * 64u);
+  batch.tile_x.reserve(kStripBatchTiles);
+  batch.tile_y.reserve(kStripBatchTiles);
+  uint8_t bytes[64];
   for (const PlaneRect &plane_rect : rects) {
-    if (plane_rect.relit) {
-      relit_tiles += (uint64_t)(plane_rect.rect->width / 4u) *
-                     (plane_rect.rect->height / 4u);
-    }
-  }
-  if (relit_tiles != 0u) {
-    uint32_t strip_width = 0u;
-    uint32_t strip_height = 0u;
-    vkr_bake_lightmap_strip_size(relit_tiles, &strip_width, &strip_height);
-    std::vector<float32_t> strip((size_t)strip_width * strip_height * 4u, 0.0f);
-    uint64_t tile = 0u;
-    for (const PlaneRect &plane_rect : rects) {
-      if (!plane_rect.relit) {
-        continue;
-      }
-      const uint32_t width = plane_rect.rect->width;
-      for (uint32_t ty = 0u; ty < plane_rect.rect->height / 4u; ++ty) {
-        for (uint32_t tx = 0u; tx < width / 4u; ++tx) {
-          vkr_bake_lightmap_strip_put(
-              plane_rect.rgba.data() + 4u * ((size_t)ty * 4u * width + tx * 4u),
-              width, tile++, strip_width, &strip);
-        }
-      }
-    }
-    std::vector<uint8_t> encoded;
-    if (!encode_strip(bake, format, strip, strip_width, strip_height,
-                      &encoded)) {
-      return false;
-    }
-    tile = 0u;
-    std::vector<uint8_t> bytes(tile_bytes);
-    for (const PlaneRect &plane_rect : rects) {
-      if (!plane_rect.relit) {
-        continue;
-      }
-      const VkrBakeLightmapRect &rect = *plane_rect.rect;
+    const VkrBakeLightmapRect &rect = *plane_rect.rect;
+    if (!plane_rect.relit) {
       for (uint32_t ty = 0u; ty < rect.height / 4u; ++ty) {
         for (uint32_t tx = 0u; tx < rect.width / 4u; ++tx) {
-          vkr_bake_lightmap_strip_take(encoded, format, tile++, strip_width,
-                                       bytes.data());
-          vkr_bake_lightmap_page_put_tile(&image.bytes, page_size, format,
+          vkr_bake_lightmap_page_get_tile(
+              plane_rect.previous_page, page_size, format,
+              plane_rect.previous_x / 4u + tx, plane_rect.previous_y / 4u + ty,
+              bytes);
+          vkr_bake_lightmap_page_put_tile(&scratch.image, page_size, format,
                                           rect.x / 4u + tx, rect.y / 4u + ty,
-                                          bytes.data());
+                                          bytes);
+        }
+      }
+      bake->copied_rects += 1u;
+      continue;
+    }
+    static const std::vector<uint32_t> no_members;
+    if (!vkr_bake_lightmap_compose_rect(
+            rect, *values.texels,
+            plane_rect.members ? *plane_rect.members : no_members,
+            *values.values, values.occlusion, bake->options->dilation_passes,
+            values.direction, &scratch.rgba)) {
+      return false;
+    }
+    for (uint32_t ty = 0u; ty < rect.height / 4u; ++ty) {
+      for (uint32_t tx = 0u; tx < rect.width / 4u; ++tx) {
+        for (uint32_t y = 0u; y < 4u; ++y) {
+          const float32_t *row =
+              scratch.rgba.data() +
+              4u * (((size_t)ty * 4u + y) * rect.width + tx * 4u);
+          batch.tiles.insert(batch.tiles.end(), row, row + 16u);
+        }
+        batch.tile_x.push_back(rect.x / 4u + tx);
+        batch.tile_y.push_back(rect.y / 4u + ty);
+        if (batch.tile_x.size() >= kStripBatchTiles &&
+            !flush_strip(bake, format, page_size)) {
+          return false;
         }
       }
     }
+    bake->relit_rects += 1u;
   }
-  std::vector<uint8_t> bytes(tile_bytes);
-  for (const PlaneRect &plane_rect : rects) {
-    if (plane_rect.relit) {
-      bake->relit_rects += 1u;
-      continue;
-    }
-    const VkrBakeLightmapRect &rect = *plane_rect.rect;
-    for (uint32_t ty = 0u; ty < rect.height / 4u; ++ty) {
-      for (uint32_t tx = 0u; tx < rect.width / 4u; ++tx) {
-        vkr_bake_lightmap_page_get_tile(plane_rect.previous_page, page_size,
-                                        format, plane_rect.previous_x / 4u + tx,
-                                        plane_rect.previous_y / 4u + ty,
-                                        bytes.data());
-        vkr_bake_lightmap_page_put_tile(&image.bytes, page_size, format,
-                                        rect.x / 4u + tx, rect.y / 4u + ty,
-                                        bytes.data());
-      }
-    }
-    bake->copied_rects += 1u;
+  if (!flush_strip(bake, format, page_size)) {
+    return false;
   }
   bake->encode_seconds += seconds_since(encode_start);
-  bake->payload_crc = vkr_crc32_update(bake->payload_crc, image.bytes.data(),
-                                       (uint64_t)image.bytes.size());
-  bake->stream->write((const char *)image.bytes.data(),
-                      (std::streamsize)image.bytes.size());
+  bake->payload_crc = vkr_crc32_update(bake->payload_crc, scratch.image.data(),
+                                       (uint64_t)scratch.image.size());
+  bake->stream->write((const char *)scratch.image.data(),
+                      (std::streamsize)scratch.image.size());
   return (bool)*bake->stream;
 }
 
-/* The texels of `texels` whose source instance `keep` selects, with their
+using TexelList = std::vector<VkrBakeLightmapTexel>;
+
+/*
+ * Texels one gather or cleanup works on, with their same-surface neighbors,
+ * validity, fill and ambient occlusion (empty without). Neighbors and fill
+ * stay within an instance, so the texels of whole instances plan what their
+ * page would plan for them. A set that holds every texel of the set it came
+ * from shares that set's data instead of a copy: a 4096 page holds about
+ * seven million texels of 88 bytes, with neighbors and fill as large again.
+ */
+struct TexelSet {
+  std::shared_ptr<const TexelList> texels = std::make_shared<TexelList>();
+  /* Index of each texel in the set it was selected from; empty when the
+     set holds them all in order. */
+  std::vector<uint32_t> source_index;
+  std::shared_ptr<const VkrBakeLightmapNeighbors> neighbors =
+      std::make_shared<VkrBakeLightmapNeighbors>();
+  std::shared_ptr<const std::vector<uint8_t>> valid =
+      std::make_shared<std::vector<uint8_t>>();
+  std::shared_ptr<const VkrBakeLightmapFill> fill =
+      std::make_shared<VkrBakeLightmapFill>();
+  std::shared_ptr<const std::vector<float32_t>> occlusion =
+      std::make_shared<std::vector<float32_t>>();
+};
+
+/* The texels of `texels` whose source instance `relit` marks, with their
    indices in `texels`. */
-template <typename Keep>
-void select_texels(const std::vector<VkrBakeLightmapTexel> &texels, Keep keep,
-                   std::vector<VkrBakeLightmapTexel> *out_texels,
-                   std::vector<uint32_t> *out_indices) {
+void select_texels(const TexelList &texels, const std::vector<uint8_t> &relit,
+                   TexelList *out_texels, std::vector<uint32_t> *out_indices) {
   out_texels->clear();
   out_indices->clear();
   for (uint32_t i = 0u; i < texels.size(); ++i) {
-    if (keep(texels[i].source_instance_index)) {
+    if (relit[texels[i].source_instance_index] != 0u) {
       out_texels->push_back(texels[i]);
       out_indices->push_back(i);
     }
   }
 }
 
-/* Texels one gather or cleanup works on, with their same-surface neighbors,
-   validity, fill and ambient occlusion (empty without). Neighbors and fill
-   stay within an instance, so the texels of whole instances plan what their
-   page would plan for them. */
-struct TexelSet {
-  std::vector<VkrBakeLightmapTexel> texels;
-  /* Index of each texel in the set it was selected from. */
-  std::vector<uint32_t> source_index;
-  VkrBakeLightmapNeighbors neighbors;
-  std::vector<uint8_t> valid;
-  VkrBakeLightmapFill fill;
-  std::vector<float32_t> occlusion;
-};
+/* Whether `relit` marks every texel's instance. */
+bool selects_all(const TexelList &texels, const std::vector<uint8_t> &relit) {
+  for (const VkrBakeLightmapTexel &texel : texels) {
+    if (relit[texel.source_instance_index] == 0u) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /* The texels of `from` whose instance `relit` marks, with their validity
-   and occlusion from `from` and their own neighbors and fill; all of
-   `from` when every texel's instance is marked. */
+   and occlusion from `from` and their own neighbors and fill; `from`'s
+   own data when every texel's instance is marked. */
 bool subset_texels(const TexelSet &from, const std::vector<uint8_t> &relit,
                    uint32_t page_size, float32_t neighbor_distance,
                    TexelSet *out) {
-  select_texels(
-      from.texels, [&](uint32_t instance) { return relit[instance] != 0u; },
-      &out->texels, &out->source_index);
-  if (out->texels.size() == from.texels.size()) {
-    out->neighbors = from.neighbors;
-    out->valid = from.valid;
-    out->fill = from.fill;
-    out->occlusion = from.occlusion;
+  if (selects_all(*from.texels, relit)) {
+    *out = from;
+    out->source_index.clear();
     return true;
   }
-  out->valid.resize(out->texels.size());
-  out->occlusion.resize(from.occlusion.empty() ? 0u : out->texels.size());
-  for (size_t i = 0u; i < out->texels.size(); ++i) {
-    out->valid[i] = from.valid[out->source_index[i]];
-    if (!from.occlusion.empty()) {
-      out->occlusion[i] = from.occlusion[out->source_index[i]];
+  auto texels = std::make_shared<TexelList>();
+  select_texels(*from.texels, relit, texels.get(), &out->source_index);
+  auto valid = std::make_shared<std::vector<uint8_t>>(texels->size());
+  auto occlusion = std::make_shared<std::vector<float32_t>>(
+      from.occlusion->empty() ? 0u : texels->size());
+  for (size_t i = 0u; i < texels->size(); ++i) {
+    (*valid)[i] = (*from.valid)[out->source_index[i]];
+    if (!from.occlusion->empty()) {
+      (*occlusion)[i] = (*from.occlusion)[out->source_index[i]];
     }
   }
-  return vkr_bake_lightmap_neighbors(page_size, out->texels, neighbor_distance,
-                                     &out->neighbors) &&
-         vkr_bake_lightmap_plan_fill(out->neighbors, out->valid, &out->fill);
+  auto neighbors = std::make_shared<VkrBakeLightmapNeighbors>();
+  auto fill = std::make_shared<VkrBakeLightmapFill>();
+  if (!vkr_bake_lightmap_neighbors(page_size, *texels, neighbor_distance,
+                                   neighbors.get()) ||
+      !vkr_bake_lightmap_plan_fill(*neighbors, *valid, fill.get())) {
+    return false;
+  }
+  out->texels = std::move(texels);
+  out->valid = std::move(valid);
+  out->occlusion = std::move(occlusion);
+  out->neighbors = std::move(neighbors);
+  out->fill = std::move(fill);
+  return true;
 }
 
 /*
@@ -2047,7 +2123,7 @@ bool subset_texels(const TexelSet &from, const std::vector<uint8_t> &relit,
  * smoothed ambient occlusion, from its first layer's first-bounce rays.
  */
 bool plan_page_fill(const Options &options, uint32_t page, uint32_t page_count,
-                    const std::vector<VkrBakeLightmapTexel> &texels,
+                    const TexelList &texels,
                     const VkrBakeLightmapNeighbors &neighbors,
                     bool bake_occlusion, bool find_buried,
                     VkrBakeGpuGatherResult *gathered,
@@ -2089,11 +2165,12 @@ bool plan_page_fill(const Options &options, uint32_t page, uint32_t page_count,
  * smoothed ambient occlusion. The first layer's own gather supplies them
  * for the instances it relights, and a direct-only gather of the first
  * layer's transport, whose first hits match it, for the rest
- * (VkrBakeGpuGatherSettings::direct_only). `first_layer` takes the first
- * layer's texels and its gather.
+ * (VkrBakeGpuGatherSettings::direct_only). `out_first` takes the first
+ * layer's texels and `out_first_gathered` their gather. `all` is the
+ * page's rasterized texels, which the surface takes over when every
+ * instance relights.
  */
-bool plan_page_surface(SetPageBake *bake, uint32_t page,
-                       const std::vector<VkrBakeLightmapTexel> &all,
+bool plan_page_surface(SetPageBake *bake, uint32_t page, TexelList &&all,
                        const std::vector<uint8_t> &relit_any,
                        TexelSet *out_surface, TexelSet *out_first,
                        VkrBakeGpuGatherResult *out_first_gathered) {
@@ -2103,26 +2180,32 @@ bool plan_page_surface(SetPageBake *bake, uint32_t page,
       kOutlierNeighborTexels / options.texels_per_unit;
   const bool bake_occlusion = !bake->desktop && options.ao_radius > 0.0f;
   const bool find_buried = options.buried_backface > 0.0f;
-  std::vector<uint32_t> unused;
-  select_texels(
-      all, [&](uint32_t instance) { return relit_any[instance] != 0u; },
-      &out_surface->texels, &unused);
-  out_surface->valid.assign(out_surface->texels.size(), 1u);
-  if (!vkr_bake_lightmap_neighbors(bake->layout->page_size, out_surface->texels,
-                                   neighbor_distance,
-                                   &out_surface->neighbors)) {
+  auto surface_texels = std::make_shared<TexelList>();
+  if (selects_all(all, relit_any)) {
+    *surface_texels = std::move(all);
+  } else {
+    std::vector<uint32_t> unused;
+    select_texels(all, relit_any, surface_texels.get(), &unused);
+    TexelList().swap(all);
+  }
+  const TexelList &texels = *surface_texels;
+  auto neighbors = std::make_shared<VkrBakeLightmapNeighbors>();
+  if (!vkr_bake_lightmap_neighbors(bake->layout->page_size, texels,
+                                   neighbor_distance, neighbors.get())) {
     return false;
   }
   std::vector<uint8_t> first_relit(relit_any.size(), 0u);
   for (uint32_t i = 0u; i < relit_any.size(); ++i) {
     first_relit[i] = relit_any[i] && layer_relights(*bake, 0u, i) ? 1u : 0u;
   }
-  select_texels(
-      out_surface->texels,
-      [&](uint32_t instance) { return first_relit[instance] != 0u; },
-      &out_first->texels, &out_first->source_index);
-  std::vector<float32_t> backface(out_surface->texels.size(), 0.0f);
-  std::vector<float32_t> occlusion(out_surface->texels.size(), 1.0f);
+  const bool first_all = selects_all(texels, first_relit);
+  TexelList first_texels;
+  std::vector<uint32_t> first_index;
+  if (!first_all) {
+    select_texels(texels, first_relit, &first_texels, &first_index);
+  }
+  std::vector<float32_t> backface(texels.size(), 0.0f);
+  std::vector<float32_t> occlusion(texels.size(), 1.0f);
   /* Only first hits need no atmosphere, which an incremental bake that
      relights no sun key never builds. */
   if (layers[0].sun_key >= 0 && !bake->key_atmospheres->empty()) {
@@ -2136,13 +2219,14 @@ bool plan_page_surface(SetPageBake *bake, uint32_t page,
   settings.occlusion = bake_occlusion;
   settings.backface = find_buried;
   settings.direction = bake->desktop;
-  if (!vkr_bake_gpu_gather(bake->gpu, out_first->texels, layers[0].transport,
-                           settings, out_first_gathered)) {
+  if (!vkr_bake_gpu_gather(bake->gpu, first_all ? texels : first_texels,
+                           layers[0].transport, settings, out_first_gathered)) {
     return false;
   }
   bake->gpu_seconds += out_first_gathered->gpu_seconds;
-  for (size_t i = 0u; i < out_first->texels.size(); ++i) {
-    const uint32_t s = out_first->source_index[i];
+  const size_t first_count = first_all ? texels.size() : first_texels.size();
+  for (size_t i = 0u; i < first_count; ++i) {
+    const uint32_t s = first_all ? (uint32_t)i : first_index[i];
     if (find_buried) {
       backface[s] = out_first_gathered->backface[i];
     }
@@ -2150,14 +2234,14 @@ bool plan_page_surface(SetPageBake *bake, uint32_t page,
       occlusion[s] = out_first_gathered->occlusion[i];
     }
   }
-  if (out_first->texels.size() != out_surface->texels.size() &&
-      (bake_occlusion || find_buried)) {
-    std::vector<VkrBakeLightmapTexel> rest;
+  if (!first_all && (bake_occlusion || find_buried)) {
+    std::vector<uint8_t> rest_relit(first_relit.size(), 0u);
+    for (size_t i = 0u; i < rest_relit.size(); ++i) {
+      rest_relit[i] = relit_any[i] && !first_relit[i] ? 1u : 0u;
+    }
+    TexelList rest;
     std::vector<uint32_t> rest_index;
-    select_texels(
-        out_surface->texels,
-        [&](uint32_t instance) { return first_relit[instance] == 0u; }, &rest,
-        &rest_index);
+    select_texels(texels, rest_relit, &rest, &rest_index);
     VkrBakeGpuGatherSettings first_hits = settings;
     first_hits.direct_only = true;
     first_hits.direction = false;
@@ -2176,36 +2260,28 @@ bool plan_page_surface(SetPageBake *bake, uint32_t page,
       }
     }
   }
+  /* The first layer's gather keeps only the light it carries. */
+  std::vector<float32_t>().swap(out_first_gathered->backface);
+  std::vector<float32_t>().swap(out_first_gathered->occlusion);
   VkrBakeGpuGatherResult surface_rays;
   surface_rays.backface = std::move(backface);
   surface_rays.occlusion = std::move(occlusion);
-  if (!plan_page_fill(
-          options, page, bake->layout->page_count, out_surface->texels,
-          out_surface->neighbors, bake_occlusion, find_buried, &surface_rays,
-          &out_surface->valid, &out_surface->fill, &out_surface->occlusion)) {
+  auto valid = std::make_shared<std::vector<uint8_t>>(texels.size(), 1u);
+  auto fill = std::make_shared<VkrBakeLightmapFill>();
+  auto smoothed = std::make_shared<std::vector<float32_t>>();
+  if (!plan_page_fill(options, page, bake->layout->page_count, texels,
+                      *neighbors, bake_occlusion, find_buried, &surface_rays,
+                      valid.get(), fill.get(), smoothed.get())) {
     return false;
   }
+  out_surface->texels = std::move(surface_texels);
+  out_surface->source_index.clear();
+  out_surface->neighbors = std::move(neighbors);
+  out_surface->valid = std::move(valid);
+  out_surface->fill = std::move(fill);
+  out_surface->occlusion = std::move(smoothed);
   return subset_texels(*out_surface, first_relit, bake->layout->page_size,
                        neighbor_distance, out_first);
-}
-
-/* The rectangles of `page` in layout order with, for a rectangle the layer
-   relights, its texels' indices in `texels`. */
-void page_rects(const VkrBakeLightmapLayout &layout, uint32_t page,
-                const std::vector<VkrBakeLightmapTexel> &texels,
-                std::vector<uint32_t> *out_rects,
-                std::vector<std::vector<uint32_t>> *out_members) {
-  out_rects->clear();
-  for (uint32_t r = 0u; r < layout.rects.size(); ++r) {
-    if (layout.rects[r].page == page) {
-      out_rects->push_back(r);
-    }
-  }
-  out_members->assign(layout.rects.size(), {});
-  for (uint32_t i = 0u; i < texels.size(); ++i) {
-    const uint32_t instance = texels[i].source_instance_index;
-    (*out_members)[layout.rect_by_instance[instance]].push_back(i);
-  }
 }
 
 /* The page image a copied rectangle of plane `plane` reads in the previous
@@ -2218,37 +2294,37 @@ const uint8_t *previous_page_image(const SetPageBake &bake, uint32_t plane,
          vkr_lightmap_set_plane_offset(&set, previous_page, plane);
 }
 
-/* The plane rectangles of one layer's plane on `page`: relit rectangles
-   composed from `values` (or directions), the others copied. */
-bool plane_rects(const SetPageBake &bake, const VkrBakeLightmapLayout &layout,
+/* The rectangles of one layer's plane on `page` and, in `out_members`, the
+   indices in `texels` of each rectangle's texels: a rectangle with texels
+   relights, and one whose instance the previous set lacks relights too;
+   every other rectangle is copied. */
+void plane_rects(const SetPageBake &bake, const VkrBakeLightmapLayout &layout,
                  uint32_t page, uint32_t plane, bool lamp_direct_page,
-                 const TexelSet &texels, const std::vector<Vec3> &values,
-                 const std::vector<float32_t> *occlusion, bool direction,
+                 const TexelList &texels,
+                 std::vector<std::vector<uint32_t>> *out_members,
                  std::vector<PlaneRect> *out_rects) {
-  std::vector<uint32_t> rects;
-  std::vector<std::vector<uint32_t>> members;
-  page_rects(layout, page, texels.texels, &rects, &members);
-  std::vector<uint8_t> relit(layout.rects.size(), 0u);
-  for (const VkrBakeLightmapTexel &texel : texels.texels) {
-    relit[layout.rect_by_instance[texel.source_instance_index]] = 1u;
+  out_members->assign(layout.rects.size(), {});
+  for (uint32_t i = 0u; i < texels.size(); ++i) {
+    const uint32_t instance = texels[i].source_instance_index;
+    (*out_members)[layout.rect_by_instance[instance]].push_back(i);
   }
   out_rects->clear();
-  out_rects->resize(rects.size());
-  for (size_t k = 0u; k < rects.size(); ++k) {
-    const uint32_t r = rects[k];
+  for (uint32_t r = 0u; r < layout.rects.size(); ++r) {
     const VkrBakeLightmapRect &rect = layout.rects[r];
-    PlaneRect &plane_rect = (*out_rects)[k];
+    if (rect.page != page) {
+      continue;
+    }
+    PlaneRect plane_rect;
     plane_rect.rect = &rect;
+    plane_rect.members = &(*out_members)[r];
     const PreviousRect *previous =
         bake.previous_rects && bake.plan
             ? &(*bake.previous_rects)[rect.source_instance_index]
             : nullptr;
     const bool found = previous && (lamp_direct_page ? previous->direct_found
                                                      : previous->found);
-    /* A rectangle no texel covers composes the same in every bake; one
-       whose instance the plan relights but whose texels this set lacks is
-       relit too. */
-    plane_rect.relit = relit[r] != 0u || !found;
+    /* A rectangle no texel covers composes the same in every bake. */
+    plane_rect.relit = !(*out_members)[r].empty() || !found;
     if (!plane_rect.relit) {
       plane_rect.previous_page = previous_page_image(
           bake, plane,
@@ -2257,15 +2333,22 @@ bool plane_rects(const SetPageBake &bake, const VkrBakeLightmapLayout &layout,
           lamp_direct_page ? previous->direct_x : previous->x;
       plane_rect.previous_y =
           lamp_direct_page ? previous->direct_y : previous->y;
-      continue;
     }
-    if (!vkr_bake_lightmap_compose_rect(
-            rect, texels.texels, members[r], values, occlusion,
-            bake.options->dilation_passes, direction, &plane_rect.rgba)) {
-      return false;
-    }
+    out_rects->push_back(plane_rect);
   }
-  return true;
+}
+
+/* Writes one plane page of `texels`: their values in the relit rectangles,
+   the previous set's tiles elsewhere. */
+bool write_layer_plane(SetPageBake *bake, const VkrBakeLightmapLayout &layout,
+                       uint32_t page, uint32_t plane, bool lamp_direct_page,
+                       const TexelList &texels, const PlaneValues &values) {
+  std::vector<std::vector<uint32_t>> members;
+  std::vector<PlaneRect> rects;
+  plane_rects(*bake, layout, page, plane, lamp_direct_page, texels, &members,
+              &rects);
+  return write_plane_page(bake, (*bake->planes)[plane].format, layout.page_size,
+                          rects, values);
 }
 
 /* Index of the plane of `layer` and `kind` in the set's plane table. */
@@ -2282,7 +2365,7 @@ uint32_t plane_index(const std::vector<VkrLightmapPlane> &planes,
 /* Prints a baked layer's statistics, with its direction line on the
    desktop class. */
 void print_layer_report(const SetPageBake &bake, uint32_t page, uint32_t l,
-                        const TexelSet &texels,
+                        const TexelList &texels,
                         const VkrBakeGpuGatherResult &gathered,
                         const std::vector<Vec3> &irradiance,
                         const VkrBakeLightmapOutliers &outliers,
@@ -2302,9 +2385,8 @@ void print_layer_report(const SetPageBake &bake, uint32_t page, uint32_t l,
               record.kind == VKR_LIGHT_LAYER_SUN_KEY
                   ? std::to_string(record.index).c_str()
                   : record.name,
-              texels.texels.size(), gathered.gpu_seconds,
-              texels.texels.empty() ? 0.0
-                                    : luminance_sum / texels.texels.size(),
+              texels.size(), gathered.gpu_seconds,
+              texels.empty() ? 0.0 : luminance_sum / texels.size(),
               (unsigned long long)outliers.texels, outliers.energy_fraction);
   if (bake.desktop) {
     std::printf("direction page=%u/%u layer=%u/%zu lamp_group=%s "
@@ -2328,7 +2410,7 @@ bool bake_page_layer(SetPageBake *bake, uint32_t page, uint32_t l,
   const float32_t neighbor_distance =
       kOutlierNeighborTexels / options.texels_per_unit;
   TexelSet own;
-  const TexelSet *texels = &first;
+  const TexelSet *set = &first;
   VkrBakeGpuGatherResult gathered;
   VkrBakeGpuGatherResult *result = first_gathered;
   if (l != 0u) {
@@ -2340,9 +2422,9 @@ bool bake_page_layer(SetPageBake *bake, uint32_t page, uint32_t l,
                        &own)) {
       return false;
     }
-    texels = &own;
+    set = &own;
     result = &gathered;
-    if (!own.texels.empty()) {
+    if (!own.texels->empty()) {
       if (layers[l].sun_key >= 0) {
         vkr_bake_scene_use_atmosphere(
             bake->scene, (*bake->key_atmospheres)[(size_t)layers[l].sun_key]);
@@ -2352,59 +2434,59 @@ bool bake_page_layer(SetPageBake *bake, uint32_t page, uint32_t l,
       }
       VkrBakeGpuGatherSettings settings = bake->settings;
       settings.direction = bake->desktop;
-      if (!vkr_bake_gpu_gather(bake->gpu, own.texels, layers[l].transport,
+      if (!vkr_bake_gpu_gather(bake->gpu, *own.texels, layers[l].transport,
                                settings, &gathered)) {
         return false;
       }
       bake->gpu_seconds += gathered.gpu_seconds;
     }
   }
-  bake->gathered_texels += texels->texels.size();
+  const TexelList &texels = *set->texels;
+  bake->gathered_texels += texels.size();
   const auto cleanup_start = std::chrono::steady_clock::now();
   std::vector<Vec3> irradiance;
   VkrBakeLightmapOutliers outliers = {};
-  if (!texels->texels.empty() &&
-      !finish_layer(options, layout.page_size, texels->texels,
-                    texels->neighbors, texels->valid, texels->fill, result,
-                    &irradiance, &outliers)) {
+  if (!texels.empty() &&
+      !finish_layer(options, layout.page_size, texels, *set->neighbors,
+                    *set->valid, *set->fill, result, &irradiance, &outliers)) {
     return false;
   }
   std::vector<Vec3> directions;
   float64_t mean_directionality = 0.0;
-  if (bake->desktop && !texels->texels.empty() &&
-      !finish_directions(options, texels->texels, texels->neighbors,
-                         texels->fill, *result, &directions,
-                         &mean_directionality)) {
+  if (bake->desktop && !texels.empty() &&
+      !finish_directions(options, texels, *set->neighbors, *set->fill, *result,
+                         &directions, &mean_directionality)) {
     return false;
   }
   bake->cleanup_seconds += seconds_since(cleanup_start);
   const bool bake_occlusion = !bake->desktop && options.ao_radius > 0.0f;
-  const uint32_t irradiance_plane =
-      plane_index(*bake->planes, l, VKR_LIGHTMAP_PLANE_IRRADIANCE);
-  std::vector<PlaneRect> rects;
-  if (!plane_rects(*bake, layout, page, irradiance_plane, false, *texels,
-                   irradiance, bake_occlusion ? &texels->occlusion : nullptr,
-                   false, &rects) ||
-      !write_plane_page(bake, (*bake->planes)[irradiance_plane].format, false,
-                        layout.page_size, rects)) {
+  PlaneValues values;
+  values.texels = &texels;
+  values.values = &irradiance;
+  values.occlusion = bake_occlusion ? set->occlusion.get() : nullptr;
+  if (!write_layer_plane(
+          bake, layout, page,
+          plane_index(*bake->planes, l, VKR_LIGHTMAP_PLANE_IRRADIANCE), false,
+          texels, values)) {
     return false;
   }
   if (bake->desktop) {
-    const uint32_t direction_plane =
-        plane_index(*bake->planes, l, VKR_LIGHTMAP_PLANE_DIRECTION);
-    if (!plane_rects(*bake, layout, page, direction_plane, false, *texels,
-                     directions, nullptr, true, &rects) ||
-        !write_plane_page(bake, (*bake->planes)[direction_plane].format, true,
-                          layout.page_size, rects)) {
+    values.values = &directions;
+    values.occlusion = nullptr;
+    values.direction = true;
+    if (!write_layer_plane(
+            bake, layout, page,
+            plane_index(*bake->planes, l, VKR_LIGHTMAP_PLANE_DIRECTION), false,
+            texels, values)) {
       return false;
     }
   }
-  if (options.dump_texels && !texels->texels.empty() &&
-      !dump_layer(bake->dump, page, l, texels->texels, texels->valid, *result,
-                  irradiance, bake->desktop ? &directions : nullptr)) {
+  if (options.dump_texels && !texels.empty() &&
+      !dump_layer(bake->dump, page, l, texels, *set->valid, *result, irradiance,
+                  bake->desktop ? &directions : nullptr)) {
     return false;
   }
-  print_layer_report(*bake, page, l, *texels, *result, irradiance, outliers,
+  print_layer_report(*bake, page, l, texels, *result, irradiance, outliers,
                      mean_directionality);
   std::fflush(stdout);
   return true;
@@ -2419,7 +2501,7 @@ bool bake_page(SetPageBake *bake, uint32_t page) {
   VkrBakeScene &scene = *bake->scene;
   const VkrBakeLightmapLayout &layout = *bake->layout;
   const std::vector<BakeLayer> &layers = *bake->layers;
-  std::vector<VkrBakeLightmapTexel> all;
+  TexelList all;
   if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
                                         (uint32_t)scene.triangles.size(),
                                         layout, page, &all)) {
@@ -2439,13 +2521,19 @@ bool bake_page(SetPageBake *bake, uint32_t page) {
   for (const VkrBakeLightmapTexel &texel : all) {
     any = any || relit_any[texel.source_instance_index] != 0u;
   }
-  if (any && !plan_page_surface(bake, page, all, relit_any, &surface, &first,
-                                &first_gathered)) {
+  if (any && !plan_page_surface(bake, page, std::move(all), relit_any, &surface,
+                                &first, &first_gathered)) {
     return false;
   }
   for (uint32_t l = 0u; l < layers.size(); ++l) {
     if (!bake_page_layer(bake, page, l, surface, first, &first_gathered)) {
       return false;
+    }
+    if (l == 0u) {
+      /* Only the first layer reads its gather, and the first layer's own
+         texels; later layers select theirs from the surface. */
+      first_gathered = VkrBakeGpuGatherResult{};
+      first = TexelSet{};
     }
   }
   return true;
@@ -2480,23 +2568,30 @@ bool bake_direct_pages(SetPageBake *bake,
     }
   }
   for (uint32_t page = 0u; page < direct_layout.page_count; ++page) {
-    std::vector<VkrBakeLightmapTexel> all;
+    TexelList all;
     if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
                                           (uint32_t)scene.triangles.size(),
                                           direct_layout, page, &all)) {
       return false;
     }
-    TexelSet texels;
-    select_texels(
-        all, [&](uint32_t instance) { return relit[instance] != 0u; },
-        &texels.texels, &texels.source_index);
-    if (!vkr_bake_lightmap_neighbors(direct_layout.page_size, texels.texels,
+    const size_t page_texels = all.size();
+    TexelList texels;
+    if (selects_all(all, relit)) {
+      texels = std::move(all);
+    } else {
+      std::vector<uint32_t> unused;
+      select_texels(all, relit, &texels, &unused);
+      TexelList().swap(all);
+    }
+    VkrBakeLightmapNeighbors neighbors;
+    if (!vkr_bake_lightmap_neighbors(direct_layout.page_size, texels,
                                      kOutlierNeighborTexels /
                                          options.direct_texels_per_unit,
-                                     &texels.neighbors)) {
+                                     &neighbors)) {
       return false;
     }
-    texels.valid.assign(texels.texels.size(), 1u);
+    std::vector<uint8_t> valid(texels.size(), 1u);
+    VkrBakeLightmapFill fill;
     bool planned = false;
     for (size_t l = 0u; l < layers.size(); ++l) {
       if (!lamp_direct[l]) {
@@ -2508,34 +2603,32 @@ bool bake_direct_pages(SetPageBake *bake,
       transport.emission = false;
       settings.backface = !planned && options.buried_backface > 0.0f;
       VkrBakeGpuGatherResult gathered;
-      if (!vkr_bake_gpu_gather(bake->gpu, texels.texels, transport, settings,
+      if (!vkr_bake_gpu_gather(bake->gpu, texels, transport, settings,
                                &gathered)) {
         return false;
       }
       bake->gpu_seconds += gathered.gpu_seconds;
-      bake->gathered_texels += texels.texels.size();
-      bake->total_texels += all.size();
+      bake->gathered_texels += texels.size();
+      bake->total_texels += page_texels;
       if (!planned) {
-        for (size_t i = 0u; settings.backface && i < texels.texels.size();
-             ++i) {
+        for (size_t i = 0u; settings.backface && i < texels.size(); ++i) {
           if (gathered.backface[i] > options.buried_backface) {
-            texels.valid[i] = 0u;
+            valid[i] = 0u;
           }
         }
-        if (!vkr_bake_lightmap_plan_fill(texels.neighbors, texels.valid,
-                                         &texels.fill)) {
+        if (!vkr_bake_lightmap_plan_fill(neighbors, valid, &fill)) {
           return false;
         }
         planned = true;
       }
-      vkr_bake_lightmap_apply_fill(texels.fill, &gathered.direct);
-      const uint32_t plane = plane_index(*bake->planes, (uint32_t)l,
-                                         VKR_LIGHTMAP_PLANE_LAMP_DIRECT);
-      std::vector<PlaneRect> rects;
-      if (!plane_rects(*bake, direct_layout, page, plane, true, texels,
-                       gathered.direct, nullptr, false, &rects) ||
-          !write_plane_page(bake, (*bake->planes)[plane].format, false,
-                            direct_layout.page_size, rects)) {
+      vkr_bake_lightmap_apply_fill(fill, &gathered.direct);
+      PlaneValues values;
+      values.texels = &texels;
+      values.values = &gathered.direct;
+      if (!write_layer_plane(bake, direct_layout, page,
+                             plane_index(*bake->planes, (uint32_t)l,
+                                         VKR_LIGHTMAP_PLANE_LAMP_DIRECT),
+                             true, texels, values)) {
         return false;
       }
       float64_t luminance_sum = 0.0;
@@ -2545,9 +2638,8 @@ bool bake_direct_pages(SetPageBake *bake,
       std::printf("direct page=%u/%u lamp_group=%s texels=%zu gpu_s=%.2f "
                   "mean_luminance=%.5g\n",
                   page + 1u, direct_layout.page_count, layers[l].record.name,
-                  texels.texels.size(), gathered.gpu_seconds,
-                  texels.texels.empty() ? 0.0
-                                        : luminance_sum / texels.texels.size());
+                  texels.size(), gathered.gpu_seconds,
+                  texels.empty() ? 0.0 : luminance_sum / texels.size());
       std::fflush(stdout);
     }
   }
