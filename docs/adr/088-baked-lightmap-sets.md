@@ -457,9 +457,15 @@ volume, which a bake otherwise keeps when nothing it reads changed
   path, to a new job directory, and lowering lists other assets' records in
   it.
 - **Tolerance.** Floats compare within 0.1 mm plus 2×10⁻⁶ of their magnitude
-  (`kVkrBakeInputTolerance`): an editor save rewrites rotations it derives
-  from angles a few ulps off, and on the Level Design Test one save changed
-  the exact corners of 73 of 6,384 instances that did not move (2026-10-23).
+  (`kVkrBakeInputTolerance`): on the Level Design Test one save changed the
+  exact corners of 73 of 6,384 instances that did not move (2026-10-23).
+  The cause was `vkr_quat_normalize`, which moved the 22.5- and 45-degree
+  rotations between two values an ulp apart on every scene load; it now
+  keeps a quaternion whose squared length is within 10⁻⁶ of one. Before that
+  fix the tolerance could not absorb all of it: a moved rotation can change
+  a rectangle's size by one tile or, at 45 degrees, the face projection of a
+  world-aligned texture, and those instances relit (50 after one table
+  move, 2026-10-23).
   An instance is its key, an exact digest of its triangle count, triangle
   flags and materials, its bounds and 28 area-weighted moments of its
   world-space triangles (area, centroid, covariance, and the corners' mean
@@ -533,6 +539,19 @@ volume, which a bake otherwise keeps when nothing it reads changed
   digest. `vkr_bakery package` warns for every scene whose set is
   incremental, and `vkr_harness baseline propose` refuses a snapshot whose
   scene renders one; both ask for a full bake.
+- **Bake geometry.** A model with source-node edits bakes from a variant
+  of its cooked mesh with the edits patched in. The project runner keeps
+  variants and model inspections in the workspace's `jobs/variants`, named
+  by the mesh tool's identity (`VKR_BAKERY_IDENTITY_MESH`), the source
+  mesh's path and content, its material table and the patch list, so models
+  that share a mesh and edits share one variant and a bake of unchanged
+  models starts no mesh-tool process; a hit refreshes the entry's time and
+  cleanup drops entries unused for the job retention. On a copy of the Level
+  Design Test the effective scene's 977 variants are 76 distinct; building
+  it took 6.9 s with an empty cache and 1.4 s with a full one, against 977
+  inspections and 977 variant builds before, about 100 s per bake of a job
+  (2026-10-23), and the scene matched the earlier one entity for entity,
+  variant bytes included.
 - **Revisions.** A record that replaces another names the replaced
   artifact as `previous_build`, which keeps that revision referenced, and the
   cleanup after the successful job removes, whatever its age, the revision
