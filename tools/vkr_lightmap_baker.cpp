@@ -2977,12 +2977,17 @@ VkrLightmapDirectRect instance_rect(const VkrLightmapSet &set, uint32_t i,
           instance.height};
 }
 
-/* The mean relative luminance difference over one rectangle's texels of
-   `b` against `a`, scaled by the rectangle's mean luminance in `a`; false
-   when a rectangle does not decode. */
+/* One rectangle's luminance in two sets: the mean in each and the mean
+   absolute difference, over its texels. */
+struct RectDifference {
+  float64_t mean_a = 0.0;
+  float64_t mean_b = 0.0;
+  float64_t mean_difference = 0.0;
+};
+
 bool rect_difference(const std::vector<uint8_t> &a,
                      const std::vector<uint8_t> &b, uint32_t width,
-                     uint32_t height, float64_t *out_sum) {
+                     uint32_t height, RectDifference *out) {
   std::vector<float32_t> da;
   std::vector<float32_t> db;
   if (!vkr_bake_lightmap_decode_astc_hdr_image(a, width, height, &da) ||
@@ -2990,30 +2995,60 @@ bool rect_difference(const std::vector<uint8_t> &a,
     return false;
   }
   const size_t count = (size_t)width * height;
-  float64_t mean = 0.0;
-  for (size_t t = 0u; t < count; ++t) {
-    mean += luminance(vec3_new(da[4u * t], da[4u * t + 1u], da[4u * t + 2u]));
-  }
-  mean = std::max(mean / (float64_t)count, 1.0e-6);
-  float64_t sum = 0.0;
+  RectDifference difference;
   for (size_t t = 0u; t < count; ++t) {
     const float64_t la =
         luminance(vec3_new(da[4u * t], da[4u * t + 1u], da[4u * t + 2u]));
     const float64_t lb =
         luminance(vec3_new(db[4u * t], db[4u * t + 1u], db[4u * t + 2u]));
-    sum += std::fabs(lb - la) / mean;
+    difference.mean_a += la;
+    difference.mean_b += lb;
+    difference.mean_difference += std::fabs(lb - la);
   }
-  *out_sum = sum;
+  difference.mean_a /= (float64_t)count;
+  difference.mean_b /= (float64_t)count;
+  difference.mean_difference /= (float64_t)count;
+  *out = difference;
   return true;
+}
+
+/* One compared instance of a plane, for the worst-instance lines. */
+struct InstanceDifference {
+  uint32_t instance = 0u;
+  RectDifference difference;
+  float64_t relative = 0.0;
+};
+
+/* The instance's key as the set table holds it: its document id, or its
+   entity index, and its node. */
+std::string instance_label(const VkrLightmapInstance &instance) {
+  static const uint8_t zero[16] = {};
+  char text[96];
+  if (std::memcmp(instance.document_id, zero, sizeof(zero)) != 0) {
+    char hex[33];
+    for (uint32_t i = 0u; i < 16u; ++i) {
+      std::snprintf(hex + 2u * i, 3u, "%02x", instance.document_id[i]);
+    }
+    std::snprintf(text, sizeof(text), "doc=%s entity=%u node=%u", hex,
+                  instance.entity_index, instance.instance_index);
+  } else {
+    std::snprintf(text, sizeof(text), "entity=%u node=%u",
+                  instance.entity_index, instance.instance_index);
+  }
+  return std::string(text);
 }
 
 /*
  * Compares two sets' ASTC HDR planes instance by instance (ADR-088
  * incremental bakes): for every plane both hold and every instance both
- * hold with one rectangle size, whether its tiles are identical, and over
- * its texels the relative luminance difference of `b` against `a`, scaled
- * by the instance's mean luminance in `a`. Prints one line per plane and
- * the worst instance.
+ * hold with one rectangle size, whether its tiles are identical and how its
+ * luminance differs. Per plane it prints the luminance-weighted error (the
+ * summed absolute luminance difference over the summed luminance of `a`),
+ * the mean per-instance relative error, and the worst instances by their
+ * difference relative to `max(mean_a, floor)`, where the floor (1% of the
+ * plane's mean luminance) keeps a near-black instance from ranking first
+ * on a tiny absolute difference; each line names the instance's key, its
+ * rectangle and both means.
  */
 int compare_sets(const Options &options, Arena *arena) {
   FileMapping mappings[2] = {};
@@ -3036,6 +3071,7 @@ int compare_sets(const Options &options, Arena *arena) {
   for (uint32_t i = 0u; i < sets[1].instance_count; ++i) {
     b_by_key[set_instance_key(sets[1].instances[i])] = i;
   }
+  constexpr uint32_t kWorstInstances = 5u;
   int result = 0;
   float64_t worst = 0.0;
   for (uint32_t p = 0u; result == 0 && p < sets[0].plane_count; ++p) {
@@ -3052,11 +3088,11 @@ int compare_sets(const Options &options, Arena *arena) {
       continue;
     }
     const bool direct = plane.kind == VKR_LIGHTMAP_PLANE_LAMP_DIRECT;
-    uint32_t compared = 0u;
     uint32_t identical = 0u;
-    uint64_t texels = 0u;
-    float64_t error_sum = 0.0;
-    float64_t instance_worst = 0.0;
+    std::vector<InstanceDifference> compared;
+    float64_t luminance_sum = 0.0;
+    float64_t difference_sum = 0.0;
+    float64_t texel_sum = 0.0;
     for (uint32_t i = 0u; i < sets[0].instance_count; ++i) {
       const auto found = b_by_key.find(set_instance_key(sets[0].instances[i]));
       if (found == b_by_key.end()) {
@@ -3072,28 +3108,56 @@ int compare_sets(const Options &options, Arena *arena) {
           rect_blocks(sets[0], p, ra.page, ra.x, ra.y, ra.width, ra.height);
       const std::vector<uint8_t> b =
           rect_blocks(sets[1], q, rb.page, rb.x, rb.y, rb.width, rb.height);
-      const size_t count = (size_t)ra.width * ra.height;
-      compared += 1u;
-      texels += count;
-      if (a == b) {
-        identical += 1u;
-        continue;
-      }
-      float64_t sum = 0.0;
-      if (!rect_difference(a, b, ra.width, ra.height, &sum)) {
+      InstanceDifference entry;
+      entry.instance = i;
+      if (!rect_difference(a, b, ra.width, ra.height, &entry.difference)) {
         result = 1;
         break;
       }
-      error_sum += sum;
-      instance_worst = std::max(instance_worst, sum / (float64_t)count);
+      identical += a == b ? 1u : 0u;
+      const float64_t texels = (float64_t)ra.width * ra.height;
+      luminance_sum += entry.difference.mean_a * texels;
+      difference_sum += entry.difference.mean_difference * texels;
+      texel_sum += texels;
+      compared.push_back(entry);
     }
-    worst = std::max(worst, instance_worst);
-    std::printf("compare plane=%u layer=%u kind=%s instances=%u identical=%u "
-                "mean_relative_luminance_error=%.6f "
-                "worst_instance_relative_error=%.6f\n",
-                p, plane.layer, direct ? "lamp_direct" : "irradiance", compared,
-                identical, texels ? error_sum / (float64_t)texels : 0.0,
-                instance_worst);
+    const float64_t plane_mean =
+        texel_sum > 0.0 ? luminance_sum / texel_sum : 0.0;
+    const float64_t floor = std::max(0.01 * plane_mean, 1.0e-6);
+    float64_t relative_sum = 0.0;
+    for (InstanceDifference &entry : compared) {
+      entry.relative = entry.difference.mean_difference /
+                       std::max(entry.difference.mean_a, floor);
+      relative_sum += entry.relative;
+    }
+    std::sort(compared.begin(), compared.end(),
+              [](const InstanceDifference &x, const InstanceDifference &y) {
+                return x.relative > y.relative;
+              });
+    const float64_t plane_worst = compared.empty() ? 0.0 : compared[0].relative;
+    worst = std::max(worst, plane_worst);
+    std::printf(
+        "compare plane=%u layer=%u kind=%s instances=%zu identical=%u "
+        "luminance_weighted_error=%.6f "
+        "mean_instance_relative_error=%.6f "
+        "worst_instance_relative_error=%.6f\n",
+        p, plane.layer, direct ? "lamp_direct" : "irradiance", compared.size(),
+        identical, luminance_sum > 0.0 ? difference_sum / luminance_sum : 0.0,
+        compared.empty() ? 0.0 : relative_sum / compared.size(), plane_worst);
+    for (uint32_t w = 0u; w < kWorstInstances && w < compared.size(); ++w) {
+      const InstanceDifference &entry = compared[w];
+      if (entry.difference.mean_difference == 0.0) {
+        break;
+      }
+      const VkrLightmapDirectRect rect =
+          instance_rect(sets[0], entry.instance, direct);
+      std::printf("  worst plane=%u %s rect=%ux%u mean_a=%.6g mean_b=%.6g "
+                  "mean_abs_difference=%.6g relative=%.4f\n",
+                  p, instance_label(sets[0].instances[entry.instance]).c_str(),
+                  rect.width, rect.height, entry.difference.mean_a,
+                  entry.difference.mean_b, entry.difference.mean_difference,
+                  entry.relative);
+    }
   }
   std::printf("compare worst_instance_relative_error=%.6f\n", worst);
   file_unmap(&mappings[0]);
