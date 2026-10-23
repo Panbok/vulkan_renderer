@@ -187,6 +187,15 @@ static void test_quat_basic_operations(void) {
   float32_t norm_len = vkr_quat_length(q_normalized);
   assert(float_equals(norm_len, 1.0f, 0.001f) && "vkr_quat_normalize failed");
 
+  // Normalizing a unit quaternion keeps it: the stored 45-degree yaw once
+  // alternated between two values an ulp apart on every scene load.
+  const VkrQuat stored =
+      vkr_quat_new(0.0f, -0.9238795042037964f, 0.0f, 0.3826834261417389f);
+  const VkrQuat once = vkr_quat_normalize(stored);
+  const VkrQuat twice = vkr_quat_normalize(once);
+  assert(once.y == stored.y && once.w == stored.w && twice.y == once.y &&
+         twice.w == once.w && "vkr_quat_normalize is not idempotent");
+
   // Test conjugate
   VkrQuat q_conj = vkr_quat_conjugate(q1);
   VkrQuat expected_conj = vkr_quat_new(-0.1f, -0.2f, -0.3f, 0.4f);

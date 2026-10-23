@@ -88,8 +88,21 @@ vkr_internal INLINE VkrQuat vkr_quat_from_euler(float32_t roll, float32_t pitch,
 // Quaternion Operations
 // ================================================
 
-/* Returns the zero quaternion when the length is at most VKR_FLOAT_EPSILON. */
+/* Squared lengths within this of one count as unit: a float normalization
+ * lands within a few ulps of one, and dividing again by that length's root
+ * moves the components by an ulp. */
+#define VKR_QUAT_UNIT_TOLERANCE 1.0e-6f
+
+/* Returns the zero quaternion when the length is at most VKR_FLOAT_EPSILON,
+ * and a quaternion whose squared length is within VKR_QUAT_UNIT_TOLERANCE of
+ * one unchanged, so normalizing is idempotent: the 22.5- and 45-degree
+ * rotations otherwise alternate between two values on every call, and every
+ * scene load and save. */
 vkr_internal INLINE VkrQuat vkr_quat_normalize(VkrQuat q) {
+  const float32_t length_squared = vec4_length_squared(q);
+  if (vkr_abs_f32(length_squared - 1.0f) <= VKR_QUAT_UNIT_TOLERANCE) {
+    return q;
+  }
   return vec4_normalize(q);
 }
 
