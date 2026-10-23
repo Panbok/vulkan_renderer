@@ -527,7 +527,8 @@ vkr_internal INLINE bool8_t vkr_standard_scene_runtime_is_windowed(
  * renderer reports every export it was given exactly once, a replaced one
  * unwritten. `surface` (NULL to stop) is the remote Scene image the UI
  * draws from the next frame on, while the local Scene stops rendering; the
- * runtime takes its own reference. */
+ * runtime takes its own reference. An encoding renderer
+ * (vkr_renderer_view_encoding_supported) takes no import. */
 void vkr_standard_scene_runtime_set_view_export(
     VkrStandardSceneRuntime *application, const VkrViewExport *view_export);
 void vkr_standard_scene_runtime_set_view_import(

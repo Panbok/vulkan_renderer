@@ -787,6 +787,17 @@ static bool8_t ops_private_directory(const char *name, char *out,
   return true_v;
 }
 
+/* A file name of letters, digits, '-' and '_', which stays in the
+   directory it is joined to. */
+static bool8_t ops_plain_name(const char *name) {
+  for (const char *c = name; *c; ++c) {
+    if (!vkr_char_is_alnum(*c) && *c != '-' && *c != '_') {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /* Claims outlive an editor restart: each scene's claims live in a file of
    the private agent directory named by a hash of the scene's path, which
    the file repeats so a collision never loads another scene's claims. Two
@@ -17285,9 +17296,30 @@ static VkrEditorOpStatus ops_run_remote_view_serve(OpsContext *ctx) {
              "'bitrate_max' is bits per second, 1000000 to 400000000");
     return VKR_EDITOR_OP_DONE;
   }
+  /* A recording is a plain name in the private agent directory's view
+     folder. */
+  char record_name[64] = {0};
+  char record_path[400] = {0};
+  if (vkr_bakery_json_get(args, "record")) {
+    char directory[320];
+    if (!ops_arg_string(ctx, args, "record", record_name,
+                        sizeof(record_name))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!record_name[0] || !ops_plain_name(record_name) ||
+        !ops_private_directory("view", directory, sizeof(directory))) {
+      ops_fail(ctx, OPS_INVALID,
+               "'record' is a plain file name of letters, digits, '-' and "
+               "'_'");
+      return VKR_EDITOR_OP_DONE;
+    }
+    string_format(record_path, sizeof(record_path), "%s/%s.h264", directory,
+                  record_name);
+  }
   if (!vkr_editor_remote_view_serve(ctx->editor->remote_view, ctx->frame, bind,
                                     allowed, allowed_count, (uint32_t)bitrate,
-                                    error, sizeof(error))) {
+                                    record_path[0] ? record_path : NULL, error,
+                                    sizeof(error))) {
     ops_fail(ctx, OPS_BUSY, "%s", error);
     return VKR_EDITOR_OP_DONE;
   }
@@ -20916,10 +20948,14 @@ static const OpsDef s_ops[] = {
      "answers the address and the key the client connects with. 'allow' "
      "limits clients to those identity keys; without it anyone given the "
      "key connects. The client's Scene camera steers this one. "
-     "'bitrate_max' caps the stream (bits per second, default 40000000).",
+     "'bitrate_max' caps the stream (bits per second, default 40000000). "
+     "'record' (a plain name) also writes every encoded frame to "
+     "<agent directory>/view/<name>.h264 and encodes with no client; "
+     "remote_view.status answers its path and frame count.",
      "{\"type\":\"object\",\"properties\":{\"bind\":{\"type\":"
      "\"string\"},\"allow\":{\"type\":\"array\",\"items\":{\"type\":"
-     "\"string\"}},\"bitrate_max\":{\"type\":\"integer\"}}}",
+     "\"string\"}},\"bitrate_max\":{\"type\":\"integer\"},\"record\":{"
+     "\"type\":\"string\"}}}",
      ops_run_remote_view_serve, NULL, OPS_NO_SCENE},
     {"remote_view.connect",
      "Show the Scene another editor serves (remote_view.serve) at "

@@ -422,6 +422,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.view_export.comp",
+      "entry": "vk_view_export",
+      "stage": "compute"
+    },
+    {
       "name": "packet.subsurface_gather.comp",
       "entry": "vk_subsurface_gather",
       "stage": "compute"

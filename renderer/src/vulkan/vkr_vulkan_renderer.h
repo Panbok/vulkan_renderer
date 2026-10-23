@@ -271,6 +271,9 @@ vkr_vulkan_renderer_dynamic_volume_supported(const VkrVulkanRenderer *renderer);
 /** The device traces ray-query sun shadows (VKR_SUN_RAY_SHADOWS). */
 bool8_t vkr_vulkan_renderer_sun_ray_shadows_supported(
     const VkrVulkanRenderer *renderer);
+/** The device encodes view exports with Vulkan Video H.264 (ADR-131). */
+bool8_t
+vkr_vulkan_renderer_view_encoding_supported(const VkrVulkanRenderer *renderer);
 /* Probes the dynamic volume layer may trace next frame within its GPU
    budget (ADR-119). */
 uint32_t vkr_vulkan_renderer_dynamic_volume_probe_budget(

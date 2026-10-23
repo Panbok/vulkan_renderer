@@ -1075,7 +1075,7 @@ void vkr_standard_scene_runtime_set_view_export(
   const VkrViewExport replaced = application->view_export_next;
   application->view_export_next =
       view_export ? *view_export : (VkrViewExport){0};
-  if (replaced.surface && replaced.done) {
+  if (replaced.done) {
     replaced.done(replaced.context, replaced.tag, false_v);
   }
   /* The renderer would refuse the frame that carried it. */
@@ -1087,7 +1087,8 @@ void vkr_standard_scene_runtime_set_view_export(
 
 void vkr_standard_scene_runtime_set_view_import(
     VkrStandardSceneRuntime *application, VkrVideoSurface *surface) {
-  if (!vkr_renderer_view_streaming_supported(&application->renderer)) {
+  if (!vkr_renderer_view_streaming_supported(&application->renderer) ||
+      vkr_renderer_view_encoding_supported(&application->renderer)) {
     surface = NULL;
   }
   if (surface) {
@@ -1108,7 +1109,7 @@ vkr_internal void vkr_standard_scene_runtime_attach_view_stream(
   if (!draw->has_editor) {
     return;
   }
-  if (application->view_export_next.surface && !draw->scene_stopped) {
+  if (application->view_export_next.done && !draw->scene_stopped) {
     frame->view_export = application->view_export_next;
     application->view_export_next = (VkrViewExport){0};
     draw->editor_payload.view_export = &frame->view_export;

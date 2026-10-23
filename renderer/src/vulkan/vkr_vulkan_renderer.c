@@ -545,6 +545,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
     log_error("Vulkan failed to create renderer pipeline");
     goto cleanup;
   }
+  vkr_vk_view_create(renderer);
   *out_renderer = renderer;
   return true_v;
 
@@ -642,6 +643,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   vkr_vk_collect_retired_targets(renderer, completed);
   vkr_vk_collect_retired_window_targets(renderer, completed);
   vkr_vk_collect_asset_publications(renderer, completed);
+  vkr_vk_view_collect(renderer);
   if (renderer->config.display_output_mode ==
           VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR &&
       renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN) {
@@ -920,6 +922,7 @@ vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
                       .z = 0},
       .imageExtent = {.width = 1u, .height = 1u, .depth = 1u},
   };
+  vkr_vk_view_prepare_export(renderer, slot);
   if (!vkr_vk_flush(renderer, &slot->frame_upload.allocation, 0u,
                     slot->frame_upload_cursor)) {
     log_error("Vulkan failed to flush %llu frame-upload bytes",
@@ -1011,6 +1014,7 @@ vkr_internal bool8_t vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
   if (!vkr_vk_record_graph(renderer, command))
     return false_v;
   vkr_vk_record_capture(renderer, command, slot);
+  vkr_vk_view_record_export(renderer, command);
   vkr_vk_record_deferred_readback(renderer, command);
   VkCopyImageToBufferInfo2 readback_info = {
       .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
@@ -1363,6 +1367,7 @@ vkr_internal void vkr_vk_unwind_rejected_submission(VkrVulkanRenderer *renderer,
   vkr_vk_fail_picking_readback(renderer, slot);
   vkr_vk_abandon_ibl_bake_recordings(renderer);
   vkr_vk_discard_unsubmitted_asset_uses(renderer);
+  vkr_vk_view_cancel(renderer);
   slot->sh_coefficients_clear_recorded = false_v;
   if (slot->capture_request_id)
     (void)vkr_capture_ring_fail(&renderer->capture_ring,
@@ -1685,6 +1690,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                           const VkrPreparedFrame *packet,
                                           VkrVulkanResult *out_result) {
   renderer->submit_error = VKR_RENDERER_ERROR_NONE;
+  vkr_vk_view_begin_frame(renderer, packet);
   vkr_vk_gpu_capture_frame_begin(renderer);
   vkr_render_graph_prepare_frame(
       packet, &renderer->bloom_config, &renderer->gtao_config,
@@ -1782,6 +1788,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   if (!vkr_vk_commit_submission(renderer, packet, slot, signal_value)) {
     return false_v;
   }
+  vkr_vk_view_submit(renderer, signal_value);
   if (!vkr_vk_commit_ibl_bake_recordings(renderer, signal_value)) {
     return false_v;
   }
@@ -2866,6 +2873,8 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
                         : VK_NULL_HANDLE;
   if (device) {
     vkr_vulkan_renderer_wait_idle(renderer);
+    /* Joins the encoder thread, which delivers the encodes still queued. */
+    vkr_vk_view_destroy(renderer);
 #if VKR_HAS_FSR3_UPSCALER
     vkr_vulkan_fsr_sdk_destroy(renderer->fsr31);
 #endif

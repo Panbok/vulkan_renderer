@@ -261,6 +261,7 @@ static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
 #define VKR_VULKAN_PACKET_GPU_SPIKE_COMP_SPV "packet.gpu_spike.comp.spv"
 #define VKR_VULKAN_PACKET_GPU_DRAW_CENSUS_COMP_SPV                             \
   "packet.gpu_draw_census.comp.spv"
+#define VKR_VULKAN_PACKET_VIEW_EXPORT_COMP_SPV "packet.view_export.comp.spv"
 #define VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV                           \
   "packet.subsurface_gather.comp.spv"
 #define VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV                        \
@@ -612,6 +613,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GPU_SPIKE,
   /** Cull.Census (VkrGpuDebugPayload.draw_census). */
   VKR_VULKAN_DEFERRED_PIPELINE_GPU_DRAW_CENSUS,
+  /** View streaming's NV12 export (ADR-131), after the graph. */
+  VKR_VULKAN_DEFERRED_PIPELINE_VIEW_EXPORT,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -3986,6 +3989,10 @@ struct VkrVulkanRenderer {
   VkPipeline deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_COUNT];
   VkrVulkanPendingIblBake pending_ibl_bakes[VKR_VULKAN_PENDING_IBL_BAKE_MAX];
   uint32_t pending_ibl_bake_count;
+  /* View streaming's export and H.264 encoder (ADR-131,
+     vkr_vulkan_view.c); NULL on a device without video encode. Its
+     encoder thread waits on `timeline`. */
+  struct s_VkrVulkanView *view;
   VkSemaphore timeline;
   uint64_t submit_value;
   uint64_t completed_value;
@@ -4203,6 +4210,26 @@ bool8_t vkr_vk_publish_storage_view(VkrVulkanRenderer *renderer,
                                     VkrGpuSlotHandle *out_handle);
 void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
                            VkrVulkanFrameSlot *slot);
+
+/* View streaming (ADR-131, vkr_vulkan_view.c). The renderer reports each
+   export a submission takes exactly once: begin_frame takes it, submit
+   hands it to the encoder thread, and cancel, a later begin_frame or
+   destroy report one a frame left behind. */
+typedef struct s_VkrVulkanView VkrVulkanView;
+/* After the pipelines: the encoder's capabilities on a device with video
+   encode. */
+void vkr_vk_view_create(VkrVulkanRenderer *renderer);
+void vkr_vk_view_begin_frame(VkrVulkanRenderer *renderer,
+                             const VkrPreparedFrame *packet);
+void vkr_vk_view_prepare_export(VkrVulkanRenderer *renderer,
+                                VkrVulkanFrameSlot *slot);
+void vkr_vk_view_record_export(VkrVulkanRenderer *renderer,
+                               VkCommandBuffer command);
+void vkr_vk_view_submit(VkrVulkanRenderer *renderer, uint64_t frame_value);
+void vkr_vk_view_cancel(VkrVulkanRenderer *renderer);
+void vkr_vk_view_collect(VkrVulkanRenderer *renderer);
+/* After the device went idle. */
+void vkr_vk_view_destroy(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
                             VkCommandBuffer command);
 bool8_t vkr_vk_prepare_froxel_inject(VkrVulkanRenderer *renderer,

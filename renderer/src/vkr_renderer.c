@@ -3545,18 +3545,34 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
         "packet.editor.presenter",
         "requires the presenter and a matching acquisition");
   }
-  /* View streaming needs a backend that wraps video surfaces, and an
-     imported view composites on the frame queue (ADR-131). */
-  const bool8_t view_export = packet->editor && packet->editor->view_export;
+  /* View streaming needs a backend that exports the Scene, and an imported
+     view composites on the frame queue of a backend that wraps decoded
+     surfaces (ADR-131). */
+  const VkrViewExport *view_export =
+      packet->editor ? packet->editor->view_export : NULL;
   const bool8_t view_import = packet->editor && packet->editor->view_import;
+  const bool8_t view_encoding = vkr_renderer_view_encoding_supported(renderer);
   if (error == VKR_RENDERER_ERROR_NONE &&
       (((view_export || view_import) &&
         !vkr_renderer_view_streaming_supported(renderer)) ||
-       (view_import && presenter))) {
+       (view_import && (presenter || view_encoding)))) {
     error = vkr_renderer_validation_fail(
         &result->validation, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
         "packet.editor.view_export",
-        "requires view streaming and, with an import, no presenter");
+        "requires view streaming and, with an import, no presenter or "
+        "encoding renderer");
+  }
+  /* An encoding renderer takes an encode request in place of a surface. */
+  if (error == VKR_RENDERER_ERROR_NONE && view_export && view_encoding &&
+      (view_export->surface || !view_export->on_packet || !view_export->done ||
+       view_export->width < 16u || view_export->height < 16u ||
+       (view_export->width & 1u) || (view_export->height & 1u) ||
+       !view_export->bitrate_bps || !view_export->frame_rate)) {
+    error = vkr_renderer_validation_fail(
+        &result->validation, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "packet.editor.view_export",
+        "an encoded export needs no surface, both callbacks, an even "
+        "extent of at least 16, a bitrate and a frame rate");
   }
   if (error == VKR_RENDERER_ERROR_NONE &&
       (packet->frame.window_width != work->frame.window_width ||
@@ -3734,9 +3750,13 @@ bool8_t vkr_renderer_view_streaming_supported(const VkrRenderer *renderer) {
 #if defined(PLATFORM_APPLE)
   return renderer && renderer->metal_renderer;
 #else
-  (void)renderer;
-  return false_v;
+  return vkr_renderer_view_encoding_supported(renderer);
 #endif
+}
+
+bool8_t vkr_renderer_view_encoding_supported(const VkrRenderer *renderer) {
+  return renderer && renderer->vulkan_renderer &&
+         vkr_vulkan_renderer_view_encoding_supported(renderer->vulkan_renderer);
 }
 
 uint64_t vkr_renderer_sun_field_revision(const VkrRenderer *renderer) {

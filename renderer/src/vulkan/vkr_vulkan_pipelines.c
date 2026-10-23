@@ -3218,6 +3218,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV,
       VKR_VULKAN_PACKET_GPU_SPIKE_COMP_SPV,
       VKR_VULKAN_PACKET_GPU_DRAW_CENSUS_COMP_SPV,
+      VKR_VULKAN_PACKET_VIEW_EXPORT_COMP_SPV,
   };
   vkr_local_persist const char *const entries[] = {
       "vk_gpu_draw_classify",
@@ -3303,6 +3304,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "vk_fsr31_prepare",
       "vk_gpu_spike",
       "vk_gpu_draw_census",
+      "vk_view_export",
   };
   _Static_assert(ArrayCount(paths) == VKR_VULKAN_DEFERRED_PIPELINE_COUNT &&
                      ArrayCount(entries) == ArrayCount(paths),

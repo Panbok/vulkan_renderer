@@ -11,8 +11,9 @@ services over sessions and the asset depot (phases 0 to 3) are implemented;
 [ADR-105](../adr/105-network-transport-and-asset-depot.md) records them and
 their evidence. The core of editor collaboration is implemented too
 ([ADR-106](../adr/106-collaborative-editing-session.md)), and so is a first
-slice of view streaming between two Mac editors
-([ADR-131](../adr/131-view-streaming.md)). This proposal keeps the services
+slice of view streaming between two Mac editors, with a Windows server that
+encodes through Vulkan Video ([ADR-131](../adr/131-view-streaming.md)).
+This proposal keeps the services
 that build on them:
 
 1. Asset streaming: assets fetched from a depot as the scene needs them and
@@ -198,8 +199,9 @@ editor serves its Scene image through VideoToolbox H.264 on the view
 service's deadline channel to one other Mac editor, which shows it in its
 Scene panel and steers the server's camera with its own pose; the
 rate follows 0.85 × the bandwidth estimate and `REFRESH` asks for a key
-frame. What remains of this section is the rest: the Windows encoder, FEC,
-intra refresh, slices sent as encoded, raw input, and the target measured
+frame. A Windows editor serves too, encoding in its Vulkan backend with
+Vulkan Video H.264. What remains of this section is the rest: FEC, intra
+refresh, slices sent as encoded, raw input, and the target measured
 between two computers at 2560×1440.
 
 The path of one frame:
@@ -212,10 +214,9 @@ client: reassemble -> HW decode -> present
 ```
 
 - **Encoders.** macOS uses VideoToolbox with low-latency rate control.
-  Windows uses Vulkan Video encode (H.264 and H.265 on RDNA 2 and Ampere;
-  AV1 on later GPUs), so the image stays on the device. The
-  recommendation is Vulkan Video; AMF and NVENC are the alternative. The
-  renderer change is its own design and ADR.
+  Windows uses Vulkan Video H.264 encode in the Vulkan backend (ADR-131,
+  decision 6), so the image stays on the device; H.265 and, on later GPUs,
+  AV1 are the same API.
 - **Settings.** No B-frames, a VBV of one frame, intra refresh instead of
   periodic IDR frames, and slices sent as soon as each one is encoded.
 - **Delivery.** Each frame message carries the capture time, the frame
@@ -242,7 +243,8 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | `vkr_runtime` | `runtime/src/net/` | `stream` service |
 | Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay, access and agent federation (ADR-106); next partition edits |
 | Editor | `editor/src/editor_remote_view.c` | The `view` service (ADR-131); next raw input and more than one client |
-| `lib` | `lib/src/platform/vkr_video.h` | Hardware video coding: VideoToolbox on macOS (ADR-131); next the Windows encoder |
+| `lib` | `lib/src/platform/vkr_video.h` | Hardware video coding: VideoToolbox on macOS (ADR-131) |
+| Renderer | `renderer/src/vulkan/vkr_vulkan_view.c` | Vulkan Video H.264 encode of the Scene export on Windows (ADR-131) |
 | `vkr_net` | `net/src/` | Threaded host |
 
 - **Threads.** The editor and games pump a threaded host so a frame never
@@ -257,7 +259,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 |---|---|---|
 | 4. Editor collaboration and agents | Remaining after ADR-106: the same evidence between two machines | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
 | 6. Asset streaming | Remote content directory, cooked side branch, progressive mips and cancel (ADR-123); then mesh LOD ranges, priority, and fetched bytes placed for the GPU | Bistro streamed from a depot between two machines: time to first frame and to full detail against a local load; captures equal to a local load |
-| 7. View streaming | Remaining after ADR-131: the Windows encoder, FEC and intra refresh, raw input | Pose-to-display latency on Bistro between two computers at 2560×1440 (the client's measure of ADR-131) |
+| 7. View streaming | Remaining after ADR-131: FEC and intra refresh, raw input | Pose-to-display latency on Bistro between two computers at 2560×1440 (the client's measure of ADR-131) |
 
 Phase 4 comes first because the editor uses it first and the depot it needs
 exists. The former phases 5 (game sessions) and 8 (scale) are in the
@@ -293,7 +295,6 @@ phase that depends on it.
 | Decision | Recommendation | Tradeoff |
 |---|---|---|
 | Collaboration authority | Host-sequenced replication of results | CRDTs remove the host but need merge rules for ECS structure and every component type, and do not match the journal. |
-| Windows video encoding | Vulkan Video | AMF and NVENC are mature and per-vendor; Vulkan Video is one API and keeps the image on the device. |
 | Local agent socket | Keep JSON | Agents and MCP speak JSON. The socket is a local process boundary, not the network. |
 | Internet sessions | Direct addresses and port forwarding first; rendezvous and relay later | Home-to-home sessions behind NAT need hole punching and a relay service. |
 

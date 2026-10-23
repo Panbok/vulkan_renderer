@@ -8,15 +8,19 @@
  *
  * The server resamples each Scene frame into one of a ring of video
  * surfaces (VkrViewExport), encodes it in hardware as it finishes and sends
- * it on a deadline channel. The client decodes every frame on a thread of
- * its own and shows the newest instead of rendering a Scene. It sends its
- * Scene camera pose every build; the server applies the newest before its
- * next frame and returns the pose's send time with that frame, so the
- * client measures pose-to-display latency on its own clock.
+ * it on a deadline channel; a renderer that encodes itself (Vulkan Video)
+ * takes the ring's slots as encode requests and hands back each packet. The
+ * client decodes every frame on a thread of its own and shows the newest
+ * instead of rendering a Scene. It sends its Scene camera pose every build;
+ * the server applies the newest before its next frame and returns the
+ * pose's send time with that frame, so the client measures pose-to-display
+ * latency on its own clock.
  *
  * One client at a time. Both sides need a renderer with
- * vkr_renderer_view_streaming_supported() and hardware H.264 coding
- * (vkr_video.h): macOS today. */
+ * vkr_renderer_view_streaming_supported(). A server also needs hardware
+ * H.264 encoding, in vkr_video.h or the renderer
+ * (vkr_renderer_view_encoding_supported); a client needs vkr_video.h's
+ * hardware decoding and a renderer that takes imports: macOS today. */
 
 #define VKR_EDITOR_REMOTE_VIEW_PORT 7340u
 #define VKR_EDITOR_REMOTE_VIEW_ALLOWED_MAX 16u
@@ -32,11 +36,14 @@ void vkr_editor_remote_view_destroy(VkrEditorRemoteView *view);
    interface on VKR_EDITOR_REMOTE_VIEW_PORT) to one client: with
    `allowed_count` identity keys only to those, else to anyone given the
    server key. `bitrate_max_bps` caps the encoder's rate (zero: 40 Mbit/s).
-   False with the reason. */
+   With `record_path` (NULL for none) the server also writes every encoded
+   frame to that file as one Annex B stream, and encodes while no client
+   is connected. False with the reason. */
 bool8_t vkr_editor_remote_view_serve(
     VkrEditorRemoteView *view, const VkrSampleUiFrame *frame, const char *bind,
     const uint8_t (*allowed)[32], uint32_t allowed_count,
-    uint32_t bitrate_max_bps, char *error, uint32_t capacity);
+    uint32_t bitrate_max_bps, const char *record_path, char *error,
+    uint32_t capacity);
 /* Shows the Scene of the server at `address` (numeric, default port
    VKR_EDITOR_REMOTE_VIEW_PORT) whose key is `key_hex`, connecting with
    this editor's identity key. */

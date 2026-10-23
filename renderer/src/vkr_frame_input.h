@@ -896,14 +896,32 @@ typedef struct VkrEditorGridPayload {
 /**
  * @brief Reports one Scene image export (ADR-131) from a backend thread:
  * `written` once the GPU finished writing the Scene image into the surface,
+ * or, on an encoding renderer, once the frame's packet went to `on_packet`;
  * false when the frame wrote none. The surface is free to reuse once it
  * returns.
  */
 typedef void (*VkrViewExportDone)(void *context, uint64_t tag, bool8_t written);
 
-/** A surface the frame resamples its finished Scene image into. */
+/** Where a frame's finished Scene image goes (ADR-131): resampled into
+    `surface`, or, where vkr_renderer_view_encoding_supported(), resampled to
+    `width` x `height` and encoded by the renderer as one H.264 frame. */
 typedef struct VkrViewExport {
+  /** The surface to write; NULL on an encoding renderer. */
   VkrVideoSurface *surface;
+  /** Encoding renderers: the picture's extent, even and at least 16, its
+      target bitrate and frame rate, and whether it is a key frame. The
+      renderer's encoder makes the first picture of an extent or frame rate
+      a key frame whatever `key_frame` says. */
+  uint32_t width;
+  uint32_t height;
+  uint32_t bitrate_bps;
+  uint32_t frame_rate;
+  bool8_t key_frame;
+  /** Encoding renderers: receives the encoded frame with `context` and
+      `tag` before `done` reports it written; its `timestamp_us` is the
+      host time (vkr_platform_get_absolute_time) the GPU finished the Scene
+      image's resample. Runs on the encoder's thread. */
+  VkrVideoPacketFn on_packet;
   uint64_t tag;
   VkrViewExportDone done;
   void *context;
@@ -942,17 +960,18 @@ typedef struct VkrEditorPassPayload {
   uint32_t selection_width_px;
   VkrEditorGridPayload grid;
   /** View streaming (ADR-131): the frame resamples its finished Scene
-      image into the export's surface, display-encoded. Once a submit call
-      accepts the frame, the renderer calls `done` exactly once: with
-      `written` true after the GPU finished the write, or false when the
-      frame made none. `done` runs on the rendering or a completion thread.
-      Requires vkr_renderer_view_streaming_supported(); the export is
-      borrowed through render. */
+      image into the export's surface, display-encoded, or encodes it where
+      the renderer encodes. Once a submit call accepts the frame, the
+      renderer calls `done` exactly once: with `written` true after the GPU
+      finished the write (and the encoder delivered its packet), or false
+      when the frame made none. `done` runs on the rendering or a
+      completion thread. Requires vkr_renderer_view_streaming_supported();
+      the export is borrowed through render. */
   const VkrViewExport *view_export;
   /** A decoded remote Scene image the UI draws through
       VKR_UI_TEXTURE_REF_REMOTE_VIEW; the backend keeps a reference until the
       GPU finished reading it. Frames with one composite without the
-      presenter. */
+      presenter. Not on an encoding renderer. */
   VkrVideoSurface *view_import;
 } VkrEditorPassPayload;
 

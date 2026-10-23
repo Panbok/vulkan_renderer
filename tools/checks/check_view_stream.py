@@ -38,6 +38,22 @@ Both halves need the same headless window, so the Scene panels match.
 
     python tools/checks/check_view_stream.py \\
         --editor build_release/editor/vkr_editor
+
+`--role record` runs the server alone, for a computer whose editor cannot
+be a client (a Windows server: its renderer encodes, ADR-131, but cannot
+show a remote image). The server holds the plaza view, records the stream
+it encodes with no client (remote_view.serve 'record') and captures its
+own Scene at full size. The check decodes the recording with PyAV
+(`pip install av`) and passes when it decodes from a key frame without
+error, its VUI names BT.709 video range, and its frame nearest the
+capture matches the capture, resampled to the stream's even extent as the
+export does, within --min-psnr dB over the same rows (the Scene settles
+while the stream runs, so the last frame may differ). `--vulkan-validation`
+runs the server of --role server or record with the Khronos validation
+layer and fails on a message.
+
+    python tools/checks/check_view_stream.py --role record \\
+        --editor build_release/editor/vkr_editor.exe
 """
 
 import argparse
@@ -68,6 +84,24 @@ echo server-done
 quit discard
 """
 SERVER_POLL = "wait 2\nop remote_view.status"
+
+# --role record: the server alone holds the plaza view and records what it
+# encodes; its full-size capture matches the stream pixel for pixel.
+RECORD_SCRIPT = """wait.scene
+gfx.dynamic = false
+labels off
+{final}
+wait 2
+op remote_view.serve {serve}
+echo serving
+wait 4
+op remote_view.status
+op view.capture {capture}
+wait 2
+op remote_view.status
+echo server-done
+quit discard
+"""
 
 # The client flies across the square for six seconds and holds the plaza
 # view the tiled Bistro plaza cases use (eye 10, 4.2, 27.8, yaw 19, pitch
@@ -137,10 +171,12 @@ def psnr(a: pathlib.Path, b: pathlib.Path):
 
 
 def launch(editor: str, work: pathlib.Path, script: str, log: pathlib.Path,
-           autoclose: int, scene: str, validation: bool, identity: str = ""):
+           autoclose: int, scene: str, validation: bool, identity: str = "",
+           vulkan_validation: bool = False):
     """A headless editor on `scene` that closes after `autoclose` seconds,
-    with Metal API validation when `validation` is set. `identity` names
-    the identity key file it connects with; without it the editor makes a
+    with Metal API validation when `validation` is set and the Khronos
+    validation layer when `vulkan_validation` is. `identity` names the
+    identity key file it connects with; without it the editor makes a
     fresh one in `work`."""
     work.mkdir(parents=True, exist_ok=True)
     out = open(log, "w", encoding="utf-8", errors="replace")
@@ -152,6 +188,12 @@ def launch(editor: str, work: pathlib.Path, script: str, log: pathlib.Path,
         # MetalFX's temporal scaler aborts under the debug layer.
         (work / "graphics.json").write_text(
             '{"version": 1, "upscaler": "spatial"}\n')
+    if vulkan_validation:
+        env["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
+        # The loader names each layer it inserts, which proves the layer
+        # ran; a Release editor installs no messenger, so the layer prints
+        # its messages to stdout itself.
+        env["VK_LOADER_DEBUG"] = "layer"
     process = subprocess.Popen(
         [editor, "--headless", "--no-agent-socket", "--scene", scene,
          "--exec", script],
@@ -292,6 +334,134 @@ def validation_report(text: str, side: str, failures: list) -> None:
         failures.append("Metal validation reported errors")
 
 
+def vulkan_validation_report(text: str, side: str, failures: list) -> None:
+    if "VK_LAYER_KHRONOS_validation" not in text:
+        failures.append(f"the Khronos validation layer did not load on the "
+                        f"{side}")
+    # The layer's own output, or the renderer's messenger in a build that
+    # enables validation.
+    reports = [line for line in text.splitlines()
+               if line.startswith(("Validation Error:", "Validation Warning:"))
+               or "Vulkan validation: " in line]
+    print(f"Vulkan validation on the {side}: {len(reports)} messages")
+    for line in reports[:10]:
+        print("  ", line.strip()[:300])
+    if reports:
+        failures.append("Vulkan validation reported messages")
+
+
+def decode_recording(path: pathlib.Path, reference=None):
+    """Decodes an Annex B H.264 file with PyAV: (frames decoded, whether
+    the first was a key frame, the last frame as an RGB array, its VUI
+    colour space and range names, error text or None, and with a
+    `reference` capture the best (PSNR, frame index) over all frames)."""
+    try:
+        import av
+    except ImportError:
+        return (0, False, None, None, None, "PyAV is missing: pip install av",
+                None)
+    count = 0
+    first_key = False
+    last = None
+    best = None
+    try:
+        with av.open(str(path), format="h264") as container:
+            for frame in container.decode(video=0):
+                if count == 0:
+                    first_key = frame.key_frame
+                if reference is not None:
+                    value = record_psnr(frame_rgb(frame), reference)[0]
+                    if value is not None and (best is None or value > best[0]):
+                        best = (value, count)
+                count += 1
+                last = frame
+    except av.error.FFmpegError as error:
+        return (count, first_key, None, None, None, f"decode failed: {error}",
+                best)
+    if last is None:
+        return 0, False, None, None, None, "no frame decoded", None
+    # PyAV reports the VUI's codes as enum members or plain integers
+    # (matrix 1 is BT.709; range 1 is video range).
+    space = getattr(last.colorspace, "name",
+                    {1: "ITU709"}.get(last.colorspace, str(last.colorspace)))
+    color_range = getattr(last.color_range, "name",
+                          {1: "MPEG", 2: "JPEG"}.get(last.color_range,
+                                                     str(last.color_range)))
+    return count, first_key, frame_rgb(last), space, color_range, None, best
+
+
+def frame_rgb(frame):
+    """A decoded frame as RGB rows, converted with the stream's own matrix
+    and range, as a decoder that follows the VUI converts it."""
+    return frame.reformat(format="rgb24", src_colorspace=frame.colorspace,
+                          src_color_range=frame.color_range,
+                          dst_color_range="JPEG").to_ndarray()
+
+
+def resample_like_export(image, width: int, height: int):
+    """`image` (8-bit sRGB rows of RGB) resampled to width x height as the
+    view export does it: bilinear in linear light at each output pixel's
+    centre, then sRGB-encoded. The stream's extent is the Scene's rounded
+    down to even, so an odd Scene is resampled by up to one pixel."""
+    import numpy
+    source_h, source_w = image.shape[:2]
+    linear = image.astype(numpy.float64) / 255.0
+    linear = numpy.where(linear <= 0.04045, linear / 12.92,
+                         ((linear + 0.055) / 1.055) ** 2.4)
+    xs = (numpy.arange(width) + 0.5) * source_w / width - 0.5
+    ys = (numpy.arange(height) + 0.5) * source_h / height - 0.5
+    x0 = numpy.clip(numpy.floor(xs).astype(int), 0, source_w - 1)
+    x1 = numpy.clip(x0 + 1, 0, source_w - 1)
+    y0 = numpy.clip(numpy.floor(ys).astype(int), 0, source_h - 1)
+    y1 = numpy.clip(y0 + 1, 0, source_h - 1)
+    fx = numpy.clip(xs - numpy.floor(xs), 0.0, 1.0)[None, :, None]
+    fy = numpy.clip(ys - numpy.floor(ys), 0.0, 1.0)[:, None, None]
+    top = linear[y0][:, x0] * (1.0 - fx) + linear[y0][:, x1] * fx
+    bottom = linear[y1][:, x0] * (1.0 - fx) + linear[y1][:, x1] * fx
+    value = top * (1.0 - fy) + bottom * fy
+    value = numpy.where(value <= 0.0031308, value * 12.92,
+                        1.055 * value ** (1.0 / 2.4) - 0.055)
+    return numpy.clip(numpy.round(value * 255.0), 0, 255).astype(numpy.int32)
+
+
+class CaptureReference:
+    """The server's full-size Scene capture, resampled once to the stream's
+    extent as the export does."""
+
+    def __init__(self, capture: pathlib.Path):
+        import numpy
+        width, height, channels, rows = png_pixels(capture)
+        self.size = (width, height)
+        self.image = numpy.frombuffer(b"".join(rows), dtype=numpy.uint8)\
+            .reshape(height, width, channels)[:, :, :3]
+        self.resampled = None
+
+    def for_frame(self, rgb):
+        if self.resampled is None or \
+                self.resampled.shape[:2] != rgb.shape[:2]:
+            self.resampled = resample_like_export(self.image, rgb.shape[1],
+                                                  rgb.shape[0])
+        return self.resampled
+
+
+def record_psnr(rgb, reference: CaptureReference):
+    """PSNR in dB, mean absolute difference and mean signed difference per
+    channel between a decoded frame and the capture resampled to it, over
+    the rows psnr() counts, and both sizes; the PSNR is None without
+    rows."""
+    import numpy
+    sizes = (rgb.shape[1], rgb.shape[0]) + reference.size
+    first, last = int(rgb.shape[0] * 0.08), int(rgb.shape[0] * 0.86)
+    if rgb.shape[1] == 0 or last <= first:
+        return None, None, None, sizes
+    difference = (rgb[first:last, :, :3].astype(numpy.int32) -
+                  reference.for_frame(rgb)[first:last])
+    mse = float(numpy.mean(difference * difference))
+    value = 99.0 if mse == 0 else 10.0 * math.log10(255.0 * 255.0 / mse)
+    bias = numpy.mean(difference, axis=(0, 1)).round(2).tolist()
+    return value, float(numpy.mean(numpy.abs(difference))), bias, sizes
+
+
 def keep_capture(text: str, path: pathlib.Path, failures: list):
     """Moves the run's last capture to `path`; None without one."""
     found = captures(text)
@@ -347,7 +517,8 @@ def run_server(args, work: pathlib.Path, failures: list) -> list:
     server, out = launch(args.editor, work / "server",
                          server_script(args.bind, args.allow, args.hold), log,
                          int(args.timeout + args.hold), SCENE,
-                         args.metal_validation == "server")
+                         args.metal_validation == "server",
+                         vulkan_validation=args.vulkan_validation)
     key = None
     try:
         key = wait_for_key(server, log, deadline)
@@ -371,6 +542,83 @@ def run_server(args, work: pathlib.Path, failures: list) -> list:
         print("server capture:", png)
     if args.metal_validation == "server":
         validation_report(text, "server", failures)
+    if args.vulkan_validation:
+        vulkan_validation_report(text, "server", failures)
+    return [log]
+
+
+def run_record(args, work: pathlib.Path, failures: list) -> list:
+    """One server encodes with no client; its recording decodes on this
+    computer and matches its own capture."""
+    log = work / "server.log"
+    deadline = time.time() + args.timeout
+    script = RECORD_SCRIPT.format(
+        final=glide(FINAL),
+        serve=json.dumps({"bind": f"127.0.0.1:{args.port}",
+                          "record": "check"}),
+        capture=json.dumps({"area": "scene"}))
+    # A fresh home starts the driver's shader cache cold, which can take
+    # minutes before the scene loads.
+    server, out = launch(args.editor, work / "server", script, log,
+                         int(args.timeout), SCENE, False,
+                         vulkan_validation=args.vulkan_validation)
+    finish([server], [out], deadline)
+    text = read(log)
+    if "server-done" not in text:
+        failures.append("the server script did not finish")
+    found = [s for s in statuses(text) if s.get("role") == "server"]
+    final = found[-1] if found else {}
+    print(f"stream {final.get('width')}x{final.get('height')} frames "
+          f"recorded {final.get('frames_recorded')}, bytes "
+          f"{final.get('bytes_recorded')}, bitrate {final.get('bitrate')}")
+    print("  server render p50 %.1f p95 %.1f; encode p50 %.1f p95 %.1f"
+          % (final.get("render_ms_p50", 0), final.get("render_ms_p95", 0),
+             final.get("encode_ms_p50", 0), final.get("encode_ms_p95", 0)))
+    recording = pathlib.Path(final["record"]) if final.get("record") else None
+    png = keep_capture(text, work / "server.png", failures)
+    if not recording or not recording.exists():
+        failures.append("the server wrote no recording")
+    elif png:
+        reference = CaptureReference(png)
+        count, first_key, rgb, space, color_range, error, best = \
+            decode_recording(recording, reference)
+        print(f"recording {recording.stat().st_size} bytes: {count} frames "
+              f"decoded, first a key frame: {first_key}, colour space "
+              f"{space}, range {color_range}")
+        if error:
+            failures.append(error)
+        if count < 30:
+            failures.append(f"only {count} frames decoded")
+        if not first_key:
+            failures.append("the recording does not start with a key frame")
+        if rgb is not None:
+            if str(space).upper() != "ITU709" or \
+                    str(color_range).upper() != "MPEG":
+                failures.append(f"the VUI names {space} {color_range}, not "
+                                "BT.709 video range")
+            # The Scene settles (exposure, streamed mips) while the stream
+            # runs, so the frame encoded nearest the capture's moment is
+            # the one to compare; the last frame is reported too.
+            value, mean, bias, sizes = record_psnr(rgb, reference)
+            if value is None or best is None:
+                failures.append("the frame and capture share no rows: frame "
+                                "%dx%d, capture %dx%d" % sizes)
+            else:
+                print("decoded frames %dx%d vs server capture %dx%d "
+                      "resampled to them" % sizes +
+                      f": best PSNR {best[0]:.1f} dB at frame {best[1]}; last "
+                      f"frame {value:.1f} dB, mean difference {mean:.2f} of "
+                      f"255, mean signed RGB {bias}")
+                if best[0] < args.min_psnr:
+                    failures.append(f"no decoded frame is within "
+                                    f"{args.min_psnr} dB of the capture (best "
+                                    f"{best[0]:.1f} dB)")
+    if args.vulkan_validation:
+        vulkan_validation_report(text, "server", failures)
+    if recording and not failures and not args.keep:
+        recording.unlink(missing_ok=True)
+    elif recording:
+        print("recording:", recording)
     return [log]
 
 
@@ -395,7 +643,8 @@ def run_client(args, work: pathlib.Path, failures: list) -> list:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--editor")
-    parser.add_argument("--role", choices=("both", "server", "client"),
+    parser.add_argument("--role",
+                        choices=("both", "server", "client", "record"),
                         default="both")
     parser.add_argument("--port", type=int, default=7342,
                         help="loopback port of --role both")
@@ -422,6 +671,8 @@ def main() -> int:
     # One Metal validation process at a time: the server's export path or
     # the client's import path.
     parser.add_argument("--metal-validation", choices=("server", "client"))
+    # The Khronos layer on the server of --role server or record.
+    parser.add_argument("--vulkan-validation", action="store_true")
     args = parser.parse_args()
     failures = []
     if args.compare:
@@ -437,8 +688,8 @@ def main() -> int:
         if work.exists():
             shutil.rmtree(work)
         work.mkdir(parents=True)
-        logs = {"both": run_both, "server": run_server,
-                "client": run_client}[args.role](args, work, failures)
+        logs = {"both": run_both, "server": run_server, "client": run_client,
+                "record": run_record}[args.role](args, work, failures)
         if failures or args.keep:
             for log in logs:
                 print("log:", log)
@@ -449,7 +700,7 @@ def main() -> int:
             shutil.rmtree(work / "client", ignore_errors=True)
             for log in logs:
                 log.unlink(missing_ok=True)
-            if args.role == "both":
+            if args.role in ("both", "record"):
                 shutil.rmtree(work, ignore_errors=True)
     for failure in failures:
         print("FAIL:", failure)

@@ -476,6 +476,7 @@ void vkr_vulkan_renderer_cancel_frame(VkrVulkanRenderer *renderer) {
       &renderer->frame_slots[renderer->active_frame_slot];
   vkr_vk_fail_picking_readback(renderer, slot);
   vkr_vk_abandon_ibl_bake_recordings(renderer);
+  vkr_vk_view_cancel(renderer);
   slot->sh_coefficients_clear_recorded = false_v;
   slot->dfg_upload_recorded = false_v;
   slot->ltc_upload_recorded = false_v;

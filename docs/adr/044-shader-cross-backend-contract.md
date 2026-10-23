@@ -521,11 +521,15 @@ FSR is off (`!fsr31_enabled`), and that view draws stripes under FSR.
 
 ### View export
 
-View streaming ([ADR-131](131-view-streaming.md)) runs only on Metal
-(`vkr_renderer_view_streaming_supported`), so its one kernel,
-`vkr_metal_packet_view_export` in
-[`editor/view_export.metal`](../../renderer/src/shaders/metal/msl/editor/view_export.metal),
-has no Vulkan consumer. It resamples `editor_scene_image` into an
+View streaming ([ADR-131](131-view-streaming.md)) has one kernel per
+backend. They share the resample and the sRGB encode but not the output:
+VideoToolbox takes a BGRA surface and converts it, and Vulkan Video takes
+only 4:2:0 YCbCr, so the Vulkan kernel converts as well. Each is the only
+consumer of its own source; nothing in `shaders/shared/` serves both.
+
+On Metal, `vkr_metal_packet_view_export` in
+[`editor/view_export.metal`](../../renderer/src/shaders/metal/msl/editor/view_export.metal)
+resamples `editor_scene_image` into an
 IOSurface-backed BGRA8 surface in the frame's readback encoder, after the
 barrier that waits for the Scene image's last writer: one thread per surface
 pixel in 8×8 groups, one bilinear sample at the pixel's centre (each Scene
@@ -542,6 +546,31 @@ decoded image was 34.4 dB PSNR from the server's own capture on the plaza
 view and 43.1 dB on a wall, and Metal API validation reported nothing on the
 server or the client. A windowed BGRA8 sRGB source and an RGBA16F EDR source
 have not run.
+
+On Vulkan, `vk_view_export` in
+[`editor/view_export.slang`](../../renderer/src/shaders/vulkan/slang/editor/view_export.slang)
+runs after the graph, which leaves the Scene image in its final layout; the
+backend samples it in `SHADER_READ_ONLY_OPTIMAL` through its bindless slot
+with the linear clamp-to-edge sampler and returns it to that layout. One
+thread writes a 2×2 block of the encode picture, in 8×8 groups over half
+the 16-pixel coded extent: four pixels sampled like the Metal kernel
+(bilinear at each pixel's centre in the stream's even extent, clamped to
+[0, 1], sRGB-encoded unless the source is 8-bit UNORM), stored as BT.709
+video-range luma through the picture's R8 plane view, and the block's mean
+R′G′B′ as Cb and Cr through its RG8 plane view. Pixels past the extent
+repeat its last row and column. `VkrVkViewExportRoot` (48 B: source and
+sampler slots, luma and chroma storage slots, extent, coded extent,
+`source_encoded`) is pinned on the host by `_Static_assert` in
+`vkr_vulkan_view.c`; it is not in the reflected-root checks.
+
+Native evidence: on 2026-10-23 `tools/checks/check_view_stream.py --role
+record` encoded a headless Bistro Scene (RGBA8 sRGB, 1275×700, streamed at
+1274×700) on the RX 6700 XT, Release; PyAV decoded the recording, and the
+frame nearest the server's capture was 42.6 dB PSNR from that capture
+resampled to the stream as the kernel does (the last frame 34.1 dB, the
+Metal plaza result's level). Runs under the Khronos validation layer, core
+and synchronization, reported no message. A windowed or extended-linear
+RGBA16F source has not run.
 
 ## Decision
 
@@ -993,6 +1022,7 @@ domain under the [evidence rules](#evidence-rules).
 | Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 | Draw census (pass `Cull.Census`, `VkrGpuDebugPayload.draw_census`): reason-coded rejected classification words, each camera candidate's state packed eight to a word and its object id | Shared | `shared/lod_kernel.slangh` (`vkr_gpu_draw_rejected`, `vkr_gpu_draw_camera_state`, `vkr_gpu_draw_census_put`); host mirror and CPU test in `vkr_gpu_abi.h`, `tests/src/draw_census_test.c` | `metal/msl/world/gpu_draws.metal` (classify, encode, `vkr_metal_packet_gpu_draw_census`); Metal native evidence pending | `vulkan/slang/world/deferred.slang` (`vk_gpu_draw_classify`, `vk_gpu_draw_encode`, `vk_gpu_draw_census`); compiles to SPIR-V, Vulkan native evidence unavailable |
 | Debug GPU spike (pass `Debug.GpuSpike`, `VkrGpuDebugPayload.gpu_spike_iterations`): a dependent multiply-add chain for a GPU cost with no CPU cost | Shared semantics, one implementation per backend | — | `metal/msl/editor/gpu_spike.metal`; Metal native: on Bistro (M1 Pro, Release) 2,000,000 iterations ran about 60 ms on the frame that carried them | `vulkan/slang/editor/gpu_spike.slang` (`vk_gpu_spike`); compiles to SPIR-V, Vulkan native evidence unavailable |
+| View export ([ADR-131](131-view-streaming.md)): the finished Scene image resampled for a video encoder | Shared resample and sRGB encode, one implementation per backend; the outputs differ by encoder input (BGRA surface, NV12 picture) | — | `metal/msl/editor/view_export.metal`; Metal native: Bistro plaza 34.4 dB client vs server (M1 Pro) | `vulkan/slang/editor/view_export.slang` (`vk_view_export`); Vulkan native: Bistro plaza 42.6 dB decoded vs resampled server capture at the capture's frame, no Khronos validation message (RX 6700 XT, 2026-10-23) |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
 mirrors the shared Slang record. Consult [`shared/README.md`](../../renderer/src/shaders/shared/README.md)

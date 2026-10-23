@@ -204,6 +204,34 @@ typedef struct VkrVulkanPipelineExecutableFunctions {
 const VkrVulkanPipelineExecutableFunctions *
 vkr_vulkan_device_pipeline_executable_functions(const VkrVulkanDevice *device);
 
+/** Entry points of the enabled video encode extensions, and the queue that
+ * encodes (ADR-131): the physical-device queries load through the instance,
+ * the rest through the device. */
+typedef struct VkrVulkanVideoEncodeFunctions {
+  PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR get_capabilities;
+  PFN_vkGetPhysicalDeviceVideoFormatPropertiesKHR get_format_properties;
+  PFN_vkCreateVideoSessionKHR create_session;
+  PFN_vkDestroyVideoSessionKHR destroy_session;
+  PFN_vkGetVideoSessionMemoryRequirementsKHR get_session_memory_requirements;
+  PFN_vkBindVideoSessionMemoryKHR bind_session_memory;
+  PFN_vkCreateVideoSessionParametersKHR create_parameters;
+  PFN_vkDestroyVideoSessionParametersKHR destroy_parameters;
+  PFN_vkGetEncodedVideoSessionParametersKHR get_encoded_parameters;
+  PFN_vkCmdBeginVideoCodingKHR cmd_begin_coding;
+  PFN_vkCmdEndVideoCodingKHR cmd_end_coding;
+  PFN_vkCmdControlVideoCodingKHR cmd_control_coding;
+  PFN_vkCmdEncodeVideoKHR cmd_encode;
+  /** A queue of a family other than the frame queue's; only view streaming
+      submits to it, from the thread that renders. */
+  VkQueue queue;
+  uint32_t queue_family_index;
+} VkrVulkanVideoEncodeFunctions;
+
+/** Null unless the device enabled H.264 encode on a queue of its own
+ * (ADR-131: optional; without it the renderer cannot stream the Scene). */
+const VkrVulkanVideoEncodeFunctions *
+vkr_vulkan_device_video_encode(const VkrVulkanDevice *device);
+
 /** GPUPerfAPI's hardware counters (vkr_vulkan_amd_counters.h) on an AMD
  * device that enabled the extensions they need; NULL otherwise. */
 struct s_VkrVulkanAmdCounters *

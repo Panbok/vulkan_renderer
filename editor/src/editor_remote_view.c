@@ -6,6 +6,7 @@
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "memory/vkr_heap.h"
@@ -72,22 +73,29 @@ typedef enum RemoteRole {
 /* The server's surfaces and encoder. The renderer reports exports into it
    from its own threads, possibly after the view stopped, so it is heap
    memory freed by its last reference; `lock` (a spin lock, with no
-   allocator to outlive) guards `encoder` and `stopped`. */
+   allocator to outlive) guards `encoder` and `stopped`, and is held while
+   a renderer-encoded frame sends, so no send outlives the stop. */
 typedef struct RemoteRing {
   VkrAtomicUint32 references;
   VkrAtomicUint32 lock;
   struct VkrEditorRemoteView *view;
   VkrVideoEncoder *encoder;
   bool8_t stopped;
+  /* The renderer encodes (vkr_renderer_view_encoding_supported): no
+     surfaces or encoder of the ring's own; each export is an encode
+     request whose packet comes back before its report. */
+  bool8_t encoded;
   uint32_t width;
   uint32_t height;
   VkrVideoSurface *surfaces[REMOTE_SLOTS];
   /* A slot is busy from its hand-out until its frame is sent or dropped. */
   VkrAtomicUint32 busy[REMOTE_SLOTS];
-  /* Written by the editor thread before the hand-out: when, and the send
-     time of the client pose the frame shows. */
+  /* Written by the editor thread before the hand-out: when, the send time
+     of the client pose the frame shows, and, for an encode request,
+     whether it asked for a key frame. */
   uint64_t handed_us[REMOTE_SLOTS];
   uint64_t pose_time_us[REMOTE_SLOTS];
+  bool8_t key_requested[REMOTE_SLOTS];
   /* When the renderer reported the slot written; read by the encoder's
      callback, which follows the encode call. */
   uint64_t written_us[REMOTE_SLOTS];
@@ -173,6 +181,14 @@ struct VkrEditorRemoteView {
   uint64_t refreshes;
   RemoteSamples render_ms;
   RemoteSamples encode_ms;
+  /* Host lock: every encoded frame's Annex B bytes in one file
+     (remote_view.serve 'record'), which keeps the server encoding without
+     a client, so a check can decode them on the serving computer. */
+  FileHandle record;
+  bool8_t recording;
+  char record_path[300];
+  uint64_t frames_recorded;
+  uint64_t bytes_recorded;
 
   /* Client. */
   VkrNetConnectionId connection;
@@ -301,6 +317,20 @@ static void remote_send_frame(RemoteRing *ring, uint32_t slot,
   }
   const uint32_t size = (uint32_t)packet->size + REMOTE_FRAME_HEADER;
   vkr_net_host_thread_lock(view->thread);
+  if (view->recording) {
+    uint64_t written_bytes = 0u;
+    const FileError written_error =
+        file_write(&view->record, packet->size, packet->data, &written_bytes);
+    if (written_error == FILE_ERROR_NONE && written_bytes == packet->size) {
+      view->frames_recorded += 1u;
+      view->bytes_recorded += packet->size;
+      /* A recording without a client still reports the server's part. */
+      if (!view->viewer_open) {
+        remote_sample(&view->render_ms, (float32_t)render_us / 1000.0f);
+        remote_sample(&view->encode_ms, (float32_t)encode_us / 1000.0f);
+      }
+    }
+  }
   if (!view->viewer_open) {
     vkr_net_host_thread_unlock(view->thread);
     return;
@@ -360,10 +390,21 @@ static void remote_send_frame(RemoteRing *ring, uint32_t slot,
   vkr_net_host_thread_unlock(view->thread);
 }
 
-/* The encoder's callback: sends the frame and frees its slot. */
+/* The encoder's callback: sends the frame and frees its slot. A frame the
+   renderer encoded sends while the ring is not stopped, and its slot frees
+   on the report that follows. */
 static void remote_packet(void *context, const VkrVideoPacket *packet) {
   RemoteRing *ring = context;
   const uint32_t slot = (uint32_t)(packet->tag % REMOTE_SLOTS);
+  if (ring->encoded) {
+    remote_ring_lock(ring);
+    if (!ring->stopped && packet->data && packet->size) {
+      ring->written_us[slot] = packet->timestamp_us;
+      remote_send_frame(ring, slot, packet);
+    }
+    remote_ring_unlock(ring);
+    return;
+  }
   if (packet->data && packet->size) {
     remote_send_frame(ring, slot, packet);
   }
@@ -371,11 +412,25 @@ static void remote_packet(void *context, const VkrVideoPacket *packet) {
 }
 
 /* The renderer's report of an export (VkrViewExportDone): a written slot
-   encodes at once, any other is free again. Runs on the rendering or the
-   completion thread. */
+   encodes at once, any other is free again. A renderer-encoded slot frees
+   either way, and one that asked for a key frame and made none asks
+   again. Runs on the rendering or the completion thread. */
 static void remote_export_done(void *context, uint64_t tag, bool8_t written) {
   RemoteRing *ring = context;
   const uint32_t slot = (uint32_t)(tag % REMOTE_SLOTS);
+  if (ring->encoded) {
+    if (!written && ring->key_requested[slot]) {
+      remote_ring_lock(ring);
+      if (!ring->stopped) {
+        vkr_atomic_uint32_store(&ring->view->key_wanted, 1u,
+                                VKR_MEMORY_ORDER_RELEASE);
+      }
+      remote_ring_unlock(ring);
+    }
+    vkr_atomic_uint32_store(&ring->busy[slot], 0u, VKR_MEMORY_ORDER_RELEASE);
+    remote_ring_release(ring);
+    return;
+  }
   bool8_t queued = false_v;
   if (written) {
     remote_ring_lock(ring);
@@ -400,15 +455,19 @@ static void remote_export_done(void *context, uint64_t tag, bool8_t written) {
 }
 
 static RemoteRing *remote_ring_create(VkrEditorRemoteView *view, uint32_t width,
-                                      uint32_t height) {
+                                      uint32_t height, bool8_t encoded) {
   RemoteRing *ring = vkr_heap_alloc_zeroed(1u, sizeof(*ring));
   if (!ring) {
     return NULL;
   }
   vkr_atomic_uint32_store(&ring->references, 1u, VKR_MEMORY_ORDER_RELEASE);
   ring->view = view;
+  ring->encoded = encoded;
   ring->width = width;
   ring->height = height;
+  if (encoded) {
+    return ring;
+  }
   for (uint32_t i = 0u; i < REMOTE_SLOTS; ++i) {
     ring->surfaces[i] = vkr_video_surface_create(width, height);
     if (!ring->surfaces[i]) {
@@ -881,6 +940,9 @@ static void remote_reset(VkrEditorRemoteView *view) {
   }
   vkr_heap_free(view->send_buffer);
   vkr_video_surface_release(view->shown);
+  if (view->recording) {
+    file_close(&view->record);
+  }
   /* The reason a view ended stays for its status. */
   VkrAllocator *allocator = view->allocator;
   char error[sizeof(view->error)];
@@ -910,15 +972,19 @@ void vkr_editor_remote_view_destroy(VkrEditorRemoteView *view) {
   vkr_heap_free(view);
 }
 
+/* A server encodes in vkr_video.h or the renderer; a client decodes in
+   vkr_video.h and imports into a renderer that takes imports. */
 static bool8_t remote_begin(VkrEditorRemoteView *view,
-                            const VkrSampleUiFrame *frame, char *error,
-                            uint32_t capacity) {
+                            const VkrSampleUiFrame *frame, bool8_t serving,
+                            char *error, uint32_t capacity) {
   if (view->role != REMOTE_NONE) {
     string_format(error, capacity, "Stop the current remote view first.");
     return false_v;
   }
-  if (!frame->view_streaming || !frame->view_stream_request ||
-      !vkr_video_supported(VKR_VIDEO_CODEC_H264)) {
+  const bool8_t video = vkr_video_supported(VKR_VIDEO_CODEC_H264);
+  const bool8_t coding =
+      serving ? video || frame->view_encoding : video && !frame->view_encoding;
+  if (!frame->view_streaming || !frame->view_stream_request || !coding) {
     string_format(error, capacity,
                   "This renderer or computer cannot stream the Scene.");
     return false_v;
@@ -934,8 +1000,9 @@ static bool8_t remote_begin(VkrEditorRemoteView *view,
 bool8_t vkr_editor_remote_view_serve(
     VkrEditorRemoteView *view, const VkrSampleUiFrame *frame, const char *bind,
     const uint8_t (*allowed)[32], uint32_t allowed_count,
-    uint32_t bitrate_max_bps, char *error, uint32_t capacity) {
-  if (!view || !remote_begin(view, frame, error, capacity)) {
+    uint32_t bitrate_max_bps, const char *record_path, char *error,
+    uint32_t capacity) {
+  if (!view || !remote_begin(view, frame, true_v, error, capacity)) {
     return false_v;
   }
   if (allowed_count > VKR_EDITOR_REMOTE_VIEW_ALLOWED_MAX) {
@@ -967,6 +1034,22 @@ bool8_t vkr_editor_remote_view_serve(
   view->bitrate = Min(view->bitrate_max, (uint32_t)REMOTE_BITRATE_START);
   vkr_atomic_uint32_store(&view->send_bitrate, view->bitrate,
                           VKR_MEMORY_ORDER_RELAXED);
+  if (record_path) {
+    FileMode mode = bitset8_create();
+    bitset8_set(&mode, FILE_MODE_WRITE);
+    bitset8_set(&mode, FILE_MODE_BINARY);
+    bitset8_set(&mode, FILE_MODE_TRUNCATE);
+    const FilePath path = file_path_view(record_path);
+    if (file_open(&path, mode, &view->record) != FILE_ERROR_NONE) {
+      remote_reset(view);
+      string_format(error, capacity, "Could not write the recording %s.",
+                    record_path);
+      return false_v;
+    }
+    view->recording = true_v;
+    string_format(view->record_path, sizeof(view->record_path), "%s",
+                  record_path);
+  }
   if (!remote_start_network(view, &config)) {
     remote_reset(view);
     string_format(error, capacity, "Could not listen on %s.",
@@ -989,7 +1072,7 @@ bool8_t vkr_editor_remote_view_connect(VkrEditorRemoteView *view,
                                        const VkrSampleUiFrame *frame,
                                        const char *address, const char *key_hex,
                                        char *error, uint32_t capacity) {
-  if (!view || !remote_begin(view, frame, error, capacity)) {
+  if (!view || !remote_begin(view, frame, false_v, error, capacity)) {
     return false_v;
   }
   VkrNetAddress server;
@@ -1078,6 +1161,7 @@ static void remote_server_update(VkrEditorRemoteView *view,
   bool8_t has_path = false_v;
   vkr_net_host_thread_lock(view->thread);
   open = view->viewer_open;
+  const bool8_t recording = view->recording;
   if (view->pose_new) {
     pose_new = true_v;
     position = view->pose_position;
@@ -1091,7 +1175,7 @@ static void remote_server_update(VkrEditorRemoteView *view,
         vkr_net_core_path(vkr_net_host_core(view->host), view->viewer, &path);
   }
   vkr_net_host_thread_unlock(view->thread);
-  if (!open) {
+  if (!open && !recording) {
     return;
   }
   if (pose_new && frame->editor_state_request) {
@@ -1129,7 +1213,7 @@ static void remote_server_update(VkrEditorRemoteView *view,
   if (!view->ring || view->ring->width != width ||
       view->ring->height != height) {
     remote_ring_stop(view->ring);
-    view->ring = remote_ring_create(view, width, height);
+    view->ring = remote_ring_create(view, width, height, frame->view_encoding);
     if (!view->ring) {
       remote_fail(view, "Could not make the video encoder or its surfaces.");
       return;
@@ -1147,6 +1231,25 @@ static void remote_server_update(VkrEditorRemoteView *view,
     vkr_atomic_uint32_fetch_add(&ring->references, 1u,
                                 VKR_MEMORY_ORDER_ACQ_REL);
     frame->view_stream_request->set_export = true_v;
+    if (ring->encoded) {
+      /* The request carries the key frame; its unwritten report asks
+         again. */
+      ring->key_requested[slot] =
+          vkr_atomic_uint32_exchange(&view->key_wanted, 0u,
+                                     VKR_MEMORY_ORDER_ACQ_REL) != 0u;
+      frame->view_stream_request->next_export = (VkrViewExport){
+          .width = width,
+          .height = height,
+          .bitrate_bps = view->bitrate,
+          .frame_rate = REMOTE_FRAME_RATE,
+          .key_frame = ring->key_requested[slot],
+          .on_packet = remote_packet,
+          .tag = slot,
+          .done = remote_export_done,
+          .context = ring,
+      };
+      return;
+    }
     frame->view_stream_request->next_export = (VkrViewExport){
         .surface = ring->surfaces[slot],
         .tag = slot,
@@ -1330,6 +1433,16 @@ VkrBakeryJson *vkr_editor_remote_view_status_json(VkrEditorRemoteView *view,
                         vkr_bakery_json_float(arena, p50));
     vkr_bakery_json_set(arena, result, "encode_ms_p95",
                         vkr_bakery_json_float(arena, p95));
+    if (view->recording) {
+      vkr_bakery_json_set(arena, result, "record",
+                          vkr_bakery_json_cstr(arena, view->record_path));
+      vkr_bakery_json_set(
+          arena, result, "frames_recorded",
+          vkr_bakery_json_int(arena, (int64_t)view->frames_recorded));
+      vkr_bakery_json_set(
+          arena, result, "bytes_recorded",
+          vkr_bakery_json_int(arena, (int64_t)view->bytes_recorded));
+    }
     vkr_net_host_thread_unlock(view->thread);
     vkr_bakery_json_set(arena, result, "bitrate",
                         vkr_bakery_json_int(arena, view->bitrate));

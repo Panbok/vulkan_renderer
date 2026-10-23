@@ -632,6 +632,10 @@ typedef struct VkrSampleUiFrame {
    * (vkr_renderer_view_streaming_supported); the build's request is
    * applied after it returns. */
   bool8_t view_streaming;
+  /** The renderer encodes its exports itself and takes no import
+   * (vkr_renderer_view_encoding_supported): an export carries an encode
+   * request instead of a surface. */
+  bool8_t view_encoding;
   VkrSampleViewStreamRequest *view_stream_request;
   /* Set when material or surface theme files changed on disk: every loaded
      scene's brushes read their themes and material sizes again

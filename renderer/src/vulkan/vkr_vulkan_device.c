@@ -87,6 +87,12 @@ typedef struct VkrVulkanCandidate {
      VK_AMD_shader_core_properties2. */
   bool8_t has_amd_gpa_extensions;
   bool8_t has_amd_shader_core_properties2;
+  /* VK_KHR_video_queue, VK_KHR_video_encode_queue and
+     VK_KHR_video_encode_h264, which view streaming's encoder needs
+     (ADR-131), and the first other queue family that encodes H.264;
+     UINT32_MAX without one. */
+  bool8_t has_video_encode_extensions;
+  uint32_t video_encode_family_index;
   /* VK_KHR_calibrated_timestamps, or the EXT it was promoted from; NULL when
      the device names neither. The pair of domains it must calibrate is the
      device's timestamps against QueryPerformanceCounter, the counter behind
@@ -150,6 +156,9 @@ struct VkrVulkanDevice {
      pipelineExecutableInfo. */
   VkrVulkanPipelineExecutableFunctions pipeline_executable_functions;
   bool8_t pipeline_executable_enabled;
+  /* Loaded only when the device enabled H.264 encode on its own queue. */
+  VkrVulkanVideoEncodeFunctions video_encode_functions;
+  bool8_t video_encode_enabled;
   /* GPUPerfAPI's hardware counters on an AMD device that enabled the
      extensions they need; NULL otherwise. */
   VkrVulkanAmdCounters *amd_counters;
@@ -821,6 +830,13 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
     candidate->has_amd_shader_core_properties2 = vkr_vk_extension_present(
         extensions, extension_count,
         VK_AMD_SHADER_CORE_PROPERTIES_2_EXTENSION_NAME);
+    candidate->has_video_encode_extensions =
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VK_KHR_VIDEO_QUEUE_EXTENSION_NAME) &&
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME) &&
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
     candidate->calibrated_timestamps_extension =
         vkr_vk_extension_present(extensions, extension_count,
                                  VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
@@ -1053,6 +1069,55 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
                                                            : "unavailable");
 }
 
+/* View streaming's encoder (ADR-131): the first queue family other than the
+   frame queue's that encodes H.264, when the device names the video encode
+   extensions. Optional; without one the renderer reports view streaming
+   unavailable. */
+vkr_internal void
+vkr_vk_select_video_encode_family(VkrVulkanCandidate *candidate,
+                                  uint32_t queue_count,
+                                  VkrVulkanCandidateReport *report) {
+  candidate->video_encode_family_index = UINT32_MAX;
+  if (candidate->has_video_encode_extensions) {
+    VkQueueFamilyVideoPropertiesKHR video[VKR_VULKAN_MAX_QUEUE_FAMILIES];
+    VkQueueFamilyProperties2 queues[VKR_VULKAN_MAX_QUEUE_FAMILIES];
+    for (uint32_t i = 0u; i < queue_count; ++i) {
+      video[i] = (VkQueueFamilyVideoPropertiesKHR){
+          .sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR,
+      };
+      queues[i] = (VkQueueFamilyProperties2){
+          .sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2,
+          .pNext = &video[i],
+      };
+    }
+    vkGetPhysicalDeviceQueueFamilyProperties2(candidate->physical, &queue_count,
+                                              queues);
+    for (uint32_t i = 0u; i < queue_count; ++i) {
+      if (i != candidate->queue_family_index &&
+          (queues[i].queueFamilyProperties.queueFlags &
+           VK_QUEUE_VIDEO_ENCODE_BIT_KHR) &&
+          (video[i].videoCodecOperations &
+           VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR)) {
+        candidate->video_encode_family_index = i;
+        break;
+      }
+    }
+  }
+  char detail[64];
+  if (candidate->video_encode_family_index != UINT32_MAX) {
+    string_format(detail, sizeof(detail), "family=%u: view streaming encodes",
+                  candidate->video_encode_family_index);
+  } else {
+    string_format(detail, sizeof(detail), "%s",
+                  candidate->has_video_encode_extensions
+                      ? "no H.264 encode queue family"
+                      : "video encode extensions missing");
+  }
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_QUEUE, "video encode H.264",
+                    false_v, candidate->video_encode_family_index != UINT32_MAX,
+                    detail);
+}
+
 vkr_internal void
 vkr_vk_select_candidate_queue(const VkrVulkanDevice *device,
                               VkrVulkanCandidate *candidate,
@@ -1089,6 +1154,7 @@ vkr_vk_select_candidate_queue(const VkrVulkanDevice *device,
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_QUEUE,
                     "graphics+compute+transfer", true_v,
                     candidate->queue_family_index != UINT32_MAX, queue_detail);
+  vkr_vk_select_video_encode_family(candidate, queue_count, report);
 }
 
 vkr_internal void
@@ -1451,6 +1517,58 @@ vkr_internal bool8_t vkr_vk_load_ray_query_functions(
          functions->cmd_copy;
 }
 
+vkr_internal bool8_t vkr_vk_load_video_encode_functions(
+    VkrVulkanDevice *device, const VkrVulkanCandidate *candidate) {
+  VkrVulkanVideoEncodeFunctions *functions = &device->video_encode_functions;
+  functions->get_capabilities =
+      (PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR)vkGetInstanceProcAddr(
+          device->instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR");
+  functions->get_format_properties =
+      (PFN_vkGetPhysicalDeviceVideoFormatPropertiesKHR)vkGetInstanceProcAddr(
+          device->instance, "vkGetPhysicalDeviceVideoFormatPropertiesKHR");
+  functions->create_session = (PFN_vkCreateVideoSessionKHR)vkGetDeviceProcAddr(
+      device->device, "vkCreateVideoSessionKHR");
+  functions->destroy_session =
+      (PFN_vkDestroyVideoSessionKHR)vkGetDeviceProcAddr(
+          device->device, "vkDestroyVideoSessionKHR");
+  functions->get_session_memory_requirements =
+      (PFN_vkGetVideoSessionMemoryRequirementsKHR)vkGetDeviceProcAddr(
+          device->device, "vkGetVideoSessionMemoryRequirementsKHR");
+  functions->bind_session_memory =
+      (PFN_vkBindVideoSessionMemoryKHR)vkGetDeviceProcAddr(
+          device->device, "vkBindVideoSessionMemoryKHR");
+  functions->create_parameters =
+      (PFN_vkCreateVideoSessionParametersKHR)vkGetDeviceProcAddr(
+          device->device, "vkCreateVideoSessionParametersKHR");
+  functions->destroy_parameters =
+      (PFN_vkDestroyVideoSessionParametersKHR)vkGetDeviceProcAddr(
+          device->device, "vkDestroyVideoSessionParametersKHR");
+  functions->get_encoded_parameters =
+      (PFN_vkGetEncodedVideoSessionParametersKHR)vkGetDeviceProcAddr(
+          device->device, "vkGetEncodedVideoSessionParametersKHR");
+  functions->cmd_begin_coding =
+      (PFN_vkCmdBeginVideoCodingKHR)vkGetDeviceProcAddr(
+          device->device, "vkCmdBeginVideoCodingKHR");
+  functions->cmd_end_coding = (PFN_vkCmdEndVideoCodingKHR)vkGetDeviceProcAddr(
+      device->device, "vkCmdEndVideoCodingKHR");
+  functions->cmd_control_coding =
+      (PFN_vkCmdControlVideoCodingKHR)vkGetDeviceProcAddr(
+          device->device, "vkCmdControlVideoCodingKHR");
+  functions->cmd_encode = (PFN_vkCmdEncodeVideoKHR)vkGetDeviceProcAddr(
+      device->device, "vkCmdEncodeVideoKHR");
+  functions->queue_family_index = candidate->video_encode_family_index;
+  vkGetDeviceQueue(device->device, candidate->video_encode_family_index, 0u,
+                   &functions->queue);
+  return functions->get_capabilities && functions->get_format_properties &&
+         functions->create_session && functions->destroy_session &&
+         functions->get_session_memory_requirements &&
+         functions->bind_session_memory && functions->create_parameters &&
+         functions->destroy_parameters && functions->get_encoded_parameters &&
+         functions->cmd_begin_coding && functions->cmd_end_coding &&
+         functions->cmd_control_coding && functions->cmd_encode &&
+         functions->queue;
+}
+
 vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
   /* GPUPerfAPI closes its context before the device goes, and after a
      failed vkCreateDevice too. */
@@ -1481,6 +1599,9 @@ vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
   MemZero(&device->pipeline_executable_functions,
           sizeof(device->pipeline_executable_functions));
   device->pipeline_executable_enabled = false_v;
+  MemZero(&device->video_encode_functions,
+          sizeof(device->video_encode_functions));
+  device->video_encode_enabled = false_v;
   MemZero(&device->resource_layout, sizeof(device->resource_layout));
   MemZero(&device->sampler_layout, sizeof(device->sampler_layout));
 }
@@ -1622,11 +1743,22 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
   VkrVulkanCandidateReport *report =
       &device->profile.candidates[candidate_index];
   float32_t priority = 1.0f;
-  VkDeviceQueueCreateInfo queue_info = {
-      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-      .queueFamilyIndex = candidate->queue_family_index,
-      .queueCount = 1u,
-      .pQueuePriorities = &priority,
+  /* View streaming's encoder submits to a queue of its own (ADR-131). */
+  const bool8_t enable_video_encode =
+      candidate->video_encode_family_index != UINT32_MAX;
+  const VkDeviceQueueCreateInfo queue_infos[] = {
+      {
+          .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+          .queueFamilyIndex = candidate->queue_family_index,
+          .queueCount = 1u,
+          .pQueuePriorities = &priority,
+      },
+      {
+          .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+          .queueFamilyIndex = candidate->video_encode_family_index,
+          .queueCount = 1u,
+          .pQueuePriorities = &priority,
+      },
   };
   VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
@@ -1745,7 +1877,7 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                    .pipelineStatisticsQuery =
                        candidate->features.pipeline_statistics_query},
   };
-  const char *extensions[16] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  const char *extensions[24] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;
   if (device->config.windowed)
     extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -1789,11 +1921,16 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
       extensions[extension_count++] =
           VK_AMD_SHADER_CORE_PROPERTIES_2_EXTENSION_NAME;
   }
+  if (enable_video_encode) {
+    extensions[extension_count++] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME;
+    extensions[extension_count++] = VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME;
+    extensions[extension_count++] = VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME;
+  }
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
-      .queueCreateInfoCount = 1u,
-      .pQueueCreateInfos = &queue_info,
+      .queueCreateInfoCount = enable_video_encode ? 2u : 1u,
+      .pQueueCreateInfos = queue_infos,
       .enabledExtensionCount = extension_count,
       .ppEnabledExtensionNames = extensions,
   };
@@ -1810,6 +1947,9 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                    &device->queue);
   device->ray_query_enabled =
       enable_ray_query && vkr_vk_load_ray_query_functions(device, candidate);
+  device->video_encode_enabled =
+      enable_video_encode &&
+      vkr_vk_load_video_encode_functions(device, candidate);
   device->memory_budget_enabled = candidate->has_memory_budget_extension;
   device->get_device_fault_info =
       enable_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(
@@ -2015,6 +2155,13 @@ const VkrVulkanPipelineExecutableFunctions *
 vkr_vulkan_device_pipeline_executable_functions(const VkrVulkanDevice *device) {
   return device && device->pipeline_executable_enabled
              ? &device->pipeline_executable_functions
+             : NULL;
+}
+
+const VkrVulkanVideoEncodeFunctions *
+vkr_vulkan_device_video_encode(const VkrVulkanDevice *device) {
+  return device && device->video_encode_enabled
+             ? &device->video_encode_functions
              : NULL;
 }
 

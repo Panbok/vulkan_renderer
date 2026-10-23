@@ -14,10 +14,12 @@ is implemented on macOS: one editor serves its Scene image, encoded with
 VideoToolbox H.264, to one other editor over the transport's view service;
 the client shows the decoded image in its Scene panel instead of rendering
 a Scene, and its Scene camera steers the server's. The pose-to-display
-latency was measured between two editors on one Mac over loopback. A run
-between two computers, the Windows encoder, forward error correction,
-intra refresh, raw input forwarding and more than one client stay in the
-proposal.
+latency was measured between two editors on one Mac over loopback. A
+Windows editor serves too: its Vulkan backend encodes with Vulkan Video
+H.264 (decision 6), and its own recording decodes on Windows; a Windows
+editor shows no remote view. A run between two computers, forward error
+correction, intra refresh, raw input forwarding and more than one client
+stay in the proposal.
 
 ## Context
 
@@ -34,7 +36,10 @@ lib video module wraps the platform codec over IOSurface frames, and the
 renderer only copies each finished Scene image into a surface and can draw
 a decoded surface in place of the Scene; the client's camera pose steers
 the server's view (raw input later); the server streams its own Scene
-image and the client scales it.
+image and the client scales it. Owner decision of 2026-10-23: Windows
+encodes with Vulkan Video, as the network proposal recommends, rather
+than Media Foundation; Windows serves and the Mac shows, because the Mac's
+endpoint security drops unsolicited inbound traffic.
 
 ## Decision
 
@@ -51,17 +56,26 @@ image and the client scales it.
    caller's tag. The decoder is synchronous on the caller's thread, refuses
    frames before the first key frame and recreates its session when the
    parameter sets change. On other platforms every call reports the service
-   unavailable ([`vkr_video_windows.c`](../../lib/src/platform/vkr_video_windows.c)).
+   unavailable ([`vkr_video_windows.c`](../../lib/src/platform/vkr_video_windows.c)):
+   a Windows server's codec is the renderer's own (decision 6), because
+   Vulkan Video needs the renderer's device, queues and timeline.
 2. **Renderer export and import.** `VkrEditorPassPayload` carries an
    optional `VkrViewExport` (surface, tag, `done` callback) and an optional
    `view_import` surface ([`vkr_frame_input.h`](../../renderer/src/vkr_frame_input.h)).
-   `vkr_renderer_view_streaming_supported()` is true on Metal only; render
-   validation refuses either field elsewhere, and an import with the
-   presenter (ADR-111). Once a submit call accepts a frame, the renderer
-   calls `done` exactly once: with `written` true after the GPU finished the
-   export's copy (an `MTLSharedEvent` listener), or false when the frame
-   made none — a present-only frame, a frame refused at validation or
-   acquisition, a backend failure (the next frame or teardown reports it).
+   `vkr_renderer_view_streaming_supported()` is true on Metal and on a
+   Vulkan device that encodes H.264; `vkr_renderer_view_encoding_supported()`
+   is true on the latter, whose exports carry an encode request in place of
+   a surface (`width`, `height`, `bitrate_bps`, `frame_rate`, `key_frame`,
+   `on_packet`). Render validation refuses an export without view
+   streaming, an encode request without both callbacks, an even extent of
+   at least 16, a bitrate and a frame rate, and an import with the
+   presenter (ADR-111) or on an encoding renderer. Once a submit call
+   accepts a frame, the renderer calls `done` exactly once: with `written`
+   true after the GPU finished the export's copy (an `MTLSharedEvent`
+   listener) or, encoding, after `on_packet` took the frame's packet, or
+   false when the frame made none — a present-only frame, a frame refused
+   at validation or acquisition, a backend failure (the next frame or
+   teardown reports it).
    The Metal backend ([`vkr_metal_packet_view.inc`](../../renderer/src/metal/internal/vkr_metal_packet_view.inc))
    wraps each surface's IOSurface as an untracked shared texture once and
    keeps up to 16 wrappings in a residency set, evicting the least recently
@@ -80,9 +94,11 @@ image and the client scales it.
    Scene frame takes the export last before its frame input is built, after
    every cancel path, and each runtime frame holds a reference to the import
    it draws until it is built again. A replaced or refused export is
-   reported unwritten. While an import is set the frame renders no Scene of
-   its own and the presenter stays off. The editor build asks through
-   `VkrSampleUiFrame.view_stream_request`.
+   reported unwritten; an export is one with a `done` callback, so an
+   encode request without a surface counts. While an import is set the
+   frame renders no Scene of its own and the presenter stays off. The
+   editor build asks through `VkrSampleUiFrame.view_stream_request`, and
+   `view_encoding` tells it the renderer encodes.
 4. **Editor remote view and the view service.**
    [`editor_remote_view.c`](../../editor/src/editor_remote_view.c) serves
    or shows a Scene over service 5 on a host thread of its own, with
@@ -116,12 +132,60 @@ image and the client scales it.
    or, with none, anyone given its key; it takes one client. Agents drive
    it with `remote_view.serve`, `.connect`, `.stop` and `.status`; a
    client with no scene of its own can steer (`view.camera`) and capture
-   its Scene panel (`view.capture`).
+   its Scene panel (`view.capture`). On an encoding renderer the server's
+   ring holds no surfaces or encoder: each of its four slots is an encode
+   request that asks for the key frame the view wants, the renderer's
+   packet sends under the ring's lock (so no send outlives a stop), and the
+   slot frees on the report, which asks for the key frame again when the
+   request made none. The frame message and the client are the same on
+   both servers. A server needs `vkr_video.h` encoding or an encoding
+   renderer; a client needs `vkr_video.h` decoding and a renderer that
+   takes imports. `remote_view.serve` with `"record":"<name>"` also writes
+   every encoded frame to `<agent directory>/view/<name>.h264` and encodes
+   with no client, so a computer that cannot be a client checks its own
+   stream.
 5. **Latency on the client's clock.** The server returns, with each frame,
    the send time of the client pose that frame shows. The client's sample
    is the time from that send to the build that hands the frame to its
    renderer, so both ends of it are on one clock on any network. The
    client's own frame render and present come on top.
+6. **Vulkan Video encoder in the desktop backend.** Device selection
+   ([`vkr_vulkan_device.c`](../../renderer/src/vulkan/vkr_vulkan_device.c))
+   enables `VK_KHR_video_queue`, `VK_KHR_video_encode_queue` and
+   `VK_KHR_video_encode_h264` with one queue of the first other family that
+   encodes H.264, when the device has them; the capability report names
+   it as optional. [`vkr_vulkan_view.c`](../../renderer/src/vulkan/vkr_vulkan_view.c)
+   checks the High-profile encode capabilities, NV12 pictures the export
+   can write through plane views and NV12 reference pictures, and reports
+   encoding supported. The first export of an extent and frame rate makes
+   a session on the rendering thread: a video session with its memory,
+   one SPS and one PPS, a two-layer DPB, four slots (an NV12 picture both
+   queue families share, its luma and chroma storage views, a mapped
+   bitstream buffer, a feedback query, an encode command buffer), a
+   timeline and an encoder thread. Video images and buffers take memory
+   outside the renderer's pools, because each chains the session's profile
+   list. A session with no export for 2 s, or of another extent, is
+   destroyed once its slots came back.
+   After the graph, one dispatch of `vk_view_export`
+   ([`view_export.slang`](../../renderer/src/shaders/vulkan/slang/editor/view_export.slang))
+   resamples `editor_scene_image` as the Metal kernel does and converts to
+   BT.709 video-range 4:2:0, one thread per 2×2 block, out to the picture's
+   16-pixel coded extent by repeating the last row and column. After the
+   frame's submission the slot's encode goes to the encode queue, waiting
+   for the frame's timeline value at the encode stage; it signals the
+   session's timeline. The encoder thread waits for both values in
+   submission order, reads the feedback (offset and bytes) and calls
+   `on_packet` with the Annex B slice, after the encoded SPS and PPS on a
+   key frame, then `done`. The stream is Constrained High (High with
+   `constraint_set4/5`), 4:2:0 8-bit, CABAC with the 8×8 transform, POC
+   type 2, one reference frame: each P picture references the one before
+   it and an IDR picture comes at a session's start, on request or after a
+   failed submission. Rate control is CBR (VBR or the default where CBR is
+   absent) with one frame interval of buffering and ultra-low-latency
+   tuning; the bitrate follows each request. The VUI names BT.709
+   primaries, transfer and matrix, video range, and no reordering
+   (`max_num_reorder_frames = 0`). Every slot busy drops the frame's
+   picture; a failed encode reports its export unwritten.
 
 ## Consequences
 
@@ -142,8 +206,15 @@ image and the client scales it.
 - `DEADLINE` delivery is unordered; a frame that overtakes its predecessor
   waits up to 33 ms, and only a frame lost past that window costs a key
   frame. No loopback run has seen either.
-- A Windows editor reports view streaming unavailable until its encoder
-  exists.
+- A Windows editor serves but cannot show a remote view: `vkr_video.h` has
+  no Windows decoder and the Vulkan backend takes no import.
+- A Vulkan device with video encode creates one more queue and enables
+  three more extensions whether or not anything streams; the session's
+  memory (four NV12 pictures, a two-layer DPB and four bitstream buffers,
+  about 13 MB at 1280×704, plus the driver's session memory) exists only while
+  exports arrive, outside the renderer's pools and their accounting.
+- The Vulkan export costs one compute dispatch and one encode submission
+  per Scene frame, only while a client views or a recording runs.
 
 ## Alternatives considered
 
@@ -152,7 +223,14 @@ image and the client scales it.
   the conversion the compute pass does.
 - **Encoding in the renderer.** The renderer would own a codec session and
   its thread; the lib module keeps platform services in `lib/` and leaves
-  the renderer two plain fields.
+  the renderer two plain fields. Chosen for Vulkan Video only (decision 6):
+  a Vulkan encode session needs the renderer's device, queues and
+  timeline, which `lib/` cannot reach.
+- **Media Foundation on Windows.** Mature hardware encoders through one
+  OS API, kept in `lib/` as on macOS, but the Vulkan Scene image would
+  cross to Direct3D 11 through a shared texture and keyed-mutex or fence
+  interop, or a CPU copy. Vulkan Video keeps the picture on the device and
+  is one API across vendors; the owner chose it.
 - **Sending each frame from the editor's build.** Simpler threading, but a
   frame would wait up to one build interval after its GPU copy finished;
   the encoder's callback sends it at once.
@@ -214,15 +292,39 @@ upscaler. `vulkan_renderer_tester --suite video` encodes 30 frames of
 640×360 at 4 Mbit/s and decodes them, joining late at a key frame; its
 worst PSNR is 41.1 dB.
 
-Not measured: a run between two computers, 2560×1440 (the proposal's
-target size), an EDR or windowed BGRA Scene source, and the client's own
-present. The Vulkan backend reports the capability false, so it runs no
-part of this.
+Windows Release build on the RX 6700 XT (Adrenalin 26.10.1), 2026-10-23:
+one headless server editor on Bistro with the desktop pipeline at the
+plaza view (`gfx.dynamic = false`, light icons off) records its stream
+with no client, and PyAV decodes it on the same machine:
+
+```sh
+python tools/checks/check_view_stream.py --role record \
+    --editor build_release/editor/vkr_editor.exe
+```
+
+It recorded 378 frames of 1274×700 (coded 1280×704) at the 20 Mbit/s
+starting rate, 20.0 MB: about 53 KB a frame against the 41.7 KB that
+20 Mbit/s at 60 Hz allows, so the CBR stream runs about a quarter over its
+rate. PyAV decoded 383 frames, the first an IDR picture, and read BT.709
+and video range from the VUI. The frame nearest the server's capture,
+compared with the capture resampled to the stream as the kernel resamples
+the Scene image, was 42.6 dB PSNR from it; the last frame, 34.1 dB, shows
+a Scene that kept settling (mean signed difference about −1.3 of 255).
+Server render p50 57.5 ms, encode p50 4.8 / p95 5.1 ms. With
+`--vulkan-validation` (the Khronos layer) the check passed with no
+message, and a run with `VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true` added
+reported none either. A check run's fresh home starts the driver's shader
+cache cold, which takes about 250 s before the scene loads.
+
+Not measured: a run between two computers, among them a Windows server
+and a Mac client, 2560×1440 (the proposal's target size), an EDR or
+windowed BGRA Scene source, and the client's own present.
 
 ## Revisit when
 
-- The Windows encoder lands (Vulkan Video or Media Foundation), or a
-  Windows server streams the desktop pipeline to a Mac.
+- A Windows server streams the desktop pipeline to a Mac between two
+  computers, or a Windows client is needed (a decoder and a Vulkan
+  import).
 - A run between two computers shows loss the reorder window does not
   absorb: FEC and intra refresh become worth their cost.
 - Raw input forwarding or a second client is needed.

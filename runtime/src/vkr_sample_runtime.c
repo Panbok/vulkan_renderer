@@ -6042,6 +6042,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .gpu_spike_request = &requests->gpu_spike_iterations,
       .view_streaming =
           vkr_renderer_view_streaming_supported(&application->renderer),
+      .view_encoding =
+          vkr_renderer_view_encoding_supported(&application->renderer),
       .view_stream_request = &requests->view_stream_request,
       .cull_report = application->cull_report,
       .cull_report_serial = application->cull_report_serial,
@@ -7662,10 +7664,12 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
         Min(requests.gpu_spike_iterations, VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX);
   }
   const VkrSampleViewStreamRequest *view_stream = &requests.view_stream_request;
+  /* A stop is an export with no report callback; an encoding renderer's
+     export has no surface. */
   if (view_stream->set_export) {
     vkr_standard_scene_runtime_set_view_export(
         application,
-        view_stream->next_export.surface ? &view_stream->next_export : NULL);
+        view_stream->next_export.done ? &view_stream->next_export : NULL);
   }
   if (view_stream->set_import) {
     vkr_standard_scene_runtime_set_view_import(application,
