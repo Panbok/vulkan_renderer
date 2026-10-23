@@ -46,6 +46,15 @@ using VkrBakeDigest = std::array<uint8_t, 32>;
 constexpr float32_t kVkrBakeInputTolerance = 1.0e-4f;
 constexpr float32_t kVkrBakeInputRelativeTolerance = 2.0e-6f;
 
+/* How many of its ranges from a changed lamp the lamp group's gathered
+   light relights: the lamp's light first bounces within its range, and a
+   receiver farther than two more ranges from that sphere gets at most the
+   reflected share of the lamp's change spread over that distance. With
+   one range plus the reach, a doubled lamp on a 48 m street left a 3.3%
+   luminance-weighted error in the lamp group plane (16% for one wall,
+   2026-10-23). */
+constexpr float32_t kVkrBakeLampBounceRanges = 3.0f;
+
 /* Area-weighted moments of an instance's world-space triangles: area,
    centroid, covariance, and the means of the corners' normals, texture
    UVs and their squares, lightmap UVs and their squares, colors and
@@ -188,8 +197,9 @@ struct VkrBakeLightmapPlanLayer {
  * - a sun key relights the instances within `reach` of a changed box swept
  *   away from its key light across the scene, which its shadow or its
  *   bounce can reach;
- * - a lamp group's irradiance relights the instances within the range plus
- *   `reach` of a changed lamp of its group, within `reach` of a changed box,
+ * - a lamp group's irradiance relights the instances within
+ *   kVkrBakeLampBounceRanges ranges plus `reach` of a changed lamp of its
+ *   group, within `reach` of a changed box,
  *   and within a lamp's range plus `reach` when the changed box lies within
  *   that lamp's range; with its lights' direct term it also follows the
  *   lamp-direct rule;

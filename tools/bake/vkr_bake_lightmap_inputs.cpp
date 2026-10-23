@@ -1037,9 +1037,13 @@ bool gathered_changes(const LayerRules &rules, Vec3 lo, Vec3 hi) {
     }
     return false;
   }
+  /* A changed lamp's light bounces off what it lights, within its range,
+     to anything that sees those surfaces; kVkrBakeLampBounceRanges ranges
+     bound where that is more than a small share of a receiver's light. */
   for (const VkrBakeLightmapInputLight *light : rules.changed_lamps) {
     if (light->unbounded ||
-        point_box_distance(light->position, lo, hi) < light->range + reach) {
+        point_box_distance(light->position, lo, hi) <
+            kVkrBakeLampBounceRanges * light->range + reach) {
       return true;
     }
   }

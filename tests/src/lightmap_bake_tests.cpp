@@ -335,8 +335,8 @@ VkrBakeLightmapInputInstance input_box(uint32_t entity, float32_t x,
    moving an occluder relights the sun key's instances its shadow and
    bounce reach and the lamp layer's within the reach, and no lamp-direct
    texel of a lamp it does not shadow; editing a lamp relights its layer
-   within its range plus the reach and its direct texels within its range,
-   and no sun key; probes, as points, follow the same rules. Catches
+   within three ranges plus the reach and its direct texels within its
+   range, and no sun key; probes, as points, follow the same rules. Catches
    dirty rules that miss a shadow or relight the whole scene. */
 void test_incremental_plan_relights_what_edits_reach() {
   printf("  test_incremental_plan_relights_what_edits_reach...\n");
@@ -376,17 +376,18 @@ void test_incremental_plan_relights_what_edits_reach() {
     assert(plan.direct_dirty[1][i] == 0u);
   }
 
-  /* The lamp's light changes: its layer relights the box beside it. */
+  /* The lamp's light changes: its layer relights what its bounce reaches,
+     the box beside it and the one 10 m away within three ranges plus the
+     reach, and its direct texels within its range. */
   VkrBakeLightmapInputs relit = previous;
   relit.lights[0].digest[1] = 1u;
   assert(vkr_bake_lightmap_plan_incremental(previous, relit, layers, found,
                                             found, 4.0f, &plan));
   assert(plan.changed_lights == 2u && plan.changed_boxes == 0u);
   for (uint32_t i = 0u; i < 6u; ++i) {
-    const uint8_t near = i == 5u ? 1u : 0u;
     assert(plan.layer_dirty[0][i] == 0u);
-    assert(plan.layer_dirty[1][i] == near);
-    assert(plan.direct_dirty[1][i] == near);
+    assert(plan.layer_dirty[1][i] == (i >= 4u ? 1u : 0u));
+    assert(plan.direct_dirty[1][i] == (i == 5u ? 1u : 0u));
   }
 
   /* Points, such as volume probes, follow the same rules. */
