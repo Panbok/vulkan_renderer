@@ -267,7 +267,8 @@ bool vkr_bake_lightmap_pack_fitted(
 bool vkr_bake_lightmap_rasterize_page(
     const VkrBakeTriangle *triangles, uint32_t triangle_count,
     const VkrBakeLightmapLayout &layout, uint32_t page,
-    std::vector<VkrBakeLightmapTexel> *out_texels) {
+    std::vector<VkrBakeLightmapTexel> *out_texels,
+    const std::vector<uint8_t> *instances) {
   if ((!triangles && triangle_count) || !out_texels ||
       page >= layout.page_count) {
     return false;
@@ -280,7 +281,9 @@ bool vkr_bake_lightmap_rasterize_page(
       const VkrBakeTriangle &triangle = triangles[t];
       const uint32_t instance = triangle.source_instance_index;
       if (instance >= layout.rect_by_instance.size() ||
-          layout.rect_by_instance[instance] == UINT32_MAX) {
+          layout.rect_by_instance[instance] == UINT32_MAX ||
+          (instances &&
+           (instance >= instances->size() || (*instances)[instance] == 0u))) {
         continue;
       }
       const VkrBakeLightmapRect &rect =

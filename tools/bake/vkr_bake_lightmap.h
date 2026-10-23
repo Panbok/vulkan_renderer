@@ -130,12 +130,16 @@ bool vkr_bake_lightmap_pack_fitted(
  * lightmapped instance, in row-major order. A texel claimed by one triangle
  * is not claimed again by a neighbor sharing its edge. Triangles are
  * rasterized in their rectangle's own coordinates, so a texel's position,
- * normal and footprint do not depend on where the rectangle lies.
+ * normal and footprint do not depend on where the rectangle lies. With
+ * `instances`, by source instance index, only the marked instances'
+ * triangles are rasterized: the texels are those of a whole page's that
+ * belong to the marked instances, in the same order.
  */
 bool vkr_bake_lightmap_rasterize_page(
     const VkrBakeTriangle *triangles, uint32_t triangle_count,
     const VkrBakeLightmapLayout &layout, uint32_t page,
-    std::vector<VkrBakeLightmapTexel> *out_texels);
+    std::vector<VkrBakeLightmapTexel> *out_texels,
+    const std::vector<uint8_t> *instances = nullptr);
 
 /*
  * Writes a page's texel values into `out_rgba`, page_size x page_size RGBA

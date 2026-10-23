@@ -1837,7 +1837,8 @@ struct SetPageBake {
   double gpu_seconds = 0.0;
   double encode_seconds = 0.0;
   double cleanup_seconds = 0.0;
-  /* Texels gathered and rectangles relit or copied, over every plane. */
+  /* Texels gathered, and the rectangles' texels, over every plane; and
+     rectangles relit or copied. */
   uint64_t gathered_texels = 0u;
   uint64_t total_texels = 0u;
   uint64_t relit_rects = 0u;
@@ -1846,6 +1847,17 @@ struct SetPageBake {
   std::map<uint32_t, std::vector<uint8_t>> empty_tiles;
   PlaneScratch scratch;
 };
+
+/* The texels of `page`'s rectangles. */
+uint64_t page_rect_texels(const VkrBakeLightmapLayout &layout, uint32_t page) {
+  uint64_t texels = 0u;
+  for (const VkrBakeLightmapRect &rect : layout.rects) {
+    if (rect.page == page) {
+      texels += (uint64_t)rect.width * rect.height;
+    }
+  }
+  return texels;
+}
 
 /* Whether layer `l` relights source instance `instance`. */
 bool layer_relights(const SetPageBake &bake, size_t l, uint32_t instance) {
@@ -2521,19 +2533,21 @@ bool bake_page(SetPageBake *bake, uint32_t page) {
   VkrBakeScene &scene = *bake->scene;
   const VkrBakeLightmapLayout &layout = *bake->layout;
   const std::vector<BakeLayer> &layers = *bake->layers;
-  TexelList all;
-  if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
-                                        (uint32_t)scene.triangles.size(),
-                                        layout, page, &all)) {
-    return false;
-  }
-  bake->total_texels += (uint64_t)all.size() * layers.size();
   std::vector<uint8_t> relit_any(scene.instances.size(), 0u);
   for (uint32_t i = 0u; i < relit_any.size(); ++i) {
     for (size_t l = 0u; l < layers.size() && !relit_any[i]; ++l) {
       relit_any[i] = layer_relights(*bake, l, i) ? 1u : 0u;
     }
   }
+  /* An incremental bake rasterizes only what some layer relights; the
+     others' tiles are copied. */
+  TexelList all;
+  if (!vkr_bake_lightmap_rasterize_page(
+          scene.triangles.data(), (uint32_t)scene.triangles.size(), layout,
+          page, &all, bake->plan ? &relit_any : nullptr)) {
+    return false;
+  }
+  bake->total_texels += page_rect_texels(layout, page) * layers.size();
   TexelSet surface;
   TexelSet first;
   VkrBakeGpuGatherResult first_gathered;
@@ -2589,12 +2603,12 @@ bool bake_direct_pages(SetPageBake *bake,
   }
   for (uint32_t page = 0u; page < direct_layout.page_count; ++page) {
     TexelList all;
-    if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
-                                          (uint32_t)scene.triangles.size(),
-                                          direct_layout, page, &all)) {
+    if (!vkr_bake_lightmap_rasterize_page(
+            scene.triangles.data(), (uint32_t)scene.triangles.size(),
+            direct_layout, page, &all, bake->plan ? &relit : nullptr)) {
       return false;
     }
-    const size_t page_texels = all.size();
+    const uint64_t page_texels = page_rect_texels(direct_layout, page);
     TexelList texels;
     if (selects_all(all, relit)) {
       texels = std::move(all);
