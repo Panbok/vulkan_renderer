@@ -179,7 +179,14 @@ The owner accepted each recommendation below on 2026-10-20.
   mips, on the M1 Pro (tiled) and the RX 6700 XT (desktop).
 - A hitch report while flying through Bistro on a recorded camera path at a
   fixed speed: frame time p95, p99 and maximum, and upload stalls, against
-  today's load. Open defect (2026-10-23): `bistro_vulkan_high_orbit_1440`
+  today's load. First reading (2026-10-23, RX 6700 XT, Release,
+  `bistro_vulkan_high_orbit_1440`, `performance-windowed-gpu.json`, 1,500
+  frames, browser open, not authoritative): with the driver's budget the
+  wall frame took 13.15 ms at p50, 14.49 ms at p95 and 22.0 ms at most; at
+  `VKR_VULKAN_MEMORY_BUDGET_MB=10500`, 1.97 GB of Bistro's 3.16 GB resident,
+  9 lowering steps and 4 level copies landing in the measured frames, it
+  took 13.12, 14.45 and 23.7 ms, with up to 71 texture slots (41 on average)
+  below their measured need. Open defect (2026-10-23): `bistro_vulkan_high_orbit_1440`
   at `VKR_VULKAN_MEMORY_BUDGET_MB=6000`, where the texture allowance falls
   to 0 and every texture keeps loading and being evicted, lost the device
   in every run with and without level copies, after 23,733 and 82,549
