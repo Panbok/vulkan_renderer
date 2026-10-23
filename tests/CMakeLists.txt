@@ -9,6 +9,7 @@ target_sources(vulkan_renderer_tester PRIVATE
     src/lightmap_bake_tests.cpp
     "${CMAKE_SOURCE_DIR}/editor/src/editor_project_store.c"
     "${CMAKE_SOURCE_DIR}/editor/src/editor_label_sight.c"
+    "${CMAKE_SOURCE_DIR}/editor/src/editor_remote_order.c"
     "${CMAKE_SOURCE_DIR}/app/src/app_ui.c"
     "${CMAKE_SOURCE_DIR}/app/src/debug_overlay.c"
 )

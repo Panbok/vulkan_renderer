@@ -1,5 +1,7 @@
 #include "editor_remote_view.h"
 
+#include "editor_remote_order.h"
+
 #include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
@@ -40,9 +42,15 @@
 /* Surfaces in flight: one a frame renders into, one encoding, two spare. */
 #define REMOTE_SLOTS 4u
 #define REMOTE_FRAME_RATE 60u
-/* A frame later than two frame intervals is dropped by the sender; the
-   client asks for a key frame after the gap. */
+/* A frame the sender could not deliver within two frame intervals, or
+   twice the time its bytes take at the stream's rate when that is longer
+   (a key frame on a slow link), is dropped by the sender; the client asks
+   for a key frame after the gap. The client waits as long for a frame that
+   an early one overtook. */
 #define REMOTE_DEADLINE_US (2u * 1000000u / REMOTE_FRAME_RATE)
+#define REMOTE_DEADLINE_MAX_US 1000000u
+/* While no key frame arrives, the client asks again this often. */
+#define REMOTE_REFRESH_US 500000u
 #define REMOTE_BITRATE_MIN 2000000u
 #define REMOTE_BITRATE_MAX 40000000u
 #define REMOTE_BITRATE_START 20000000u
@@ -50,10 +58,6 @@
 #define REMOTE_RATE_PERIOD_US 100000u
 /* Share of the estimated bandwidth the encoder may use. */
 #define REMOTE_RATE_SHARE 0.85
-/* Frames waiting for the decoder; past it the client drops them all, and
-   the gap makes it ask for a key frame. The first key frame waits while
-   the decoder starts. */
-#define REMOTE_DECODE_QUEUE 16u
 /* Latency samples the status summarizes. */
 #define REMOTE_SAMPLES 256u
 /* The smallest Scene image worth streaming. */
@@ -89,11 +93,11 @@ typedef struct RemoteRing {
   uint64_t written_us[REMOTE_SLOTS];
 } RemoteRing;
 
-/* One received frame message, copied out of the transport. */
+/* One received frame message, copied out of the transport into one heap
+   block. */
 typedef struct RemoteFrame {
-  uint8_t *bytes;
   uint32_t size;
-  uint64_t received_us;
+  uint8_t bytes[];
 } RemoteFrame;
 
 /* What a frame's header carries, and the client's times for it. */
@@ -153,6 +157,8 @@ struct VkrEditorRemoteView {
   RemoteRing *ring;
   uint32_t bitrate_max;
   uint32_t bitrate;
+  /* The bitrate the encoder's thread sets deadlines from. */
+  VkrAtomicUint32 send_bitrate;
   uint64_t rate_checked_us;
   /* Editor thread: the pose time the next export shows. */
   uint64_t shown_pose_time_us;
@@ -176,31 +182,21 @@ struct VkrEditorRemoteView {
   uint16_t close_code;
   uint64_t frames_received;
   uint64_t bytes_received;
-  /* The decoder thread and its queue; `mutex` guards the queue, `quit`,
-     `latest` and the decoder's counts. */
+  /* The decoder thread and the frames it decodes in stream order; `mutex`
+     guards `order`, `quit`, `latest` and the decoder's counts. */
   bool8_t decoder_running;
   VkrThread decoder_thread;
   VkrMutex mutex;
   VkrCondVar cond;
-  RemoteFrame queue[REMOTE_DECODE_QUEUE];
-  uint32_t queue_first;
-  uint32_t queue_count;
+  VkrEditorRemoteOrder order;
   bool8_t quit;
   VkrVideoSurface *latest;
   RemoteFrameInfo latest_info;
   uint64_t latest_serial;
   uint64_t frames_decoded;
-  uint64_t frames_dropped;
-  /* Frames that arrived after a later one, and gaps where frames never
-     came. */
-  uint64_t frames_late;
-  uint64_t frame_gaps;
   uint64_t decode_failures;
-  VkrAtomicUint32 refresh_wanted;
   /* Decoder thread only. */
   VkrVideoDecoder *decoder;
-  uint64_t expected_frame;
-  bool8_t waiting_key;
   /* Editor thread: the frame shown and the latency of each shown frame. */
   VkrVideoSurface *shown;
   RemoteFrameInfo shown_info;
@@ -330,9 +326,18 @@ static void remote_send_frame(RemoteRing *ring, uint32_t slot,
   vkr_bit_write(&writer, encode_us, 32u);
   vkr_bit_write_bytes(&writer, packet->data, (uint32_t)packet->size);
   const uint32_t length = vkr_bit_writer_finish(&writer);
+  /* Twice the time the frame's bytes take at the stream's rate, so a key
+     frame on a slow link still arrives. */
+  const uint64_t bitrate =
+      vkr_atomic_uint32_load(&view->send_bitrate, VKR_MEMORY_ORDER_RELAXED);
+  const uint64_t transfer_us =
+      bitrate ? (uint64_t)length * 8u * 1000000u / bitrate : 0u;
+  const uint64_t deadline_us =
+      Min(Max((uint64_t)REMOTE_DEADLINE_US, 2u * transfer_us),
+          (uint64_t)REMOTE_DEADLINE_MAX_US);
   const VkrNetSendOptions options = {
       .flags = VKR_NET_SEND_IMMEDIATE,
-      .deadline_us = vkr_net_host_now(view->host) + REMOTE_DEADLINE_US,
+      .deadline_us = vkr_net_host_now(view->host) + deadline_us,
   };
   const VkrNetSendStatus status =
       length
@@ -470,49 +475,24 @@ static bool8_t remote_read_header(const uint8_t *bytes, uint32_t size,
   return *data_size > 0u;
 }
 
-static void remote_want_refresh(VkrEditorRemoteView *view) {
-  view->waiting_key = true_v;
-  vkr_atomic_uint32_store(&view->refresh_wanted, 1u, VKR_MEMORY_ORDER_RELEASE);
-  vkr_net_host_wake(view->host);
-}
-
-/* Decodes one frame in stream order; a gap or a rejected frame waits for
-   the key frame it asks for. */
-static void remote_decode(VkrEditorRemoteView *view, const RemoteFrame *frame) {
-  RemoteFrameInfo info = {.received_us = frame->received_us};
+/* Decodes the next frame of the stream; a refused one asks for a key
+   frame. */
+static void remote_decode(VkrEditorRemoteView *view, const RemoteFrame *frame,
+                          uint64_t received_us) {
+  RemoteFrameInfo info = {.received_us = received_us};
   const uint8_t *data = NULL;
   uint32_t data_size = 0u;
-  if (!remote_read_header(frame->bytes, frame->size, &info, &data,
-                          &data_size)) {
-    return;
-  }
-  const bool8_t in_order = info.frame_number == view->expected_frame;
-  if (!info.key_frame && (view->waiting_key || !in_order)) {
-    const bool8_t asked = !view->waiting_key;
-    if (asked) {
-      log_info("Remote view: expected frame %llu, got %llu; asking for a key "
-               "frame",
-               (unsigned long long)view->expected_frame,
-               (unsigned long long)info.frame_number);
-      remote_want_refresh(view);
-    }
-    vkr_mutex_lock(view->mutex);
-    view->frames_dropped += 1u;
-    view->frames_late += asked && info.frame_number < view->expected_frame;
-    view->frame_gaps += asked && info.frame_number > view->expected_frame;
-    vkr_mutex_unlock(view->mutex);
-    return;
-  }
   VkrVideoSurface *surface = NULL;
-  if (!vkr_video_decoder_decode(view->decoder, data, data_size, &surface)) {
-    remote_want_refresh(view);
+  if (!remote_read_header(frame->bytes, frame->size, &info, &data,
+                          &data_size) ||
+      !vkr_video_decoder_decode(view->decoder, data, data_size, &surface)) {
     vkr_mutex_lock(view->mutex);
+    vkr_editor_remote_order_decode_failed(&view->order);
     view->decode_failures += 1u;
     vkr_mutex_unlock(view->mutex);
+    vkr_net_host_wake(view->host);
     return;
   }
-  view->waiting_key = false_v;
-  view->expected_frame = info.frame_number + 1u;
   info.decoded_us = remote_now_us();
   vkr_mutex_lock(view->mutex);
   VkrVideoSurface *replaced = view->latest;
@@ -524,54 +504,75 @@ static void remote_decode(VkrEditorRemoteView *view, const RemoteFrame *frame) {
   vkr_video_surface_release(replaced);
 }
 
+/* Takes frames from the order as it hands them out. A frame held for the
+   reorder window is looked at again when another arrives or the client's
+   build wakes the thread. */
 static void *remote_decoder_main(void *argument) {
   VkrEditorRemoteView *view = argument;
   (void)vkr_thread_set_name("vkr.remote_view.decode");
   for (;;) {
+    VkrEditorRemoteOrderFrame frame = {0};
+    VkrEditorRemoteOrderStep step = VKR_EDITOR_REMOTE_ORDER_WAIT;
     vkr_mutex_lock(view->mutex);
-    while (!view->quit && view->queue_count == 0u) {
+    while (!view->quit) {
+      step =
+          vkr_editor_remote_order_next(&view->order, remote_now_us(), &frame);
+      if (step != VKR_EDITOR_REMOTE_ORDER_WAIT) {
+        break;
+      }
       vkr_cond_wait(view->cond, view->mutex);
     }
-    if (view->quit) {
-      vkr_mutex_unlock(view->mutex);
+    const bool8_t quit = view->quit;
+    const bool8_t ask = view->order.ask_now;
+    vkr_mutex_unlock(view->mutex);
+    if (quit) {
+      vkr_heap_free(frame.payload);
       return NULL;
     }
-    const RemoteFrame frame = view->queue[view->queue_first];
-    view->queue_first = (view->queue_first + 1u) % REMOTE_DECODE_QUEUE;
-    view->queue_count -= 1u;
-    vkr_mutex_unlock(view->mutex);
-    remote_decode(view, &frame);
-    vkr_heap_free(frame.bytes);
+    /* The host thread's step sends the key frame request. */
+    if (ask) {
+      vkr_net_host_wake(view->host);
+    }
+    if (step == VKR_EDITOR_REMOTE_ORDER_DECODE) {
+      remote_decode(view, frame.payload, frame.received_us);
+    }
+    vkr_heap_free(frame.payload);
   }
 }
 
-/* From the host thread: queues a received frame for the decoder. A full
-   queue means the decoder fell behind; its frames go, and the gap that
-   leaves makes the decoder ask for a key frame. */
+/* From the host thread: copies a received frame and hands it to the
+   order, which holds it until it decodes in stream order. */
 static void remote_queue_frame(VkrEditorRemoteView *view, const uint8_t *data,
                                uint32_t size) {
-  uint8_t *bytes = vkr_heap_alloc(size);
-  if (!bytes) {
+  RemoteFrameInfo info = {0};
+  const uint8_t *coded = NULL;
+  uint32_t coded_size = 0u;
+  if (!remote_read_header(data, size, &info, &coded, &coded_size)) {
     return;
   }
-  MemCopy(bytes, data, size);
+  RemoteFrame *frame = vkr_heap_alloc(sizeof(*frame) + size);
+  if (!frame) {
+    return;
+  }
+  frame->size = size;
+  MemCopy(frame->bytes, data, size);
   view->frames_received += 1u;
   view->bytes_received += size;
+  const VkrEditorRemoteOrderFrame held = {
+      .number = info.frame_number,
+      .key_frame = info.key_frame,
+      .received_us = remote_now_us(),
+      .payload = frame,
+  };
   vkr_mutex_lock(view->mutex);
-  if (view->queue_count == REMOTE_DECODE_QUEUE) {
-    for (uint32_t i = 0u; i < view->queue_count; ++i) {
-      vkr_heap_free(
-          view->queue[(view->queue_first + i) % REMOTE_DECODE_QUEUE].bytes);
-    }
-    view->frames_dropped += view->queue_count;
-    view->queue_count = 0u;
+  const bool8_t accepted = vkr_editor_remote_order_push(&view->order, &held);
+  if (accepted) {
+    vkr_cond_signal(view->cond);
   }
-  view->queue[(view->queue_first + view->queue_count) % REMOTE_DECODE_QUEUE] =
-      (RemoteFrame){
-          .bytes = bytes, .size = size, .received_us = remote_now_us()};
-  view->queue_count += 1u;
-  vkr_cond_signal(view->cond);
   vkr_mutex_unlock(view->mutex);
+  if (!accepted) {
+    vkr_heap_free(frame);
+  }
 }
 
 static bool8_t remote_decoder_start(VkrEditorRemoteView *view) {
@@ -580,7 +581,9 @@ static bool8_t remote_decoder_start(VkrEditorRemoteView *view) {
       !vkr_cond_create(view->allocator, &view->cond)) {
     return false_v;
   }
-  view->waiting_key = true_v;
+  /* Made again as the stream opens (remote_service_opened). */
+  vkr_editor_remote_order_init(&view->order, remote_now_us(),
+                               REMOTE_DEADLINE_US, REMOTE_REFRESH_US);
   view->quit = false_v;
   view->decoder_running = vkr_thread_create(
       view->allocator, &view->decoder_thread, remote_decoder_main, view);
@@ -597,12 +600,10 @@ static void remote_decoder_stop(VkrEditorRemoteView *view) {
     (void)vkr_thread_destroy(view->allocator, &view->decoder_thread);
     view->decoder_running = false_v;
   }
-  for (uint32_t i = 0u; i < view->queue_count; ++i) {
-    vkr_heap_free(
-        view->queue[(view->queue_first + i) % REMOTE_DECODE_QUEUE].bytes);
+  for (uint32_t i = 0u; i < view->order.count; ++i) {
+    vkr_heap_free(view->order.held[i].payload);
   }
-  view->queue_count = 0u;
-  view->queue_first = 0u;
+  view->order.count = 0u;
   if (view->cond) {
     (void)vkr_cond_destroy(view->allocator, &view->cond);
   }
@@ -664,6 +665,11 @@ static void remote_service_opened(void *context, VkrNetConnectionId connection,
     log_info("Remote view: a client opened the stream");
   } else if (view->role == REMOTE_CLIENT && connection == view->connection) {
     view->open = true_v;
+    /* The server sends a key frame as the stream opens. */
+    vkr_mutex_lock(view->mutex);
+    vkr_editor_remote_order_init(&view->order, remote_now_us(),
+                                 REMOTE_DEADLINE_US, REMOTE_REFRESH_US);
+    vkr_mutex_unlock(view->mutex);
     log_info("Remote view: showing the Scene of %s", view->address);
   }
 }
@@ -764,9 +770,20 @@ static void remote_step(void *context, uint64_t now_us) {
       }
     }
   }
-  if (view->role == REMOTE_CLIENT && view->open &&
-      vkr_atomic_uint32_exchange(&view->refresh_wanted, 0u,
-                                 VKR_MEMORY_ORDER_ACQ_REL)) {
+  bool8_t want_key = false_v;
+  VkrEditorRemoteOrder order = {0};
+  if (view->role == REMOTE_CLIENT && view->open) {
+    vkr_mutex_lock(view->mutex);
+    want_key = vkr_editor_remote_order_want_key(&view->order, remote_now_us());
+    order = view->order;
+    vkr_mutex_unlock(view->mutex);
+  }
+  if (want_key) {
+    log_info("Remote view: asking for a key frame (next frame %llu, %u "
+             "held, %llu gaps, %llu dropped)",
+             (unsigned long long)order.expected, order.count,
+             (unsigned long long)order.frame_gaps,
+             (unsigned long long)order.frames_dropped);
     uint8_t bytes[1];
     VkrBitWriter writer;
     vkr_bit_writer_init(&writer, bytes, sizeof(bytes));
@@ -948,6 +965,8 @@ bool8_t vkr_editor_remote_view_serve(
                           ? Max(bitrate_max_bps, (uint32_t)REMOTE_BITRATE_MIN)
                           : REMOTE_BITRATE_MAX;
   view->bitrate = Min(view->bitrate_max, (uint32_t)REMOTE_BITRATE_START);
+  vkr_atomic_uint32_store(&view->send_bitrate, view->bitrate,
+                          VKR_MEMORY_ORDER_RELAXED);
   if (!remote_start_network(view, &config)) {
     remote_reset(view);
     string_format(error, capacity, "Could not listen on %s.",
@@ -1090,6 +1109,8 @@ static void remote_server_update(VkrEditorRemoteView *view,
       view->bitrate = (uint32_t)vkr_clamp_f64(
           rate, (float64_t)REMOTE_BITRATE_MIN, (float64_t)view->bitrate_max);
     }
+    vkr_atomic_uint32_store(&view->send_bitrate, view->bitrate,
+                            VKR_MEMORY_ORDER_RELAXED);
     if (view->ring) {
       remote_ring_lock(view->ring);
       if (view->ring->encoder) {
@@ -1179,6 +1200,10 @@ static void remote_client_update(VkrEditorRemoteView *view,
   VkrVideoSurface *surface = NULL;
   RemoteFrameInfo info = {0};
   vkr_mutex_lock(view->mutex);
+  /* A frame held for the reorder window is looked at again each build. */
+  if (view->order.count) {
+    vkr_cond_signal(view->cond);
+  }
   if (view->latest && view->latest_serial != view->shown_serial) {
     surface = view->latest;
     vkr_video_surface_retain(surface);
@@ -1335,13 +1360,17 @@ VkrBakeryJson *vkr_editor_remote_view_status_json(VkrEditorRemoteView *view,
   vkr_bakery_json_set(
       arena, result, "frames_decoded",
       vkr_bakery_json_int(arena, (int64_t)view->frames_decoded));
+  const VkrEditorRemoteOrder *order = &view->order;
   vkr_bakery_json_set(
       arena, result, "frames_dropped",
-      vkr_bakery_json_int(arena, (int64_t)view->frames_dropped));
+      vkr_bakery_json_int(arena, (int64_t)order->frames_dropped));
   vkr_bakery_json_set(arena, result, "frames_late",
-                      vkr_bakery_json_int(arena, (int64_t)view->frames_late));
+                      vkr_bakery_json_int(arena, (int64_t)order->frames_late));
+  vkr_bakery_json_set(
+      arena, result, "frames_reordered",
+      vkr_bakery_json_int(arena, (int64_t)order->frames_reordered));
   vkr_bakery_json_set(arena, result, "frame_gaps",
-                      vkr_bakery_json_int(arena, (int64_t)view->frame_gaps));
+                      vkr_bakery_json_int(arena, (int64_t)order->frame_gaps));
   vkr_bakery_json_set(
       arena, result, "decode_failures",
       vkr_bakery_json_int(arena, (int64_t)view->decode_failures));

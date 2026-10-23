@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-22
+updated: 2026-10-23
 authority: adr
 ---
 
@@ -99,12 +99,19 @@ image and the client scales it.
    newest pose through `move_camera` in the same build, encodes a surface
    on the renderer's report and sends the frame from the encoder's
    callback. Frames are numbered only when they leave, so a gap means a
-   frame the transport dropped at its deadline. The bitrate is 0.85 × the
-   path's bandwidth estimate every 100 ms, between 2 Mbit/s and a cap
-   (default 40 Mbit/s). A client open or `REFRESH` makes the next frame a
-   key frame. The client queues up to 16 frames for a decoder thread,
-   decodes in frame order, and on a gap, a late frame or a refused frame
-   drops frames until the key frame it asks for; each build it shows the
+   frame the transport dropped at its deadline. A frame's deadline is two
+   frame intervals, or twice the time its bytes take at the stream's
+   bitrate when that is longer, at most 1 s, so a key frame on a slow link
+   still arrives. The bitrate is 0.85 × the path's bandwidth estimate every
+   100 ms, between 2 Mbit/s and a cap (default 40 Mbit/s). A client open or
+   `REFRESH` makes the next frame a key frame. The client's frame order
+   ([`editor_remote_order.c`](../../editor/src/editor_remote_order.c))
+   hands frames to a decoder thread in stream order. A frame that overtakes
+   its predecessor waits up to 33 ms for it; a gap that window does not
+   close, or a frame the decoder refuses, drops frames until a key frame,
+   which the client asks for at once and again every 500 ms until one
+   arrives. The order holds up to 64 frames, one second, which covers the
+   decoder's start on the first key frame. Each build the client shows the
    newest decoded frame and sends its pose. A server allows identity keys
    or, with none, anyone given its key; it takes one client. Agents drive
    it with `remote_view.serve`, `.connect`, `.stop` and `.status`; a
@@ -128,12 +135,13 @@ image and the client scales it.
   frame only while a client views; frames without an export or import are
   unchanged.
 - Frames in flight on the server are bounded by its four surfaces; the
-  client holds at most 16 queued frames and the renderer at most 16 wrapped
+  client holds at most 64 frames and the renderer at most 16 wrapped
   surfaces.
 - The stream is lossy H.264: on Bistro's plaza the client's image is
   34.4 dB PSNR from the server's own capture, 43 dB on a plain wall.
 - `DEADLINE` delivery is unordered; a frame that overtakes its predecessor
-  costs a key frame. No run has seen one.
+  waits up to 33 ms, and only a frame lost past that window costs a key
+  frame. No loopback run has seen either.
 - A Windows editor reports view streaming unavailable until its encoder
   exists.
 
@@ -173,8 +181,31 @@ The stream was 1274×700 at the 40 Mbit/s cap (the loopback estimate is far
 above it). Latency covers the last 256 frames shown, while the camera held
 still; poses stream every client build either way. "Server render" is the
 time from the export's hand-out in a build to the GPU finishing its copy,
-which includes the server's frame pipeline. Earlier runs each saw one gap
-with one refresh, which cost about 19 frames once.
+which includes the server's frame pipeline.
+
+Before the frame order, runs saw one gap as the stream started: the
+decoder's first key frame took long enough to overflow a 16-frame queue,
+which cost about 19 frames and a key frame. With the order, a run on
+2026-10-23 had no gap and dropped no frame (2127 frames sent, latency p50
+43.7 / p95 44.9 ms, 34.3 dB). The client still asks once, 500 ms after the
+stream opens, because the server's first frame takes that long while its
+encoder starts; the request merges with the open's key frame.
+`vulkan_renderer_tester --suite remote_order` checks the order: a frame
+that overtakes another inside the window decodes in order with no key
+frame asked, a gap past it asks one at once, a lost key frame is asked
+again every 500 ms, and late, duplicate and refused frames drop.
+
+The split check ran over loopback on 2026-10-23. A server with `--allow`
+the Mac's identity key and a client with `--identity` that key passed:
+2201 frames, latency p50 43.7 / p95 44.9 ms. A client with a fresh key
+stopped with "The server does not allow this editor's key.":
+
+```sh
+python3 tools/checks/check_view_stream.py --editor <editor> --role server \
+    --bind 0.0.0.0:7340 --allow <client identity key>
+python3 tools/checks/check_view_stream.py --editor <editor> --role client \
+    --address <server>:7340 --key <server key> --identity <identity file>
+```
 
 `--metal-validation server` and `--metal-validation client` each passed
 with Metal API validation on that side and no report; MetalFX's temporal
@@ -192,6 +223,6 @@ part of this.
 
 - The Windows encoder lands (Vulkan Video or Media Foundation), or a
   Windows server streams the desktop pipeline to a Mac.
-- A run between two computers shows loss: FEC, intra refresh and a short
-  reorder window become worth their cost.
+- A run between two computers shows loss the reorder window does not
+  absorb: FEC and intra refresh become worth their cost.
 - Raw input forwarding or a second client is needed.
