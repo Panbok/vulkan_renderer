@@ -166,6 +166,23 @@ existing 80% target.
 The 90% pressure-entry and 75% exit thresholds remain unchanged. Reusing capacity
 already charged to the managed cap does not require eviction to reach that target.
 Native placement still enforces the cap, alignment and fragmentation constraints.
+Streamed textures share those heaps with the other asset textures, a reload
+places its new chain before it releases the old one, and a first load whose
+placement the cap rejects retries every frame from its retained payload. So
+under the cap the material system's budget is that allowance less the other
+asset textures' live bytes (texture-owned live bytes less resident stream
+bytes) and less a headroom, the larger of 1/16 of the charged capacity and the
+largest asset texture the cap has rejected since one last placed
+(`asset_texture_blocked_bytes`, reported as `pending_texture_upload_bytes`,
+which also raises the projected usage into pressure)
+(`vkr_render_assets_refresh_texture_residency_budget`). Lowering then frees
+the room that loads and reloads need. Only the first rejection of a stall
+logs. Without this, Bistro at `VKR_METAL_MEMORY_BUDGET_MB=2600` (2026-10-23,
+M1 Pro, Release, `metal_bistro_texture_pressure`) stopped at
+`scene.texture_ready_timeout` with 560 of 632 textures resident against a
+1.797 GB allowance and logged 87,894 budget rejections; with it the run
+passed with 632 resident, 144 lowering steps, scene textures ready in 6.1 s
+and no rejection. Vulkan's allowance, which nothing caps, is unchanged.
 Application publishes resource completions before sampling this allowance and
 applying material textures. Active texture loads sample every frame; idle sampling
 keeps its 60-frame cadence. Newly charged texture heaps must be included before

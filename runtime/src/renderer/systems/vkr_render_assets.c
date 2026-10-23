@@ -490,6 +490,25 @@ void vkr_render_assets_refresh_texture_residency_budget(
     if (vkr_render_assets_texture_pressure_budget(
             device_memory, assets->texture_pressure_active, &texture_budget,
             &pressure_active)) {
+      /* Under a cap the asset texture heaps cannot grow, and streamed
+         textures share them with the other asset textures. A reload places
+         its new chain before it releases the old one, and a blocked first
+         load waits for room, so the streams' budget leaves out the other
+         textures and the larger of 1/16 of the heaps and the blocked load.
+         Lowering frees what the other textures and the headroom need;
+         without it, the heaps fill and every load retries. */
+      if (device_memory->texture_heap_capacity_capped) {
+        const uint64_t texture_bytes =
+            device_memory->owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes;
+        const uint64_t stream_bytes =
+            assets->material_system.texture_stream_resident_bytes;
+        const uint64_t other_bytes =
+            texture_bytes > stream_bytes ? texture_bytes - stream_bytes : 0u;
+        const uint64_t headroom =
+            Max(device_memory->texture_heap_capacity_bytes / 16u,
+                device_memory->pending_texture_upload_bytes);
+        texture_budget -= Min(texture_budget, other_bytes + headroom);
+      }
       vkr_material_system_set_texture_capacity_budget(
           &assets->material_system,
           pressure_active ? texture_budget : UINT64_MAX, texture_budget);

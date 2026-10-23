@@ -2107,6 +2107,9 @@ vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
   out_stats->texture_heap_capacity_bytes = metrics.texture_heap_capacity_bytes;
   out_stats->texture_heap_capacity_valid = true_v;
   out_stats->texture_heap_capacity_capped = true_v;
+  /* A texture load the managed cap blocks retries until the pressure
+     policy makes room for it. */
+  out_stats->pending_texture_upload_bytes = metrics.asset_texture_blocked_bytes;
   out_stats->heap_usage_valid = metrics.managed_budget_size > 0u;
   out_stats->driver_usage_bytes = metrics.driver_current_allocated_size;
   out_stats->driver_budget_bytes = metrics.driver_recommended_working_set_size;

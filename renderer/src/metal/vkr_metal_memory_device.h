@@ -70,6 +70,9 @@ typedef struct VkrMetalMemoryDeviceMetrics {
   uint64_t managed_budget_size;
   uint64_t managed_allocated_size;
   uint64_t texture_heap_capacity_bytes;
+  /* The largest asset texture the managed cap has rejected since an asset
+     texture last placed; zero without a blocked texture load. */
+  uint64_t asset_texture_blocked_bytes;
   uint64_t managed_peak_allocated_size;
   uint64_t external_allocation_count;
   uint64_t external_allocated_size;

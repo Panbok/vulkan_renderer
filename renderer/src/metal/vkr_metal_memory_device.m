@@ -38,6 +38,11 @@ struct VkrMetalMemoryDevice {
   uint64_t native_heap_total_count;
   uint64_t external_allocated_size;
   uint64_t transfer_ring_allocated_size;
+  /* The largest asset texture the managed cap has rejected since an asset
+     texture last placed, and whether that stall has been logged: a load the
+     cap blocks retries every frame, and only its first rejection logs. */
+  uint64_t asset_texture_blocked_bytes;
+  bool8_t asset_texture_reject_logged;
   id<MTLBuffer> upload_buffer;
   id<MTLBuffer> readback_buffer;
   id<MTLBuffer> publication_buffer;
@@ -298,15 +303,15 @@ vkr_metal_memory_heap_group(VkrGpuAllocationOwner owner, uint32_t kind) {
   return VKR_METAL_HEAP_PERSISTENT;
 }
 
-vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
+vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place_in_group(
     VkrMetalMemoryDevice *device, MTLSizeAndAlign size_align, uint32_t kind,
-    VkrGpuAllocationOwner owner, VkrMetalAllocationHandle *out_handle,
+    VkrMetalHeapGroup group, VkrMetalAllocationHandle *out_handle,
     VkrMetalPlacement *out_placement, uint32_t *out_heap_index) {
-  if (!size_align.size || !size_align.align ||
-      (size_align.align & (size_align.align - 1)))
-    return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
-  const VkrMetalHeapGroup group = vkr_metal_memory_heap_group(owner, kind);
-  /* Scene image realization reports rejection after its bounded retry. */
+  /* Scene image realization reports rejection after its bounded retry, and
+     an asset texture stall reports its first rejection. */
+  const bool8_t report_reject = group != VKR_METAL_HEAP_SCENE_IMAGES &&
+                                (group != VKR_METAL_HEAP_ASSET_TEXTURES ||
+                                 !device->asset_texture_reject_logged);
   uint32_t empty_index = UINT32_MAX;
   for (uint32_t i = 0; i < device->heap_slot_count; ++i) {
     VkrMetalNativeHeap *heap = &device->heaps[i];
@@ -342,8 +347,7 @@ vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
   const uint64_t available =
       device->managed_budget_size - vkr_metal_memory_managed_size(device);
   if (size_align.size > available) {
-    vkr_metal_memory_budget_reject(device, size_align.size,
-                                   group != VKR_METAL_HEAP_SCENE_IMAGES);
+    vkr_metal_memory_budget_reject(device, size_align.size, report_reject);
     return VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES;
   }
   uint64_t size = Max((uint64_t)size_align.size, device->heap_chunk_size);
@@ -384,8 +388,7 @@ vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
   if (native_heap.size < size ||
       !vkr_metal_memory_has_budget(device, charged_size)) {
     [native_heap release];
-    vkr_metal_memory_budget_reject(device, charged_size,
-                                   group != VKR_METAL_HEAP_SCENE_IMAGES);
+    vkr_metal_memory_budget_reject(device, charged_size, report_reject);
     return VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES;
   }
   VkrMetalMemoryStatus status =
@@ -416,6 +419,37 @@ vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
   [device->residency commit];
   vkr_metal_memory_snapshot(device, "memory.heap_create");
   return VKR_METAL_MEMORY_STATUS_OK;
+}
+
+/* Places a resource in its owner's heap group. An asset texture the cap
+   rejects is a blocked texture load, which the texture pressure policy
+   makes room for (VkrDeviceMemoryStats.pending_texture_upload_bytes); one
+   that places ends the stall. */
+vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
+    VkrMetalMemoryDevice *device, MTLSizeAndAlign size_align, uint32_t kind,
+    VkrGpuAllocationOwner owner, VkrMetalAllocationHandle *out_handle,
+    VkrMetalPlacement *out_placement, uint32_t *out_heap_index) {
+  if (!size_align.size || !size_align.align ||
+      (size_align.align & (size_align.align - 1)))
+    return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
+  const VkrMetalHeapGroup group = vkr_metal_memory_heap_group(owner, kind);
+  const VkrMetalMemoryStatus status = vkr_metal_memory_place_in_group(
+      device, size_align, kind, group, out_handle, out_placement,
+      out_heap_index);
+  if (group != VKR_METAL_HEAP_ASSET_TEXTURES)
+    return status;
+  if (status == VKR_METAL_MEMORY_STATUS_OK) {
+    if (device->asset_texture_reject_logged)
+      log_info("Metal asset textures place again under the managed GPU "
+               "budget");
+    device->asset_texture_blocked_bytes = 0u;
+    device->asset_texture_reject_logged = false_v;
+  } else if (status == VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES) {
+    device->asset_texture_blocked_bytes =
+        Max(device->asset_texture_blocked_bytes, (uint64_t)size_align.size);
+    device->asset_texture_reject_logged = true_v;
+  }
+  return status;
 }
 
 vkr_internal bool8_t vkr_metal_memory_reconcile_heap(
@@ -1058,6 +1092,8 @@ void vkr_metal_memory_device_get_metrics(
   out_metrics->max_native_heaps = device->max_allocations;
   out_metrics->managed_allocated_size = vkr_metal_memory_managed_size(device);
   out_metrics->external_allocated_size = device->external_allocated_size;
+  out_metrics->asset_texture_blocked_bytes =
+      device->asset_texture_blocked_bytes;
   out_metrics->transfer_ring_allocated_size =
       device->transfer_ring_allocated_size;
   for (uint32_t i = 0; i < device->heap_slot_count; ++i) {

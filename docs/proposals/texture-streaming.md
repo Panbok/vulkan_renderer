@@ -70,7 +70,9 @@ owns fetching bytes from a remote depot and their transport order, and
   75% and targets 80%; under Metal's cap the allowance never drops below the
   capacity already charged to asset textures
   (`vkr_render_assets_texture_pressure_budget` in
-  [vkr_render_assets.c](../../runtime/src/renderer/systems/vkr_render_assets.c)).
+  [vkr_render_assets.c](../../runtime/src/renderer/systems/vkr_render_assets.c)),
+  and the streams' budget leaves out the other asset textures and a reload
+  headroom (ADR-024).
   Metal's budget is the managed allocation cap; Vulkan's is the device-local
   heaps' `VK_EXT_memory_budget` budget, with asset textures in blocks of their
   own, and Vulkan evicts whole textures to reach the target (ADR-024).
