@@ -60,6 +60,9 @@ typedef struct VkrTexture {
      the first check. */
   bool8_t preview;
   uint64_t preview_arrivals;
+  /* Its smallest levels were copied on the GPU from the texture it replaces
+     (VkrTexturePreparedLoad.copy_source). */
+  bool8_t level_copy;
   /* Counts the texture's image publication and, for a prefilter, its IBL
      bakes. */
   VkrPublicationState publication;

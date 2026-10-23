@@ -460,6 +460,10 @@ typedef struct VkrDeviceInformation {
   bool8_t supports_texture_astc_hdr;
   bool8_t supports_texture_bc7;
   bool8_t supports_texture_bc5;
+  /** A texture publication may copy its smallest mips from another
+      published texture of the same chain on the GPU
+      (VkrTexturePreparedLoad.copy_source). */
+  bool8_t supports_texture_level_copy;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
   uint32_t vendor_id;

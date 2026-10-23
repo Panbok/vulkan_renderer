@@ -1,5 +1,7 @@
 #include "texture_vkt_tests.h"
 #include "filesystem/vkr_vfs.h"
+#include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "vkr_vkt_mips.h"
 #include "vkr_vkt_normal_roughness.h"
 #include "vkr_vkt_pack_contract.h"
@@ -654,6 +656,187 @@ static void test_texture_ktx2_remote_preview(void) {
   printf("  test_texture_ktx2_remote_preview PASSED\n");
 }
 
+/* The publications a level-copy test's native table received. */
+typedef struct TextureCopyFixture {
+  uint32_t publish_calls;
+  VkrTexturePreparedLoad last;
+} TextureCopyFixture;
+
+static VkrRendererError
+texture_copy_publish(void *state, VkrTextureHandle handle,
+                     const VkrTexturePreparedLoad *load) {
+  (void)handle;
+  TextureCopyFixture *fixture = state;
+  fixture->publish_calls++;
+  fixture->last = *load;
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+/* Loads `request` through the texture system as its loader does. */
+static bool8_t texture_copy_load(VkrTextureSystem *system,
+                                 VkrAllocator *allocator, const char *request,
+                                 VkrTextureHandle *out_handle,
+                                 VkrRendererError *out_error) {
+  const String8 name =
+      string8_create_from_cstr((const uint8_t *)request, strlen(request));
+  VkrTexturePreparedLoad prepared = {0};
+  if (!vkr_texture_system_prepare_load_from_file(
+          system, name, VKR_TEXTURE_RGBA_CHANNELS, allocator, &prepared,
+          out_error)) {
+    return false_v;
+  }
+  const bool8_t loaded = vkr_texture_system_finalize_prepared_load(
+      system, name, &prepared, out_handle, out_error);
+  vkr_texture_system_release_prepared_load(&prepared);
+  return loaded;
+}
+
+/* A reload that names the texture it replaces (`from`) uploads only the
+ * levels that texture lacks, with their own blocks, and leaves the others
+ * to a GPU copy: none for a shrink. Fails when a reload uploads levels its
+ * source holds, reports the wrong copied levels or resident bytes, keeps
+ * `from` in the texture's name, or accepts a source of another file. */
+static void test_texture_reload_copies_held_levels(void) {
+  printf("  Running test_texture_reload_copies_held_levels...\n");
+
+  char tmp_dir[1024];
+  snprintf(tmp_dir, sizeof(tmp_dir), "%stests/tmp", PROJECT_SOURCE_DIR);
+  assert(texture_vkt_test_make_dir(tmp_dir));
+  char source_path[1024];
+  char other_path[1024];
+  snprintf(source_path, sizeof(source_path), "%s/copy-blocks.vkt", tmp_dir);
+  snprintf(other_path, sizeof(other_path), "%s/copy-other.vkt", tmp_dir);
+  remove(source_path);
+  remove(other_path);
+  /* Levels of 16, 8 and 4 texels: 16, 4 and 1 blocks. */
+  assert(texture_vkt_test_write_blocks(source_path, VK_FORMAT_BC7_UNORM_BLOCK,
+                                       16u, 3u));
+  assert(texture_vkt_test_write_blocks(other_path, VK_FORMAT_BC7_UNORM_BLOCK,
+                                       16u, 3u));
+
+  Arena *arena = arena_create(KB(256), KB(256));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrDMemory string_memory = {0};
+  assert(vkr_dmemory_create(KB(64), KB(64), &string_memory));
+  VkrAllocator string_allocator = {.ctx = &string_memory};
+  vkr_dmemory_allocator_create(&string_allocator);
+  TextureCopyFixture fixture = {0};
+  const VkrAssetPublisher publisher = {
+      .state = &fixture,
+      .publish_texture = texture_copy_publish,
+  };
+  VkrTexture textures[8] = {0};
+  const char *keys[8] = {0};
+  for (uint32_t i = 0; i < ArrayCount(textures); ++i) {
+    textures[i].description.id = VKR_INVALID_ID;
+    textures[i].description.generation = VKR_INVALID_ID;
+  }
+  VkrTextureSystem system = {
+      .allocator = allocator,
+      .string_memory = string_memory,
+      .string_allocator = string_allocator,
+      .config = {.max_texture_count = ArrayCount(textures)},
+      .asset_publisher = &publisher,
+      .textures = {.data = textures, .length = ArrayCount(textures)},
+      .texture_map = vkr_hash_table_create_VkrTextureEntry(
+          &allocator, ArrayCount(textures)),
+      .texture_keys_by_index = keys,
+      .generation_counter = 1u,
+      .supports_texture_bc7 = true_v,
+  };
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  char request[256];
+
+  /* A texture capped at 4 texels holds the smallest level only, and a
+     renderer without level copy names no source. */
+  VkrTextureHandle capped = VKR_TEXTURE_HANDLE_INVALID;
+  assert(texture_copy_load(&system, &allocator,
+                           "tests/tmp/copy-blocks.vkt?max_extent=4", &capped,
+                           &error));
+  assert(vkr_texture_system_level_copy_levels(&system, capped) == 0u);
+  system.supports_texture_level_copy = true_v;
+  assert(vkr_texture_system_level_copy_levels(&system, capped) == 1u);
+
+  /* Growing to every level uploads the 16- and 8-texel levels only. */
+  snprintf(request, sizeof(request),
+           "tests/tmp/copy-blocks.vkt?max_extent=0&from=%u.%u.1", capped.id,
+           capped.generation);
+  const String8 grow_name =
+      string8_create_from_cstr((const uint8_t *)request, strlen(request));
+  VkrTexturePreparedLoad grow = {0};
+  assert(vkr_texture_system_prepare_load_from_file(&system, grow_name,
+                                                   VKR_TEXTURE_RGBA_CHANNELS,
+                                                   &allocator, &grow, &error));
+  assert(grow.description.width == 16u && grow.description.mip_levels == 3u);
+  assert(grow.upload_mip_levels == 3u && grow.upload_region_count == 2u);
+  assert(grow.copy_source.id == capped.id &&
+         grow.copy_source.generation == capped.generation);
+  assert(grow.copy_mip_levels == 1u && grow.copy_bytes == 16u);
+  uint64_t uploaded = 0u;
+  for (uint32_t r = 0u; r < grow.upload_region_count; ++r) {
+    const VkrTextureUploadRegion *region = &grow.upload_regions[r];
+    assert(region->mip_level == r);
+    assert(region->byte_size == (r == 0u ? 16u : 4u) * 16u);
+    const uint8_t *blocks = grow.upload_data + region->byte_offset;
+    for (uint32_t block = 0u; block < region->byte_size / 16u; ++block) {
+      assert(blocks[block * 16u] == 0xa0u + r);
+      assert(blocks[block * 16u + 1u] == block);
+    }
+    uploaded += region->byte_size;
+  }
+  VkrTextureHandle full = VKR_TEXTURE_HANDLE_INVALID;
+  assert(vkr_texture_system_finalize_prepared_load(&system, grow_name, &grow,
+                                                   &full, &error));
+  assert(fixture.publish_calls == 2u);
+  assert(fixture.last.copy_source.id == capped.id &&
+         fixture.last.copy_mip_levels == 1u);
+  const VkrTexture *full_texture =
+      vkr_texture_system_get_by_handle(&system, full);
+  assert(full_texture && full_texture->resident_bytes >= uploaded + 16u);
+  assert(strcmp(keys[full.id - 1u], "tests/tmp/copy-blocks.vkt?max_extent=0") ==
+         0);
+  vkr_texture_system_release_prepared_load(&grow);
+
+  /* Shrinking to 8 texels copies both levels it keeps and uploads none. */
+  snprintf(request, sizeof(request),
+           "tests/tmp/copy-blocks.vkt?max_extent=8&from=%u.%u.3", full.id,
+           full.generation);
+  VkrTextureHandle shrunk = VKR_TEXTURE_HANDLE_INVALID;
+  assert(texture_copy_load(&system, &allocator, request, &shrunk, &error));
+  assert(fixture.publish_calls == 3u);
+  assert(fixture.last.description.width == 8u &&
+         fixture.last.upload_mip_levels == 2u);
+  assert(fixture.last.upload_region_count == 0u &&
+         fixture.last.upload_data_size == 0u);
+  assert(fixture.last.copy_source.id == full.id &&
+         fixture.last.copy_mip_levels == 2u &&
+         fixture.last.copy_bytes == 5u * 16u);
+  assert(vkr_texture_system_get_by_handle(&system, shrunk)->resident_bytes ==
+         5u * 16u);
+
+  /* A texture of another file holds other blocks: the reload fails rather
+     than copy them. */
+  VkrTextureHandle other = VKR_TEXTURE_HANDLE_INVALID;
+  assert(texture_copy_load(&system, &allocator,
+                           "tests/tmp/copy-other.vkt?max_extent=0", &other,
+                           &error));
+  snprintf(request, sizeof(request),
+           "tests/tmp/copy-blocks.vkt?max_extent=2&from=%u.%u.3", other.id,
+           other.generation);
+  VkrTextureHandle refused = VKR_TEXTURE_HANDLE_INVALID;
+  assert(!texture_copy_load(&system, &allocator, request, &refused, &error));
+  assert(error == VKR_RENDERER_ERROR_INVALID_HANDLE);
+  assert(fixture.publish_calls == 4u);
+
+  vkr_dmemory_destroy(&string_memory);
+  arena_destroy(arena);
+  remove(source_path);
+  remove(other_path);
+  printf("  test_texture_reload_copies_held_levels PASSED\n");
+}
+
 /* A request's explicit `cs=` and `tc=` choose the sRGB or UNORM view of the
  * stored native blocks, as they chose the transcode target before; without
  * them the stored format stands. */
@@ -1055,6 +1238,7 @@ bool32_t run_texture_vkt_tests() {
   test_texture_ktx2_native_block_decode();
   test_texture_ktx2_load_dimension_cap();
   test_texture_ktx2_remote_preview();
+  test_texture_reload_copies_held_levels();
   test_texture_native_request_view();
   test_texture_source_only_request();
   test_normal_roughness_material_moments();

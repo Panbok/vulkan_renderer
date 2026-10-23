@@ -595,6 +595,11 @@ vkr_metal_packet_end_texture_upload_batch_adapter(void *state) {
 vkr_internal VkrRendererError vkr_metal_packet_publish_texture_adapter(
     void *state, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *texture) {
+  /* Metal reports no level copy (supports_texture_level_copy), so no load
+     names a copy source. */
+  if (texture && texture->copy_source.id != 0u) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
   return vkr_metal_packet_renderer_publish_prepared_texture(state, handle,
                                                             texture);
 }

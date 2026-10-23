@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-22
+updated: 2026-10-23
 authority: proposal
 ---
 # Texture streaming
@@ -60,8 +60,10 @@ owns fetching bytes from a remote depot and their transport order, and
   real budget increase or a Scene memory-relief generation
   ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). On Vulkan the
   G-buffer resolve measures each material's required extent and the budget
-  lowers mips beyond it first; Metal orders by demand epoch and size. Each
-  step reloads the whole file.
+  lowers mips beyond it first; Metal orders by demand epoch and size. On
+  Vulkan a step's reload copies the levels the replaced texture holds on the
+  GPU and reads and uploads only the levels it adds, none for a shrink
+  (ADR-012); Metal reloads every kept level.
 - **Budget owner.** The automatic policy derives the texture allowance from
   the heaps' usage and budget: pressure starts at 90% of the budget, ends below
   75% and targets 80%; under Metal's cap the allowance never drops below the
@@ -121,20 +123,22 @@ every material sample for a workflow id itself abandoned.
    orders lowering by need instead of draw epoch and size. Passes outside the
    camera view (shadows, probe captures, planar reflections, bakes) still
    read what the camera's demand keeps resident.
-2. **Trim without pressure.** Once growing a texture back is cheap
-   (item 3), lower textures to their measured need with no budget pressure,
-   so only the mips the camera needs stay resident (deferred by the owner on
-   2026-10-22 because each step reloads and republishes the texture).
-3. **Grow and shrink.** The backend adapter creates the new image, copies
-   the kept levels on the GPU and uploads the new level, read from the file
-   range of the levels it adds. It publishes the new slot or resource ID
-   after the copy completes and retires the old image after its last
-   submission (ADR-024). Material rows change through the existing
-   publication; per-draw work does not change.
-4. **Floor first.** Once growing uploads only the added levels, load each new
-   texture first at its 128-texel floor, so it appears at once at low
-   detail. Done as a second full load it took Bistro's full detail from 27 to
-   35 s on the RX 6700 XT, and the owner deferred it on 2026-10-22 (ADR-012).
+2. **Trim without pressure.** Lower textures to their measured need with no
+   budget pressure, so only the mips the camera needs stay resident
+   (deferred by the owner on 2026-10-22 because each step republishes the
+   texture). On Vulkan a step now copies the kept levels and reads only
+   added ones (item 3), but still publishes a new texture.
+3. **Grow and shrink on Metal.** Vulkan reloads copy the levels the replaced
+   texture holds and read and upload only the added ones (ADR-012, ADR-024).
+   Metal reports no `supports_texture_level_copy`; its adapter would copy
+   the levels with a blit encoder, retain the source until that command
+   buffer completes, and then report the capability.
+4. **Floor first.** Load each new texture first at its 128-texel floor, so
+   it appears at once at low detail. Done as a second full load it took
+   Bistro's full detail from 27 to 35 s on the RX 6700 XT, and the owner
+   deferred it on 2026-10-22 (ADR-012). The second step now uploads only the
+   levels above the floor, but each texture still publishes twice, which
+   that cost came from; it needs a measurement before it returns.
 5. **One priority for local and remote loads.** The network protocol's
    progressive phase requests remote mips smallest first by streaming source
    and screen size. It consumes the measured demand (ADR-024, and item 1 on

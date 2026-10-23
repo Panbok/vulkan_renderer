@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-22
+updated: 2026-10-23
 authority: adr
 ---
 
@@ -217,7 +217,10 @@ the budget, and over the budget only reloads that shrink may start. A raise
 scan, at most once per 16 epochs, doubles the caps of drawn textures, newest
 demand and smallest first, while the projected bytes stay under 7/8 of the
 budget, and clears a cap that reaches the source extent or the material limit.
-Reloads read the whole file and reallocate the image. The order follows the
+Each reload allocates a new image. On Vulkan it copies the levels the
+replaced texture already holds on the GPU and reads and uploads only the
+levels it adds ([ADR-012](012-texture-compression-pipeline.md)); Metal
+reloads every kept level. The order follows the
 material's draw epoch, not the mip a view needs; GPU feedback (the
 [texture streaming proposal](../proposals/texture-streaming.md)) would replace
 it. `asset.material.texture_stream.mip_lowered_total` and `mip_raised_total`
@@ -263,6 +266,22 @@ that texture's publication record in place until those rows retire, because
 retired materials release texture references by record index. Publishing a
 new generation into such a record returns `VKR_RENDERER_ERROR_RESOURCE_BUSY`,
 and the texture load retries on a later frame.
+
+A texture publication can name a copy source
+(`VkrTexturePreparedLoad.copy_source`, only where the device reports
+`supports_texture_level_copy`; Vulkan does, Metal does not yet). Vulkan
+accepts a live, initialized source of the same format whose smallest levels
+match the new image's at the same extents, and returns
+`VKR_RENDERER_ERROR_RESOURCE_BUSY` while the source still initializes. The
+pending initialization holds a `copy_reference_count` on the source record,
+which retirement waits for, so an unpublished source keeps its image. The
+frame that records the initialization moves the source from
+`SHADER_READ_ONLY_OPTIMAL` to `TRANSFER_SRC_OPTIMAL` after every earlier use
+on the queue, copies the levels with `vkCmdCopyImage2`, and returns it before
+the frame's passes. The commit after that submission drops the reference and
+raises the source's last use to the submission; uploads of the larger levels
+then follow through the bounded staging chunks. Texture images carry
+`TRANSFER_SRC` usage where their format allows it.
 
 Evidence (2026-10-22, RX 6700 XT 12 GB, Windows 10, Release,
 `vkr_harness profile --case tools/cases/local/vulkan_bistro_texture_pressure.case.json

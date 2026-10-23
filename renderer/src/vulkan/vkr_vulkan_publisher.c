@@ -112,6 +112,12 @@ vkr_internal void *vkr_vk_publication_source_alloc(VkrVulkanRenderer *renderer,
 vkr_internal void vkr_vk_release_texture_initialization(
     VkrVulkanRenderer *renderer,
     VkrVulkanPendingTextureInitialization *initialization) {
+  if (initialization->copy_pending) {
+    VkrVulkanPublishedTexture *source =
+        vkr_vk_texture_publication(renderer, initialization->copy_source);
+    if (source && source->copy_reference_count)
+      source->copy_reference_count--;
+  }
   vkr_vk_destroy_buffer(renderer, &initialization->staging);
   if (initialization->batches)
     vkr_allocator_free(renderer->allocator, initialization->batches,
@@ -205,9 +211,16 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
     VkrVulkanPendingTextureInitialization *out_initialization,
     VkrRendererError *out_error) {
   *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  /* Levels copied from another texture (copy_source) take no upload; a
+     load that copies every level uploads nothing. */
+  const bool8_t copies_all =
+      prepared && prepared->copy_mip_levels &&
+      prepared->copy_mip_levels == prepared->upload_mip_levels;
   if (!prepared || !out_image || !out_initialization ||
-      !prepared->upload_data || !prepared->upload_data_size ||
-      !prepared->upload_regions || !prepared->upload_region_count ||
+      (!copies_all &&
+       (!prepared->upload_data || !prepared->upload_data_size ||
+        !prepared->upload_regions || !prepared->upload_region_count)) ||
+      prepared->copy_mip_levels > prepared->upload_mip_levels ||
       !prepared->upload_mip_levels || !prepared->upload_array_layers ||
       prepared->upload_array_layers > VKR_TEXTURE_MAX_ARRAY_LAYERS ||
       (prepared->description.sample_count != 0u &&
@@ -233,6 +246,12 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
     log_error("Vulkan format %u lacks sampled/transfer-dst support", format);
     return false_v;
   }
+  /* A later reload copies this texture's levels into its replacement. */
+  const VkImageUsageFlags copy_usage =
+      (format_properties.optimalTilingFeatures &
+       VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)
+          ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+          : 0u;
 
   const bool8_t cube = prepared->description.type == VKR_TEXTURE_TYPE_CUBE_MAP;
   const bool8_t cube_array =
@@ -264,7 +283,8 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
           format,
           (cube || cube_array) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0u,
           VK_IMAGE_TYPE_2D, view_type,
-          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+              copy_usage,
           VK_SAMPLE_COUNT_1_BIT, prepared->description.allocation_owner,
           out_image, out_error)) {
     log_error("Vulkan failed to create prepared texture image "
@@ -285,12 +305,14 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
     return false_v;
   }
   const uint64_t staging_limit = renderer->config.upload_buffer_block_size;
+  const uint32_t uploaded_levels =
+      prepared->upload_mip_levels - prepared->copy_mip_levels;
   uint64_t batch_count_u64 = 0u;
   bool8_t valid = true_v;
   for (uint32_t i = 0u; i < prepared->upload_region_count; ++i) {
     const VkrTextureUploadRegion *source = &prepared->upload_regions[i];
     if (!source->width || !source->height || !source->depth ||
-        source->mip_level >= prepared->upload_mip_levels ||
+        source->mip_level >= uploaded_levels ||
         source->array_layer >= prepared->upload_array_layers ||
         source->byte_offset > prepared->upload_data_size ||
         source->byte_size > prepared->upload_data_size - source->byte_offset) {
@@ -314,10 +336,18 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
     batch_count_u64 += (uint64_t)source->depth *
                        ((blocks_h + rows_per_batch - 1u) / rows_per_batch);
   }
-  if (!valid || !batch_count_u64 || batch_count_u64 > UINT32_MAX) {
+  if (!valid || (!batch_count_u64 && !copies_all) ||
+      batch_count_u64 > UINT32_MAX) {
     log_error("Vulkan rejected texture upload region layout");
     vkr_vk_destroy_image(renderer, out_image);
     return false_v;
+  }
+  if (copies_all) {
+    *out_initialization = (VkrVulkanPendingTextureInitialization){
+        .texture = texture,
+    };
+    out_image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return true_v;
   }
   const uint32_t batch_count = (uint32_t)batch_count_u64;
   const uint64_t batches_size =
@@ -634,7 +664,10 @@ bool8_t vkr_vk_prepare_initializations(VkrVulkanRenderer *renderer) {
                 initialization->texture.id, initialization->texture.generation);
       return false_v;
     }
-    if (!initialization->writable &&
+    /* A pending copy records in every frame until one is submitted. */
+    renderer->pending_texture_initializations[i].copy_recording =
+        initialization->copy_pending;
+    if (!initialization->writable && !initialization->copy_pending &&
         (initialization->next_batch >= initialization->batch_count ||
          !initialization->staged_batch_count ||
          !initialization->staging.handle))
@@ -653,6 +686,62 @@ bool8_t vkr_vk_prepare_initializations(VkrVulkanRenderer *renderer) {
     }
   }
   return true_v;
+}
+
+/* Copies the source's smallest levels into the texture's smallest levels.
+   The source leaves SHADER_READ_ONLY_OPTIMAL only for the copy, after every
+   earlier read on the queue, and returns before anything later samples it. */
+vkr_internal void vkr_vk_record_texture_level_copy(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrVulkanPendingTextureInitialization *initialization,
+    const VkrVulkanPublishedTexture *texture) {
+  const VkrVulkanPublishedTexture *source =
+      vkr_vk_texture_publication(renderer, initialization->copy_source);
+  if (!source) {
+    log_fatal("Vulkan lost texture %u:%u while a copy referenced it",
+              initialization->copy_source.id,
+              initialization->copy_source.generation);
+    return;
+  }
+  const uint32_t copied = initialization->copy_mip_levels;
+  const uint32_t source_first = source->image.mip_levels - copied;
+  const uint32_t destination_first = texture->image.mip_levels - copied;
+  VkImageCopy2 regions[VKR_VULKAN_TEXTURE_MIP_MAX];
+  for (uint32_t i = 0u; i < copied; ++i) {
+    const uint32_t level = destination_first + i;
+    regions[i] = (VkImageCopy2){
+        .sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
+        .srcSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .mipLevel = source_first + i,
+                           .layerCount = 1u},
+        .dstSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .mipLevel = level,
+                           .layerCount = 1u},
+        .extent = {.width = Max(1u, texture->image.width >> level),
+                   .height = Max(1u, texture->image.height >> level),
+                   .depth = 1u},
+    };
+  }
+  vkr_vk_cmd_image_barrier_range(
+      command, source->image.handle, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
+      VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, source->image.mip_levels, 1u);
+  const VkCopyImageInfo2 copy_info = {
+      .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2,
+      .srcImage = source->image.handle,
+      .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      .dstImage = texture->image.handle,
+      .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .regionCount = copied,
+      .pRegions = regions,
+  };
+  vkCmdCopyImage2(command, &copy_info);
+  vkr_vk_cmd_image_barrier_range(
+      command, source->image.handle, VK_PIPELINE_STAGE_2_COPY_BIT,
+      VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, source->image.mip_levels, 1u);
 }
 
 void vkr_vk_record_texture_initializations(VkrVulkanRenderer *renderer,
@@ -677,13 +766,16 @@ void vkr_vk_record_texture_initializations(VkrVulkanRenderer *renderer,
           texture->image.mip_levels, texture->image.array_layers);
       continue;
     }
-    if (initialization->next_batch == 0u)
+    if (!initialization->destination_prepared)
       vkr_vk_cmd_image_barrier_range(
           command, texture->image.handle, VK_PIPELINE_STAGE_2_NONE,
           VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture->image.mip_levels,
           texture->image.array_layers);
+    if (initialization->copy_recording)
+      vkr_vk_record_texture_level_copy(renderer, command, initialization,
+                                       texture);
     for (uint32_t batch_offset = 0u;
          batch_offset < initialization->staged_batch_count; ++batch_offset) {
       const VkrVulkanTextureUploadBatch *batch =
@@ -1074,14 +1166,35 @@ bool8_t vkr_vk_commit_texture_initializations(VkrVulkanRenderer *renderer,
       initialization->staged_batch_count = 0u;
       progressed = true_v;
     }
+    /* This submission copied the source's levels: its last use moves to
+       the submission, and its image no longer waits for the copy. */
+    if (initialization->copy_recording) {
+      VkrVulkanPublishedTexture *source =
+          vkr_vk_texture_publication(renderer, initialization->copy_source);
+      if (!source || !source->copy_reference_count) {
+        log_error("Vulkan lost copy source %u:%u before initialization "
+                  "commit",
+                  initialization->copy_source.id,
+                  initialization->copy_source.generation);
+        return false_v;
+      }
+      source->copy_reference_count--;
+      source->last_use_submit_value =
+          Max(source->last_use_submit_value, retire_value);
+      initialization->copy_pending = false_v;
+      initialization->copy_recording = false_v;
+      progressed = true_v;
+    }
     if (progressed) {
+      initialization->destination_prepared = true_v;
       vkr_vk_advance_radiance_revision(renderer);
       texture->last_use_submit_value =
           Max(texture->last_use_submit_value, retire_value);
     }
     const bool8_t completed =
         initialization->writable ||
-        initialization->next_batch == initialization->batch_count;
+        (!initialization->copy_pending &&
+         initialization->next_batch == initialization->batch_count);
     if (completed) {
       texture->initialization_pending = false_v;
       readiness_changed = true_v;
@@ -1581,7 +1694,8 @@ vkr_internal bool8_t vkr_vk_retire_unreferenced_texture(
     VkrVulkanRenderer *renderer, VkrVulkanPublishedTexture *texture,
     uint64_t completed) {
   if (!texture->pending_retire || texture->material_reference_count != 0u ||
-      texture->ibl_reference_count != 0u || texture->initialization_pending ||
+      texture->ibl_reference_count != 0u ||
+      texture->copy_reference_count != 0u || texture->initialization_pending ||
       texture->last_use_submit_value > completed)
     return true_v;
 
@@ -2562,6 +2676,58 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
   return true_v;
 }
 
+/* The published texture whose smallest levels `prepared` copies, NULL with
+   `out_error` when it cannot serve: it must be live and initialized, in the
+   same format, sampled in SHADER_READ_ONLY_OPTIMAL, copyable, and hold the
+   copied levels at the extents the new image gives them. A source still
+   initializing is RESOURCE_BUSY, so the publication retries. */
+vkr_internal VkrVulkanPublishedTexture *
+vkr_vk_texture_copy_source(VkrVulkanRenderer *renderer,
+                           const VkrTexturePreparedLoad *prepared,
+                           VkrRendererError *out_error) {
+  *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  VkrVulkanPublishedTexture *source =
+      vkr_vk_published_texture(renderer, prepared->copy_source, NULL);
+  if (!source) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    return NULL;
+  }
+  if (source->initialization_pending) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_BUSY;
+    return NULL;
+  }
+  const VkFormat format = vkr_vk_texture_format(prepared->description.format);
+  VkFormatProperties format_properties;
+  vkGetPhysicalDeviceFormatProperties(
+      vkr_vulkan_device_physical(renderer->device), format, &format_properties);
+  const uint32_t copied = prepared->copy_mip_levels;
+  const VkrVulkanImage *image = &source->image;
+  if (!copied || copied > VKR_VULKAN_TEXTURE_MIP_MAX ||
+      prepared->description.type != VKR_TEXTURE_TYPE_2D ||
+      prepared->upload_array_layers != 1u || image->array_layers != 1u ||
+      image->format != format ||
+      image->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ||
+      image->mip_levels < copied ||
+      !(format_properties.optimalTilingFeatures &
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)) {
+    log_error("Vulkan cannot copy %u levels from texture %u:%u", copied,
+              source->handle.id, source->handle.generation);
+    return NULL;
+  }
+  const uint32_t source_level = image->mip_levels - copied;
+  const uint32_t destination_level = prepared->upload_mip_levels - copied;
+  if (Max(1u, image->width >> source_level) !=
+          Max(1u, prepared->description.width >> destination_level) ||
+      Max(1u, image->height >> source_level) !=
+          Max(1u, prepared->description.height >> destination_level)) {
+    log_error("Vulkan texture %u:%u levels do not match the copy's extents",
+              source->handle.id, source->handle.generation);
+    return NULL;
+  }
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return source;
+}
+
 vkr_internal VkrRendererError
 vkr_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
                              const VkrTexturePreparedLoad *prepared) {
@@ -2588,12 +2754,27 @@ vkr_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
               handle.generation);
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
+  VkrVulkanPublishedTexture *copy_source = NULL;
+  if (prepared->copy_source.id || prepared->copy_mip_levels) {
+    VkrRendererError copy_error = VKR_RENDERER_ERROR_NONE;
+    copy_source = vkr_vk_texture_copy_source(renderer, prepared, &copy_error);
+    if (!copy_source)
+      return copy_error;
+  }
   VkrVulkanPublishedTexture pending = {.handle = handle};
   VkrVulkanPendingTextureInitialization initialization = {0};
   VkrRendererError upload_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   const bool8_t image_uploaded =
       vkr_vk_upload_prepared_texture(renderer, prepared, handle, &pending.image,
                                      &initialization, &upload_error);
+  /* The source keeps its image until a submission copies from it; a failed
+     publication's release below drops the reference. */
+  if (image_uploaded && copy_source) {
+    initialization.copy_source = prepared->copy_source;
+    initialization.copy_mip_levels = prepared->copy_mip_levels;
+    initialization.copy_pending = true_v;
+    copy_source->copy_reference_count++;
+  }
   const bool8_t sampler_acquired =
       image_uploaded && vkr_vk_acquire_sampler(renderer, &prepared->description,
                                                prepared->upload_mip_levels,

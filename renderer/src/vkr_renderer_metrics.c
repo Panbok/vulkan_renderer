@@ -708,6 +708,8 @@ vkr_internal bool8_t vkr_renderer_metrics_register_assets(
   VKR_REGISTER_U64(material_texture_stream_mip_raised_total,
                    "asset.material.texture_stream.mip_raised_total",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(texture_level_copy_total, "asset.texture.level_copy_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(material_texture_demand_materials,
                    "asset.material.texture_demand.materials",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
@@ -2003,6 +2005,8 @@ vkr_internal void vkr_renderer_metrics_collect_assets(
               context->application.material_texture_stream_pressure_stalls);
   VKR_SET_U64(material_texture_stream_mip_lowered_total,
               context->application.material_texture_stream_mip_lowered_total);
+  VKR_SET_U64(texture_level_copy_total,
+              context->application.texture_level_copy_total);
   VKR_SET_U64(material_texture_stream_mip_raised_total,
               context->application.material_texture_stream_mip_raised_total);
   VKR_SET_U64(material_texture_demand_materials,

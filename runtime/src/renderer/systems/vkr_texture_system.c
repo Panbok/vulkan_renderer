@@ -74,6 +74,11 @@ typedef struct VkrTextureRequest {
   /* `preview=1`: a first load that may draw from the smallest mips of a
    * file still arriving from a remote (ADR-123). */
   bool8_t preview;
+  /* `from=<id>.<generation>.<levels>`: a reload whose texture replaces the
+   * named one, which holds the stored chain's smallest `copy_have` levels;
+   * the renderer copies those it keeps instead of reading them (ADR-012). */
+  VkrTextureHandle copy_source;
+  uint32_t copy_have;
 } VkrTextureRequest;
 
 typedef struct VkrTextureQueryColorScanResult {
@@ -346,6 +351,45 @@ vkr_internal bool8_t vkr_texture_scan_query_max_extent(String8 query,
   return found;
 }
 
+/* Finds the last valid `from=<id>.<generation>.<levels>` value; false when
+ * none is present. */
+vkr_internal bool8_t vkr_texture_scan_query_copy_source(
+    String8 query, VkrTextureHandle *out_source, uint32_t *out_have) {
+  const String8 from_key = string8_lit("from");
+  bool8_t found = false_v;
+
+  uint64_t cursor = 0;
+  String8 key = {0};
+  String8 value = {0};
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
+    if (!string8_equalsi(&key, &from_key) || !value.str) {
+      continue;
+    }
+    uint32_t parts[3] = {0u, 0u, 0u};
+    uint32_t part_count = 0u;
+    uint64_t start = 0u;
+    bool8_t valid = true_v;
+    for (uint64_t i = 0u; i <= value.length && valid; ++i) {
+      if (i < value.length && value.str[i] != '.') {
+        continue;
+      }
+      String8 part = string8_substring(&value, start, i);
+      valid = part_count < ArrayCount(parts) &&
+              string8_to_u32(&part, &parts[part_count]);
+      part_count++;
+      start = i + 1u;
+    }
+    if (valid && part_count == ArrayCount(parts) && parts[0] != 0u &&
+        parts[2] != 0u) {
+      *out_source = (VkrTextureHandle){.id = parts[0], .generation = parts[1]};
+      *out_have = parts[2];
+      found = true_v;
+    }
+  }
+
+  return found;
+}
+
 vkr_internal bool8_t vkr_texture_contains_token_ci(String8 name,
                                                    String8 token) {
   if (!name.str || !token.str || token.length == 0 ||
@@ -419,8 +463,8 @@ vkr_internal VkrTextureClass vkr_texture_class_from_filename_heuristic(
 /**
  * @brief Parse a texture request into a base path and desired color space.
  * @note Consumes `cs` (colorspace), `tc`/`class` (texture class),
- * `source=only` (bypass every `.vkt` candidate), `max_extent` (load limit)
- * and `preview` query parameters.
+ * `source=only` (bypass every `.vkt` candidate), `max_extent` (load limit),
+ * `preview` and `from` (copy source) query parameters.
  * @note Unknown `cs` values log once and default to linear.
  */
 vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
@@ -462,6 +506,9 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
   uint32_t max_extent = 0u;
   const bool8_t has_max_extent =
       vkr_texture_scan_query_max_extent(query, &max_extent);
+  VkrTextureHandle copy_source = VKR_TEXTURE_HANDLE_INVALID;
+  uint32_t copy_have = 0u;
+  (void)vkr_texture_scan_query_copy_source(query, &copy_source, &copy_have);
   return (VkrTextureRequest){
       .base_path = base_path,
       .colorspace = colorspace,
@@ -472,6 +519,8 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
       .has_max_extent = has_max_extent,
       .max_extent = max_extent,
       .preview = vkr_texture_scan_query_preview(query),
+      .copy_source = copy_source,
+      .copy_have = copy_have,
   };
 }
 
@@ -791,6 +840,8 @@ bool8_t vkr_texture_system_init(const VkrDeviceInformation *device_info,
   out_system->graphics_pipeline = device_info->graphics_pipeline;
   out_system->supports_texture_bc7 = device_info->supports_texture_bc7;
   out_system->supports_texture_bc5 = device_info->supports_texture_bc5;
+  out_system->supports_texture_level_copy =
+      device_info->supports_texture_level_copy;
 
   out_system->textures = array_create_filled_VkrTexture(
       &out_system->allocator, config->max_texture_count);
@@ -1470,6 +1521,10 @@ typedef struct VkrTextureDecodeResult {
   bool8_t preview;
   uint32_t limit_source_extent;
   uint32_t limit_source_mip_levels;
+  /* The smallest levels the upload leaves to a GPU copy from the request's
+     copy source, and their bytes; zeros when it uploads every level. */
+  uint32_t copy_mip_levels;
+  uint64_t copy_bytes;
   VkrRendererError error;
   bool8_t success;
 } VkrTextureDecodeResult;
@@ -1488,6 +1543,8 @@ typedef struct VkrTextureDecodeResult {
  * @param source_only Whether every packed sidecar must be bypassed
  * @param preview Whether a pending remote file may load its smallest mips
  * @param max_dimension The request's load limit, zero for none
+ * @param copy_have The stored chain's smallest levels the request's copy
+ * source holds, zero for none
  * @param system The texture system owning the cache guard
  * @param result The result of the texture decoding
  */
@@ -1502,6 +1559,7 @@ typedef struct VkrTextureDecodeJobPayload {
   bool8_t source_only;
   bool8_t preview;
   uint32_t max_dimension;
+  uint32_t copy_have;
   VkrTextureSystem *system;
 
   VkrTextureDecodeResult *result;
@@ -1534,6 +1592,8 @@ vkr_texture_decode_result_reset(VkrTextureDecodeResult *result) {
   result->preview = false_v;
   result->limit_source_extent = 0u;
   result->limit_source_mip_levels = 0u;
+  result->copy_mip_levels = 0u;
+  result->copy_bytes = 0u;
 }
 
 vkr_internal void
@@ -2227,18 +2287,20 @@ vkr_internal uint32_t vkr_texture_limit_skip(uint32_t extent,
 
 /* Builds the upload of the levels from `first` down of a single-layer 2D
  * chain of native blocks whose level bytes all lie in `prefix`, and reports
- * the whole stored chain. False when the shape or the level index does not
- * allow it. */
+ * the whole stored chain. With a copy source holding the chain's smallest
+ * `copy_have` levels, the upload leaves the kept ones among them to the
+ * GPU copy, and `prefix` need not hold their bytes. False when the shape or
+ * the level index does not allow it. */
 vkr_internal bool8_t vkr_texture_ktx2_prefix_upload(
     VkrTextureKtx2Decode *decode, const VkrTextureNativeBlockFormat *native,
     const uint8_t *prefix, uint64_t prefix_size, uint64_t file_size,
-    uint32_t max_dimension) {
+    uint32_t max_dimension, uint32_t copy_have) {
   ktxTexture *base_texture = decode->base_texture;
   VkrTextureDecodeResult *out_result = decode->out_result;
   const uint32_t levels = base_texture->numLevels;
   if (decode->texture_type != VKR_TEXTURE_TYPE_2D ||
       decode->physical_layers != 1u || levels <= 1u ||
-      levels > VKR_TEXTURE_CAP_MAX_REGIONS ||
+      levels > VKR_TEXTURE_CAP_MAX_REGIONS || copy_have > levels ||
       decode->ktx_texture->supercompressionScheme != KTX_SS_NONE ||
       VKR_KTX2_HEADER_BYTES +
               (uint64_t)levels * VKR_KTX2_LEVEL_INDEX_ENTRY_BYTES >
@@ -2276,23 +2338,34 @@ vkr_internal bool8_t vkr_texture_ktx2_prefix_upload(
       vkr_texture_limit_skip(Max(width, height), levels, max_dimension);
   const uint32_t first = Max(first_fit, skip);
   const uint32_t kept = levels - first;
+  /* The copied levels are the smallest kept ones; the upload ends above
+     them. */
+  const uint32_t copied = Min(copy_have, kept);
+  const uint32_t uploaded = kept - copied;
+  uint64_t copy_bytes = 0u;
+  for (uint32_t level = levels - copied; level < levels; ++level) {
+    copy_bytes += lengths[level];
+  }
   uint64_t upload_size = 0u;
-  for (uint32_t level = first; level < levels; ++level) {
+  for (uint32_t level = first; level < first + uploaded; ++level) {
     upload_size = AlignPow2(upload_size, VKR_TEXTURE_CAP_REGION_ALIGNMENT_MAX) +
                   lengths[level];
   }
-  uint8_t *upload_data = (uint8_t *)vkr_heap_alloc((size_t)upload_size);
-  VkrTextureUploadRegion *upload_regions =
-      (VkrTextureUploadRegion *)vkr_heap_alloc(sizeof(VkrTextureUploadRegion) *
-                                               kept);
-  decode->upload_data = upload_data;
-  decode->upload_regions = upload_regions;
-  if (!upload_data || !upload_regions) {
-    out_result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
+  uint8_t *upload_data = NULL;
+  VkrTextureUploadRegion *upload_regions = NULL;
+  if (uploaded > 0u) {
+    upload_data = (uint8_t *)vkr_heap_alloc((size_t)upload_size);
+    upload_regions = (VkrTextureUploadRegion *)vkr_heap_alloc(
+        sizeof(VkrTextureUploadRegion) * uploaded);
+    decode->upload_data = upload_data;
+    decode->upload_regions = upload_regions;
+    if (!upload_data || !upload_regions) {
+      out_result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
   }
   uint64_t cursor = 0u;
-  for (uint32_t level = first; level < levels; ++level) {
+  for (uint32_t level = first; level < first + uploaded; ++level) {
     cursor = AlignPow2(cursor, VKR_TEXTURE_CAP_REGION_ALIGNMENT_MAX);
     MemCopy(upload_data + cursor, prefix + offsets[level],
             (size_t)lengths[level]);
@@ -2313,7 +2386,7 @@ vkr_internal bool8_t vkr_texture_ktx2_prefix_upload(
   out_result->upload_data = upload_data;
   out_result->upload_data_size = upload_size;
   out_result->upload_regions = upload_regions;
-  out_result->upload_region_count = kept;
+  out_result->upload_region_count = uploaded;
   out_result->upload_mip_levels = kept;
   out_result->upload_array_layers = 1u;
   out_result->upload_format = format;
@@ -2331,6 +2404,8 @@ vkr_internal bool8_t vkr_texture_ktx2_prefix_upload(
   out_result->preview = first > skip;
   out_result->limit_source_extent = Max(width, height);
   out_result->limit_source_mip_levels = levels;
+  out_result->copy_mip_levels = copied;
+  out_result->copy_bytes = copy_bytes;
   out_result->success = true_v;
   decode->upload_data = NULL;
   decode->upload_regions = NULL;
@@ -2346,7 +2421,7 @@ vkr_internal bool8_t vkr_texture_decode_ktx2_prefix_bytes(
     const char *path_cstr, VkrTextureColorSpace colorspace,
     bool8_t has_explicit_colorspace, VkrTextureClass texture_class,
     bool8_t has_explicit_class, const uint8_t *prefix, uint64_t prefix_size,
-    uint64_t file_size, uint32_t max_dimension,
+    uint64_t file_size, uint32_t max_dimension, uint32_t copy_have,
     VkrTextureDecodeResult *out_result) {
   /* Without image data, KTX-Software reads and checks the header, level
      index, format descriptor and key/value data, which all lie in the
@@ -2374,7 +2449,7 @@ vkr_internal bool8_t vkr_texture_decode_ktx2_prefix_bytes(
     success =
         native && vkr_texture_ktx2_validate_shape(&decode) &&
         vkr_texture_ktx2_prefix_upload(&decode, native, prefix, prefix_size,
-                                       file_size, max_dimension);
+                                       file_size, max_dimension, copy_have);
     ktxTexture2_Destroy(decode.ktx_texture);
   }
   if (success) {
@@ -2417,7 +2492,7 @@ vkr_internal bool8_t vkr_texture_decode_ktx2_prefix(
   const bool8_t success = vkr_texture_decode_ktx2_prefix_bytes(
       allocator, system, vkt_path, path_cstr, colorspace,
       has_explicit_colorspace, texture_class, has_explicit_class, prefix,
-      prefix_size, file_size, max_dimension, out_result);
+      prefix_size, file_size, max_dimension, 0u, out_result);
   vkr_heap_free(prefix);
   return success;
 }
@@ -2426,14 +2501,18 @@ vkr_internal bool8_t vkr_texture_decode_ktx2_prefix(
  * smallest first, so the levels a load keeps, with the header, level index
  * and metadata before them, are the file's first bytes up to the end of the
  * largest kept level; a load limit that drops levels reads only those.
- * False, with the result as it was, when the limit keeps every
- * level, the file is still arriving from a remote, or it has another shape;
- * the caller then reads it whole. */
+ * With a copy source holding the chain's smallest `copy_have` levels, it
+ * reads the metadata and only the kept levels above those, which follow
+ * them in the file, and leaves the rest of its buffer unread (ADR-012).
+ * False, with the result as it was, when the limit keeps every level and
+ * nothing is copied, the file is still arriving from a remote, or it has
+ * another shape; the caller then reads it whole. */
 vkr_internal bool8_t vkr_texture_decode_ktx2_ranged(
     VkrAllocator *allocator, VkrTextureSystem *system, String8 vkt_path,
     VkrTextureColorSpace colorspace, bool8_t has_explicit_colorspace,
     VkrTextureClass texture_class, bool8_t has_explicit_class,
-    uint32_t max_dimension, VkrTextureDecodeResult *out_result) {
+    uint32_t max_dimension, uint32_t copy_have,
+    VkrTextureDecodeResult *out_result) {
   char *path_cstr = vkr_texture_path_to_cstr(allocator, vkt_path);
   if (!path_cstr) {
     return false_v;
@@ -2473,12 +2552,12 @@ vkr_internal bool8_t vkr_texture_decode_ktx2_ranged(
   const uint32_t levels = vkr_load_le_u32(header + 40u);
   const uint32_t supercompression = vkr_load_le_u32(header + 44u);
   if (levels <= 1u || levels > VKR_TEXTURE_CAP_MAX_REGIONS ||
-      supercompression != 0u) {
+      supercompression != 0u || copy_have > levels) {
     goto cleanup;
   }
   const uint32_t skip =
       vkr_texture_limit_skip(Max(width, height), levels, max_dimension);
-  if (skip == 0u) {
+  if (skip == 0u && copy_have == 0u) {
     goto cleanup;
   }
   const uint64_t index_bytes =
@@ -2497,17 +2576,44 @@ vkr_internal bool8_t vkr_texture_decode_ktx2_ranged(
     goto cleanup;
   }
   const uint64_t prefix_size = offset + length;
+  /* Without a copy the whole prefix is read. With one, the metadata ends
+     where the smallest level starts, and the uploaded levels run from the
+     smallest of them to the prefix's end. */
+  uint64_t metadata_end = prefix_size;
+  uint64_t upload_start = prefix_size;
+  if (copy_have > 0u) {
+    const uint32_t copied = Min(copy_have, levels - skip);
+    metadata_end = vkr_load_le_u64(header + VKR_KTX2_HEADER_BYTES +
+                                   (uint64_t)(levels - 1u) *
+                                       VKR_KTX2_LEVEL_INDEX_ENTRY_BYTES);
+    if (copied < levels - skip) {
+      upload_start = vkr_load_le_u64(header + VKR_KTX2_HEADER_BYTES +
+                                     (uint64_t)(levels - copied - 1u) *
+                                         VKR_KTX2_LEVEL_INDEX_ENTRY_BYTES);
+    }
+    if (metadata_end > prefix_size || upload_start > prefix_size ||
+        metadata_end > upload_start) {
+      goto cleanup;
+    }
+  }
   prefix = (uint8_t *)vkr_heap_alloc((size_t)prefix_size);
   if (!prefix || file_seek(&fh, 0u) != FILE_ERROR_NONE ||
-      file_read_into(&fh, prefix, prefix_size, &bytes_read) !=
+      file_read_into(&fh, prefix, metadata_end, &bytes_read) !=
           FILE_ERROR_NONE ||
-      bytes_read != prefix_size) {
+      bytes_read != metadata_end) {
+    goto cleanup;
+  }
+  if (upload_start < prefix_size &&
+      (file_seek(&fh, upload_start) != FILE_ERROR_NONE ||
+       file_read_into(&fh, prefix + upload_start, prefix_size - upload_start,
+                      &bytes_read) != FILE_ERROR_NONE ||
+       bytes_read != prefix_size - upload_start)) {
     goto cleanup;
   }
   success = vkr_texture_decode_ktx2_prefix_bytes(
       allocator, system, vkt_path, path_cstr, colorspace,
       has_explicit_colorspace, texture_class, has_explicit_class, prefix,
-      prefix_size, file_size, max_dimension, out_result);
+      prefix_size, file_size, max_dimension, copy_have, out_result);
 
 cleanup:
   vkr_heap_free(prefix);
@@ -2564,11 +2670,11 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
           job->has_explicit_class, job->max_dimension, result)) {
     return true_v;
   }
-  if (selected_vkt.str &&
-      vkr_texture_decode_ktx2_ranged(
-          scratch_allocator, job->system, selected_vkt, job->colorspace,
-          job->has_explicit_colorspace, job->texture_class,
-          job->has_explicit_class, job->max_dimension, result)) {
+  if (selected_vkt.str && vkr_texture_decode_ktx2_ranged(
+                              scratch_allocator, job->system, selected_vkt,
+                              job->colorspace, job->has_explicit_colorspace,
+                              job->texture_class, job->has_explicit_class,
+                              job->max_dimension, job->copy_have, result)) {
     return true_v;
   }
   if (!selected_vkt.str ||
@@ -2742,6 +2848,18 @@ bool8_t vkr_texture_system_load_limit_grows(VkrTextureSystem *system,
 
 /* The `.vkt` a texture's name resolves to, allocated from `allocator`;
    an empty path when it has none. */
+uint32_t vkr_texture_system_level_copy_levels(VkrTextureSystem *system,
+                                              VkrTextureHandle handle) {
+  const VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!system->supports_texture_level_copy || !texture || !texture->handle ||
+      texture->limit_source_mip_levels == 0u ||
+      texture->description.type != VKR_TEXTURE_TYPE_2D ||
+      !vkr_publication_state_confirmed(&texture->publication)) {
+    return 0u;
+  }
+  return texture->description.mip_levels;
+}
+
 vkr_internal FilePath vkr_texture_system_file_of(VkrTextureSystem *system,
                                                  VkrTextureHandle handle,
                                                  VkrAllocator *allocator) {
@@ -2921,6 +3039,7 @@ bool8_t vkr_texture_system_prepare_load_from_file(
       .max_dimension = request.has_max_extent
                            ? request.max_extent
                            : system->config.max_load_dimension,
+      .copy_have = request.copy_have,
       .system = system,
       .result = &decode_result,
   };
@@ -2935,9 +3054,15 @@ bool8_t vkr_texture_system_prepare_load_from_file(
   vkr_texture_decode_job_run(&fake_ctx, &job_payload);
   vkr_allocator_end_scope(&decode_scope, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
 
-  const bool8_t has_upload_payload = decode_result.upload_data &&
-                                     decode_result.upload_regions &&
-                                     decode_result.upload_region_count > 0;
+  /* A reload whose copy source holds every level it keeps uploads
+     nothing. */
+  const bool8_t copies_all =
+      decode_result.copy_mip_levels > 0u &&
+      decode_result.copy_mip_levels == decode_result.upload_mip_levels;
+  const bool8_t has_upload_payload =
+      copies_all ||
+      (decode_result.upload_data && decode_result.upload_regions &&
+       decode_result.upload_region_count > 0);
   if (!decode_result.success ||
       (!decode_result.decoded_pixels && !has_upload_payload)) {
     *out_error = decode_result.error;
@@ -3017,6 +3142,11 @@ bool8_t vkr_texture_system_prepare_load_from_file(
   out_prepared->limit_source_extent = limit_source_extent;
   out_prepared->limit_source_mip_levels = limit_source_mip_levels;
   out_prepared->preview = decode_result.preview;
+  if (decode_result.copy_mip_levels > 0u) {
+    out_prepared->copy_source = request.copy_source;
+    out_prepared->copy_mip_levels = decode_result.copy_mip_levels;
+    out_prepared->copy_bytes = decode_result.copy_bytes;
+  }
 
   if (has_upload_payload) {
     out_prepared->upload_data = decode_result.upload_data;
@@ -3092,26 +3222,38 @@ bool8_t vkr_texture_system_prepare_load_from_file(
   return true_v;
 }
 
-/* A texture name of at most this many bytes loses its `preview` query
-   when the load it names is not a preview. */
+/* A texture name of at most this many bytes loses its `from` query, and
+   its `preview` query when the load it names is not a preview. */
 #define VKR_TEXTURE_PREVIEW_NAME_MAX 2048u
 
-/* `name` without its `preview` query pairs, written to `buffer`; `name`
-   itself when it has none or does not fit. A request that asked for a
-   preview but loaded every mip within its limit then shares the texture
-   of the same request without it. */
-vkr_internal String8 vkr_texture_name_without_preview(String8 name,
-                                                      char *buffer,
-                                                      uint64_t capacity) {
+/* Whether `key` is a query that names how a request loads rather than
+   what it loads: `from` always, `preview` when `drop_preview`. */
+vkr_internal bool8_t vkr_texture_name_drops_key(String8 key,
+                                                bool8_t drop_preview) {
+  const String8 preview_key = string8_lit("preview");
+  const String8 from_key = string8_lit("from");
+  return string8_equalsi(&key, &from_key) ||
+         (drop_preview && string8_equalsi(&key, &preview_key));
+}
+
+/* `name` without its `from` query pairs, and without its `preview` pairs
+   when `drop_preview`, written to `buffer`; `name` itself when it has none
+   or does not fit. A request that asked for a preview but loaded every mip
+   within its limit then shares the texture of the same request without
+   it, and a reload that copied levels shares the texture of a load that
+   read them. */
+vkr_internal String8 vkr_texture_canonical_name(String8 name,
+                                                bool8_t drop_preview,
+                                                char *buffer,
+                                                uint64_t capacity) {
   String8 query = {0};
   const String8 base = string8_split_query(name, &query);
-  const String8 preview_key = string8_lit("preview");
   bool8_t found = false_v;
   uint64_t cursor = 0u;
   String8 key = {0};
   String8 value = {0};
   while (string8_query_next_pair(query, &cursor, &key, &value)) {
-    found = found || string8_equalsi(&key, &preview_key);
+    found = found || vkr_texture_name_drops_key(key, drop_preview);
   }
   if (!found || name.length >= capacity) {
     return name;
@@ -3122,7 +3264,7 @@ vkr_internal String8 vkr_texture_name_without_preview(String8 name,
   uint32_t kept = 0u;
   cursor = 0u;
   while (string8_query_next_pair(query, &cursor, &key, &value)) {
-    if (string8_equalsi(&key, &preview_key)) {
+    if (vkr_texture_name_drops_key(key, drop_preview)) {
       continue;
     }
     /* The kept pairs are no longer than the name they come from. */
@@ -3139,6 +3281,35 @@ vkr_internal String8 vkr_texture_name_without_preview(String8 name,
   return string8_create((uint8_t *)buffer, length);
 }
 
+/* Whether `prepared`'s copy source still holds the levels its upload left
+   out: a live, confirmed texture of the same file and stored chain, in the
+   same format, with at least `copy_mip_levels` levels. */
+vkr_internal bool8_t
+vkr_texture_system_copy_source_matches(VkrTextureSystem *system, String8 name,
+                                       const VkrTexturePreparedLoad *prepared) {
+  const VkrTexture *source =
+      vkr_texture_system_get_by_handle(system, prepared->copy_source);
+  if (!source || !source->handle ||
+      !vkr_publication_state_confirmed(&source->publication) ||
+      source->description.type != VKR_TEXTURE_TYPE_2D ||
+      source->description.format != prepared->description.format ||
+      source->description.mip_levels < prepared->copy_mip_levels ||
+      source->limit_source_extent != prepared->limit_source_extent ||
+      source->limit_source_mip_levels != prepared->limit_source_mip_levels) {
+    return false_v;
+  }
+  const char *source_key =
+      system->texture_keys_by_index[prepared->copy_source.id - 1u];
+  if (!source_key) {
+    return false_v;
+  }
+  String8 source_name = string8_create_from_cstr((const uint8_t *)source_key,
+                                                 string_length(source_key));
+  const String8 source_base = string8_split_query(source_name, NULL);
+  const String8 base = string8_split_query(name, NULL);
+  return string8_equals(&source_base, &base);
+}
+
 bool8_t vkr_texture_system_finalize_prepared_load(
     VkrTextureSystem *system, String8 name, VkrTexturePreparedLoad *prepared,
     VkrTextureHandle *out_handle, VkrRendererError *out_error) {
@@ -3150,15 +3321,17 @@ bool8_t vkr_texture_system_finalize_prepared_load(
 
   name = vkr_texture_strip_resource_key_prefix(name);
   char unpreviewed[VKR_TEXTURE_PREVIEW_NAME_MAX];
-  if (!prepared->preview) {
-    name = vkr_texture_name_without_preview(name, unpreviewed,
-                                            sizeof(unpreviewed));
-  }
+  name = vkr_texture_canonical_name(name, !prepared->preview, unpreviewed,
+                                    sizeof(unpreviewed));
   *out_handle = VKR_TEXTURE_HANDLE_INVALID;
   *out_error = VKR_RENDERER_ERROR_NONE;
 
-  if (!prepared->upload_data || !prepared->upload_regions ||
-      prepared->upload_region_count == 0 || prepared->upload_data_size == 0) {
+  const bool8_t copies_all =
+      prepared->copy_mip_levels > 0u &&
+      prepared->copy_mip_levels == prepared->upload_mip_levels;
+  if (!copies_all &&
+      (!prepared->upload_data || !prepared->upload_regions ||
+       prepared->upload_region_count == 0 || prepared->upload_data_size == 0)) {
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -3176,6 +3349,13 @@ bool8_t vkr_texture_system_finalize_prepared_load(
     };
     *out_error = VKR_RENDERER_ERROR_NONE;
     return true_v;
+  }
+
+  if (prepared->copy_mip_levels > 0u &&
+      !vkr_texture_system_copy_source_matches(system, name, prepared)) {
+    /* The bytes of the levels it would copy were never read. */
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    return false_v;
   }
 
   const VkrAssetPublisher *publisher = system->asset_publisher;
@@ -3205,11 +3385,12 @@ bool8_t vkr_texture_system_finalize_prepared_load(
   VkrTexture *texture = &system->textures.data[free_slot_index];
   MemZero(texture, sizeof(*texture));
   texture->description = prepared->description;
-  texture->resident_bytes = prepared->upload_data_size;
+  texture->resident_bytes = prepared->upload_data_size + prepared->copy_bytes;
   texture->limit_source_extent = prepared->limit_source_extent;
   texture->limit_source_mip_levels = prepared->limit_source_mip_levels;
   texture->preview = prepared->preview;
   texture->preview_arrivals = UINT64_MAX;
+  texture->level_copy = prepared->copy_mip_levels > 0u;
   texture->description.id = free_slot_index + 1;
   if (texture->description.generation == VKR_INVALID_ID) {
     texture->description.generation = system->generation_counter++;

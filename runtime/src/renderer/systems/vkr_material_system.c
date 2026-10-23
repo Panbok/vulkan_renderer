@@ -386,6 +386,10 @@ static void vkr_material_system_remove_texture_stream(VkrMaterialSystem *system,
    terminator. */
 #define VKR_MATERIAL_TEXTURE_LIMIT_QUERY_MAX 34u
 
+/* Room for a reload's `&from=` with three ten-digit values; a path without
+   it reloads by reading every level. */
+#define VKR_MATERIAL_TEXTURE_COPY_QUERY_MAX 38u
+
 /* Whether a stream's path leaves room for the load limit's query. A path
  * without it loads under the texture system's own limit and never reloads. */
 static bool8_t
@@ -428,7 +432,9 @@ static bool8_t vkr_material_stream_stale(VkrMaterialSystem *system,
  * at different limits never share a texture. A load outside a replacement
  * asks for a preview: a file still arriving from a remote then draws from
  * its smallest mips, and the limit's reload brings the rest; a reload that
- * shrinks a preview loads complete from those mips. */
+ * shrinks a preview loads complete from those mips. A reload names the
+ * texture it replaces in `from` when the renderer can copy the levels both
+ * hold, so it reads and uploads only the levels it adds (ADR-012). */
 static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
                                            VkrMaterialTextureStream *stream) {
   uint32_t length = stream->path_length;
@@ -442,6 +448,17 @@ static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
         stream->path + length, VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX - length,
         "%cmax_extent=%u%s", has_query ? '&' : '?',
         vkr_material_stream_limit(system, stream), preview ? "&preview=1" : "");
+    const uint32_t copy_levels =
+        stream->reload ? vkr_texture_system_level_copy_levels(
+                             system->texture_system, stream->replaces)
+                       : 0u;
+    if (copy_levels > 0u && length + VKR_MATERIAL_TEXTURE_COPY_QUERY_MAX <
+                                VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX) {
+      length += (uint32_t)string_format(
+          stream->path + length, VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX - length,
+          "&from=%u.%u.%u", stream->replaces.id, stream->replaces.generation,
+          copy_levels);
+    }
   }
   stream->path[length] = '\0';
   return string8_create((uint8_t *)stream->path, length);

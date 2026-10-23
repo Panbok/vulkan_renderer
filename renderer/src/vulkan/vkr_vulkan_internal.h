@@ -3471,6 +3471,10 @@ typedef struct VkrVulkanPublishedTexture {
   uint32_t sampler_record_index;
   uint32_t material_reference_count;
   uint32_t ibl_reference_count;
+  /** Pending initializations that copy levels from this image and have not
+      been submitted; retirement waits for them, and each submission that
+      copies raises last_use_submit_value. */
+  uint32_t copy_reference_count;
   uint64_t last_use_submit_value;
   uint32_t storage_slot_count;
   bool8_t initialization_pending;
@@ -3555,6 +3559,17 @@ typedef struct VkrVulkanPendingTextureInitialization {
   uint32_t batch_count;
   uint32_t next_batch;
   uint32_t staged_batch_count;
+  /** The texture whose smallest `copy_mip_levels` levels fill this image's
+      smallest levels (VkrTexturePreparedLoad.copy_source). `copy_pending`
+      holds a copy_reference_count on it until a submission copies them;
+      `copy_recording` marks the frame being recorded as that submission. */
+  VkrTextureHandle copy_source;
+  uint32_t copy_mip_levels;
+  bool8_t copy_pending;
+  bool8_t copy_recording;
+  /** A submission moved the image out of UNDEFINED; later ones keep its
+      contents. */
+  bool8_t destination_prepared;
   bool8_t writable;
   bool8_t upload_data_accounted;
 } VkrVulkanPendingTextureInitialization;

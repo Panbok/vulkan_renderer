@@ -1,5 +1,5 @@
 #pragma once
-#include "vkr_renderer.h"
+#include "vkr_render_resources.h"
 
 /** Who holds a prepared texture's `upload_data` and `upload_regions` while
  * the renderer's table (vkr_publication_queue.c) records its publication. A
@@ -44,4 +44,13 @@ typedef struct VkrTexturePreparedLoad {
      of the whole file at the same limit replaces (ADR-123). The texture
      system keeps it with the texture; the renderer ignores it. */
   bool8_t preview;
+  /* A published texture of the same stored chain whose smallest
+     `copy_mip_levels` levels the renderer copies on the GPU into this
+     texture's smallest levels; the upload regions hold only the larger
+     levels, or none (ADR-012). An invalid handle for none. `copy_bytes` is
+     what those levels occupy, for residency accounting. Only a renderer
+     whose device reports `supports_texture_level_copy` accepts one. */
+  VkrTextureHandle copy_source;
+  uint32_t copy_mip_levels;
+  uint64_t copy_bytes;
 } VkrTexturePreparedLoad;

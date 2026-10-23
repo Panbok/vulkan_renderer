@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-22
+updated: 2026-10-23
 authority: adr
 ---
 # ADR-012: Host-native KTX2 texture artifacts
@@ -202,6 +202,35 @@ appears at once, took full detail from 27 to 35 s, because each texture
 then loads twice through publication; the owner deferred it (2026-10-22)
 until growing a texture copies its kept levels on the GPU (texture streaming
 proposal).
+
+A material texture reload names the texture it replaces in its request,
+`from=<id>.<generation>.<levels>`, when the renderer reports
+`supports_texture_level_copy` (Vulkan; Metal does not yet) and that texture
+is a confirmed 2D texture a limit can shorten. Both hold suffixes of one
+stored chain, so the replaced texture already holds the reload's smallest
+levels, or all of them for a shrink. The load reads the header, level index
+and metadata, which end where the smallest level starts, and only the byte
+range of the kept levels above those the source holds; its upload carries
+just those levels, none for a shrink, and the prepared load names the copy
+source, the copied level count and their bytes, which count as resident.
+Finalization drops `from` from the texture's name, so the reload shares the
+texture a reading load would create, and refuses a source that is not live
+and confirmed or does not hold the same file's chain in the same format
+(`VKR_RENDERER_ERROR_INVALID_HANDLE`), because the levels it would copy were
+never read. A path too long for the query, a file still arriving from a
+remote, or a supercompressed file reloads by reading as before. The backend
+copies on the GPU ([ADR-024](024-shared-bindless-gpu-cores.md)).
+`asset.texture.level_copy_total` counts confirmed copying publications.
+Bistro on the RX 6700 XT (Release, `vulkan_bistro_texture_pressure`,
+`VKR_VULKAN_MEMORY_BUDGET_MB=6000`, 2026-10-23, Chrome open): about 470
+reloads applied per run, 419 and 431 of them copying, 605 and 615 lowering
+steps, all 632 textures ready after 27.4 and 27.6 s; the same build with
+level copy switched off read every reload, ready after 27.3 and 28.2 s. First
+loads, not reloads, set that time, so copying does not shorten it. With
+`VK_LAYER_KHRONOS_validation` and synchronization validation the run passed
+with 443 copies and reported no message; with the driver's budget nothing
+was lowered or copied. Floor-first would still publish every texture twice,
+which the copy does not remove.
 Bistro on the M1 Pro (Debug editor, headless, Graphics limit 2048, isolated
 settings, 2026-10-03): `stats.texture_mb` read 1099.55 MiB at full, 347.69 MiB
 45 s after `scene.textures 1024`, and 1099.55 MiB again 45 s after `undo`.

@@ -85,6 +85,7 @@ VkrApplicationMetricsSnapshot vkr_application_metrics_snapshot(
           assets->material_system.texture_stream_pressure_stalls_total,
       .material_texture_stream_mip_lowered_total =
           assets->material_system.texture_stream_mip_lowered_total,
+      .texture_level_copy_total = assets->texture_system.level_copy_total,
       .material_texture_stream_mip_raised_total =
           assets->material_system.texture_stream_mip_raised_total,
       .material_texture_demand_materials =

@@ -251,6 +251,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId material_texture_stream_evicted_total;
   VkrMetricId material_texture_stream_pressure_stalls;
   VkrMetricId material_texture_stream_mip_lowered_total;
+  VkrMetricId texture_level_copy_total;
   VkrMetricId material_texture_stream_mip_raised_total;
   VkrMetricId material_texture_demand_materials;
   VkrMetricId material_texture_stream_automatic_pressure_active;
@@ -576,6 +577,7 @@ typedef struct VkrApplicationMetricsSnapshot {
   uint64_t material_texture_stream_evicted_total;
   uint64_t material_texture_stream_pressure_stalls;
   uint64_t material_texture_stream_mip_lowered_total;
+  uint64_t texture_level_copy_total;
   uint64_t material_texture_stream_mip_raised_total;
   uint64_t material_texture_demand_materials;
   uint64_t material_texture_stream_automatic_pressure_active;

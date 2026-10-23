@@ -179,6 +179,7 @@ vkr_internal VkrResourcePublication vkr_texture_loader_publication_state(
   }
   const VkrRendererError error = texture->publication.error;
   if (error == VKR_RENDERER_ERROR_NONE) {
+    system->level_copy_total += texture->level_copy ? 1u : 0u;
     return VKR_RESOURCE_PUBLICATION_CONFIRMED;
   }
   (void)vkr_texture_system_release_by_handle(system, handle->as.texture);

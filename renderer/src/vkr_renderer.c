@@ -1971,6 +1971,7 @@ vkr_internal void vkr_renderer_backend_get_device_information(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC7_UNORM),
       .supports_texture_bc5 = vkr_vulkan_renderer_texture_format_supported(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC5_UNORM),
+      .supports_texture_level_copy = true_v,
       .graphics_pipeline = renderer->graphics_pipeline,
       .actual_target_kind = renderer->present_target.kind,
       .actual_present_mode = present_mode,

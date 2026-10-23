@@ -89,9 +89,16 @@ typedef struct VkrTextureSystem {
   VkrGraphicsPipelineClass graphics_pipeline;
   bool8_t supports_texture_bc7;
   bool8_t supports_texture_bc5;
+  /* The renderer copies a reload's kept levels from the texture it
+     replaces (VkrTexturePreparedLoad.copy_source). */
+  bool8_t supports_texture_level_copy;
   /* Live previews: textures holding the smallest mips of a file still
      arriving from a remote (vkr_texture_system_full_file_ready). */
   uint32_t preview_count;
+  /* Confirmed texture publications that copied levels from the texture
+     they replace instead of uploading them; a publication retried while its
+     source still initialized counts once. */
+  uint64_t level_copy_total;
 } VkrTextureSystem;
 
 /**
@@ -289,6 +296,15 @@ bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
 bool8_t vkr_texture_system_load_limit_grows(VkrTextureSystem *system,
                                             VkrTextureHandle handle,
                                             uint32_t max_extent);
+
+/**
+ * @brief The levels a reload replacing `handle` can copy from it on the GPU
+ * instead of reading them: its level count when the renderer copies levels
+ * and `handle` is a confirmed 2D texture a load limit can shorten, else
+ * zero. A request names the source with `from=<id>.<generation>.<levels>`.
+ */
+uint32_t vkr_texture_system_level_copy_levels(VkrTextureSystem *system,
+                                              VkrTextureHandle handle);
 
 /**
  * @brief For a preview (the smallest mips of a `.vkt` still arriving from a
