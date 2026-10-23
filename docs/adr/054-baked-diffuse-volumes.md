@@ -180,10 +180,42 @@ and baker identity (`VKR_BAKERY_IDENTITY_DIFFUSE`) from inputs that match
 its index within the tolerance keeps it, exits 6 and publishes nothing, and
 `--full` bakes regardless. A project bake passes its previous volume and the
 request's `full`, records the index as the volume record's `volume_index`
-artifact, and on exit 6 keeps the record and its revision. Probes and
-bricks are not reused across a changed scene: any change bakes the whole
-volume. The recorded closure is re-hashed after the bake instead of a second
-scene load.
+artifact, and on exit 6 keeps the record and its revision. The recorded
+closure is re-hashed after the bake instead of a second scene load.
+
+Since 2026-10-23 a changed scene bakes incrementally by default. When the
+previous volume's sidecar names this bake's fingerprint (the same baker and
+recipe), the bakery passes it with its index (`--previous-volume`,
+`--previous-index`). The baker checks that the index names the volume's
+checksum and size, that the globals, grid and layer table match, and then
+keys probes by lattice position and level: a probe keeps a band's SH when
+the previous volume stores its own SH (in a slot that is not a face fill,
+valid, at the same relocated position) and the band's light there cannot
+have changed by the lightmap plan's rules applied to the probe as a point
+(`vkr_bake_plan_receivers`,
+[ADR-088](088-baked-lightmap-sets.md) Rebakes): a sun key's sweep, a lamp
+group's gathered band by its irradiance rule and its direct band by the
+lamp-direct rule, with reach `max(--reach, spacing)`, 4 m by default. The
+other probes gather; kept probes take the previous SH as stored, so their
+slots stay bit-identical when the SH scale does, and face fills interpolate
+the current probes. A bake gathers only the probes the file reads: a probe
+whose every slot is a face fill and that no fill reads is skipped, which
+left a full bake of the street fixture byte-identical with 15% fewer
+probes. The sidecar's `production` records `kind`, the base volume and the
+probes gathered per band; packaging warns for an incremental volume and a
+baseline refuses one. `vkr_bakery tool diffuse-baker --compare <a> <b>`
+reports per band the slots compared and identical, the luminance-weighted
+constant-term error and the worst slots with their positions.
+
+On a 144 m street fixture (12 bounded lamps, probe spacing 1, 33,709
+probe-bands of each band; Release, M1 Pro, 2026-10-23) a full bake took
+21.0 s. After a lamp's intensity doubled, the incremental bake gathered
+4.3% of the probe-bands in 10.8 s; against the full bake the sun bands
+differed by 0.001% (luminance-weighted) and the lamp group's gathered band
+by 0.30%, worst slots 46% on dark probes behind a wall, 57 m from the lamp.
+After a 1.5 m prop moved 1 m it gathered 3.5% in 10.9 s: sun bands 0.04%
+(worst slot 1.7%), lamp band 0.09% (worst 15%). The rest of the time is
+fixed cost: scene load, placement, visibility and the sun-key atmospheres.
 
 ### Runtime
 

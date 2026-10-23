@@ -493,8 +493,11 @@ volume, which a bake otherwise keeps when nothing it reads changed
   of every changed instance and every changed lamp, with reach R: a sun key
   relights the instances within R of a changed box swept away from its key
   light (the sun, or the moon while the sun is down) across the scene; a
-  lamp group's irradiance relights those within a changed lamp's range plus
-  R, those within R of a changed box, and those within a lamp's range plus R
+  lamp group's irradiance relights those within three ranges plus R of a
+  changed lamp (`kVkrBakeLampBounceRanges`: with one range a doubled lamp
+  left a 3.3% luminance-weighted error in the lamp plane of a 48 m street,
+  16% on one wall; with three, 0.06% and at most 1.1% on a 144 m street),
+  those within R of a changed box, and those within a lamp's range plus R
   when a changed box lies within that lamp's range; a lamp-direct plane, and a
   lamp group that adds its lights' direct term, relights those a changed lamp
   reaches and those a lamp of its group reaches when a changed box meets the
@@ -931,7 +934,8 @@ Unavailable: a Windows or Vulkan host.
   atmospheres; the same bake again kept the set in 0.9 s. After a lamp's
   intensity doubled, the incremental bake took 3.4 s against 16.6 s in full,
   relit the lamp group only and was identical to the full bake in every
-  instance of every plane (`--compare`). After a 1.5 m prop moved 1 m it took
+  instance of every plane (`--compare`); its lamps had polynomial falloff,
+  which reaches everything, so the lamp layer relit whole. After a 1.5 m prop moved 1 m it took
   13.8 s against 15.9 s (the atmospheres stay), relit 3 to 5 of 11 instances
   per sun key and gathered 72% of the texels; relit instances were identical
   to the full bake, and copied ones differed by a mean relative luminance of
