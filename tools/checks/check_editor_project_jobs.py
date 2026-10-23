@@ -268,9 +268,14 @@ def main():
              'position': [5, 0, 0], 'rotation': [0, 0, 0, 1], 'scale': [1, 1, 1],
              'point_color': [1, 0.5, 0.25], 'point_direction': [1, 0, 0],
              'point_params': [10, 1, 0.1, 0.2, 20, 0, 0.7], 'point_kind': 0,
-             'point_enabled': True, 'point_casts_shadow': True}]})
+             'point_enabled': True, 'point_casts_shadow': True},
+            # An override after a source-node edit reaches the bake too; the
+            # node edit's record once ended the list the bake walked.
+            {'scene_entity': 0, 'gltf_node': -1, 'source_fingerprint': node_hash, 'fields': 2,
+             'name': 'Wrapper after a node edit'}]})
         node_scene['edit_overlay'] = 'edits/node.json'
         effective_node = node_job.effective_bake_runtime(node_scene, node_root)
+        assert jobs.load_json(effective_node['runtime_path'])['entities'][0]['name'] == 'Wrapper after a node edit'
         variant_path = Path(jobs.load_json(effective_node['runtime_path'])['entities'][0]['mesh']['path'])
         original_bytes, variant_bytes = node_mesh.read_bytes(), variant_path.read_bytes()
         offset = struct.unpack_from('<Q', original_bytes, 80)[0]

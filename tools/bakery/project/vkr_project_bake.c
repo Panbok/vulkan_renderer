@@ -566,7 +566,11 @@ vkr_internal bool8_t vkr_project_collect_bake_edits(
       if (!node_edits[index]) {
         node_edits[index] = vkr_bakery_json_object(arena);
       }
-      vkr_bakery_json_set(arena, node_edits[index], key, edit);
+      /* A copy: a JSON value links into one list only, and setting the
+         record itself into this object would end the overrides list at it,
+         so no later override reached the bake. */
+      vkr_bakery_json_set(arena, node_edits[index], key,
+                          vkr_bakery_json_clone(arena, edit));
     }
   }
   if (skipped) {
