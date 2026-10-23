@@ -1743,6 +1743,33 @@ void vkr_material_system_commit_scene_memory_relief(VkrMaterialSystem *system,
              retries);
 }
 
+/* Resident slots whose texture holds fewer mips than the GPU measured their
+ * material needs, within the material limit: the slots frames sample below
+ * the mip the view asks for. Slots no frame measured recently count as
+ * meeting their need. */
+static uint32_t
+vkr_material_system_count_below_need(VkrMaterialSystem *system) {
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    const VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT) {
+      continue;
+    }
+    const uint32_t required =
+        vkr_material_system_required_extent(system, stream->material);
+    if (!required) {
+      continue;
+    }
+    const VkrTexture *texture = vkr_texture_system_get_by_handle(
+        system->texture_system, stream->resident_texture);
+    const uint32_t needed = vkr_texture_system_load_limit_mip_levels(
+        system->texture_system, stream->resident_texture,
+        vkr_material_cap_limit(system, required));
+    count += texture && needed > texture->description.mip_levels ? 1u : 0u;
+  }
+  return count;
+}
+
 void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
                                               uint32_t max_updates) {
   if (!system || !system->texture_streams || max_updates == 0u) {
@@ -1752,6 +1779,8 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
   (void)vkr_material_system_evict_to_fit(system, 0u,
                                          VKR_TEXTURE_HANDLE_INVALID);
   vkr_material_system_raise_textures(system);
+  system->texture_demand_below_need_count =
+      vkr_material_system_count_below_need(system);
 
   uint32_t updates = 0u;
   for (uint32_t i = 0;

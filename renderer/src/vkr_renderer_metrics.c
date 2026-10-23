@@ -713,6 +713,9 @@ vkr_internal bool8_t vkr_renderer_metrics_register_assets(
   VKR_REGISTER_U64(material_texture_demand_materials,
                    "asset.material.texture_demand.materials",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_demand_below_need,
+                   "asset.material.texture_demand.below_need",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(material_texture_stream_automatic_pressure_active,
                    "asset.material.texture_stream.automatic_pressure_active",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
@@ -2011,6 +2014,8 @@ vkr_internal void vkr_renderer_metrics_collect_assets(
               context->application.material_texture_stream_mip_raised_total);
   VKR_SET_U64(material_texture_demand_materials,
               context->application.material_texture_demand_materials);
+  VKR_SET_U64(material_texture_demand_below_need,
+              context->application.material_texture_demand_below_need);
   VKR_SET_U64(
       material_texture_stream_automatic_pressure_active,
       context->application.material_texture_stream_automatic_pressure_active);

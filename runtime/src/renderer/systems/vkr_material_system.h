@@ -237,6 +237,10 @@ typedef struct VkrMaterialSystem {
   uint32_t texture_demand_pending_count;
   /* Materials the last folded frame measured. */
   uint32_t texture_demand_material_count;
+  /* Resident texture slots whose texture holds fewer mips than their
+     material's measured need within the material limit, as of the last
+     pump. */
+  uint32_t texture_demand_below_need_count;
 
   VkrMaterialReplacement *replacements; /* VKR_MATERIAL_REPLACEMENT_CAPACITY */
   uint32_t replacement_count;           /* Entries in use. */

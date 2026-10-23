@@ -254,6 +254,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId texture_level_copy_total;
   VkrMetricId material_texture_stream_mip_raised_total;
   VkrMetricId material_texture_demand_materials;
+  VkrMetricId material_texture_demand_below_need;
   VkrMetricId material_texture_stream_automatic_pressure_active;
 
   VkrMetricId shadow_indirect_draws_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
@@ -580,6 +581,7 @@ typedef struct VkrApplicationMetricsSnapshot {
   uint64_t texture_level_copy_total;
   uint64_t material_texture_stream_mip_raised_total;
   uint64_t material_texture_demand_materials;
+  uint64_t material_texture_demand_below_need;
   uint64_t material_texture_stream_automatic_pressure_active;
 } VkrApplicationMetricsSnapshot;
 
