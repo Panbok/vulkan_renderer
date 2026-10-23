@@ -1158,12 +1158,12 @@ bool plan_probe_reuse(const Options &options, const VkrBakeBrickLayout &layout,
      relocation half of one; per level, a lamp layer without lights marks
      the cells within the reach and that of a changed box. */
   std::vector<uint8_t> nearby(layout.probe_count, 0u);
-  std::vector<VkrBakeLightmapPlanLayer> near(1u);
-  near[0].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
+  std::vector<VkrBakeLightmapPlanLayer> lamp_layers(1u);
+  lamp_layers[0].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
   for (uint32_t level = 0u; level < layout.level_count; ++level) {
     const float32_t spacing = layout.spacing * (float32_t)level_span(level);
     VkrBakeReceiverPlan level_plan;
-    if (!vkr_bake_plan_receivers(previous_inputs, inputs, near, cell_min,
+    if (!vkr_bake_plan_receivers(previous_inputs, inputs, lamp_layers, cell_min,
                                  cell_max, reach + 2.5f * spacing,
                                  &level_plan)) {
       *reason = "planning the incremental bake failed";

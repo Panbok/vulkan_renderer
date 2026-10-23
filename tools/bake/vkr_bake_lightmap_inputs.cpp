@@ -206,14 +206,15 @@ void light_rounded(DigestWriter *w, const VkrBakeSceneLight &light) {
   }
 }
 
-bool near(float32_t a, float32_t b) {
+bool within_tolerance(float32_t a, float32_t b) {
   return std::fabs(a - b) <=
          kVkrBakeInputTolerance + kVkrBakeInputRelativeTolerance *
                                       std::max(std::fabs(a), std::fabs(b));
 }
 
 bool near3(Vec3 a, Vec3 b) {
-  return near(a.x, b.x) && near(a.y, b.y) && near(a.z, b.z);
+  return within_tolerance(a.x, b.x) && within_tolerance(a.y, b.y) &&
+         within_tolerance(a.z, b.z);
 }
 
 /* Area-weighted sums of one instance's geometry, in double. */
@@ -454,7 +455,7 @@ bool vkr_bake_lightmap_instance_same(const VkrBakeLightmapInputInstance &a,
     return false;
   }
   for (uint32_t k = 0u; k < kVkrBakeInstanceMoments; ++k) {
-    if (!near(a.moments[k], b.moments[k])) {
+    if (!within_tolerance(a.moments[k], b.moments[k])) {
       return false;
     }
   }
@@ -467,7 +468,7 @@ bool vkr_bake_lightmap_light_same(const VkrBakeLightmapInputLight &a,
     return false;
   }
   for (uint32_t k = 0u; k < kVkrBakeLightFields; ++k) {
-    if (!near(a.fields[k], b.fields[k])) {
+    if (!within_tolerance(a.fields[k], b.fields[k])) {
       return false;
     }
   }

@@ -370,9 +370,9 @@ void test_incremental_plan_relights_what_edits_reach() {
   assert(plan.changed_instances == 0u && plan.changed_lights == 0u &&
          plan.changed_boxes == 2u);
   for (uint32_t i = 0u; i < 6u; ++i) {
-    const uint8_t near = i == 2u ? 1u : 0u;
-    assert(plan.layer_dirty[0][i] == near);
-    assert(plan.layer_dirty[1][i] == near);
+    const uint8_t nearby = i == 2u ? 1u : 0u;
+    assert(plan.layer_dirty[0][i] == nearby);
+    assert(plan.layer_dirty[1][i] == nearby);
     assert(plan.direct_dirty[1][i] == 0u);
   }
 
