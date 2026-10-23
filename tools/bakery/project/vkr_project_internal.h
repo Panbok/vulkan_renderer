@@ -61,6 +61,9 @@
 #define VKR_PROJECT_UNREFERENCED_GRACE_SECONDS (24 * 60 * 60)
 #define VKR_PROJECT_ORPHAN_GRACE_SECONDS (60 * 60)
 #define VKR_PROJECT_JOB_RETENTION_SECONDS (7 * 24 * 60 * 60)
+/* The directory below jobs/ that keeps mesh variants and inspections across
+   jobs by content; cleanup ages its entries out one by one. */
+#define VKR_PROJECT_VARIANT_CACHE "variants"
 #define VKR_PROJECT_PATH VKR_BAKERY_PATH_CAPACITY
 
 #define VKR_PROJECT_TRY(expression)                                            \
@@ -449,6 +452,17 @@ bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
  * later starts no inspection process. */
 bool8_t vkr_project_adopt_inspection(VkrProjectJob *job, const char *mesh,
                                      const char *report);
+/** The workspace's cache of mesh variants and model inspections, kept
+ * across jobs by content (jobs/VKR_PROJECT_VARIANT_CACHE), created on demand;
+ * NULL on failure. */
+const char *vkr_project_variant_cache(VkrProjectJob *job);
+/** The inspection of `mesh`, whose content digest is `digest`: the job's,
+ * else the cache's (refreshing its age), else the mesh tool's, run under
+ * `label`, which the cache then keeps. */
+VkrBakeryJson *vkr_project_cached_inspection(VkrProjectJob *job,
+                                             const char *mesh,
+                                             const char *digest,
+                                             const char *label);
 VkrBakeryJson *vkr_project_inspect_mesh(VkrProjectJob *job, const char *mesh);
 
 // =============================================================================

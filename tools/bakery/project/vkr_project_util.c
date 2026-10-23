@@ -1,5 +1,7 @@
 #include "vkr_project_internal.h"
 
+#include "vkr_bakery_identity.h"
+
 #include "../vkr_bakery_buffer.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_asset_path.h"
@@ -2422,6 +2424,64 @@ bool8_t vkr_project_run_tool(VkrProjectJob *job, const char *tool,
                                 out_code);
 }
 
+/* The workspace's cache of mesh variants and their models' inspections,
+   kept across jobs by content: a bake whose source mesh and node patches
+   did not change reuses the variant a previous bake built instead of two
+   mesh-tool processes and four new files per edited model. Cleanup ages its
+   entries out one by one, and a hit refreshes the entry's age. */
+const char *vkr_project_variant_cache(VkrProjectJob *job) {
+  const char *cache = vkr_project_printf(job, "%s/jobs/%s", job->workspace,
+                                         VKR_PROJECT_VARIANT_CACHE);
+  return vkr_project_make_dirs(job, cache) ? cache : NULL;
+}
+
+VkrBakeryJson *vkr_project_cached_inspection(VkrProjectJob *job,
+                                             const char *mesh,
+                                             const char *digest,
+                                             const char *label) {
+  VkrBakeryJson *info = vkr_bakery_json_get(job->inspections, digest);
+  if (info) {
+    return info;
+  }
+  const char *cache = vkr_project_variant_cache(job);
+  if (!cache) {
+    return NULL;
+  }
+  const char *report = vkr_project_printf(
+      job, "%s/%s-%s.inspection.json", cache, digest, VKR_BAKERY_IDENTITY_MESH);
+  if (vkr_bakery_is_file(report)) {
+    const bool8_t failed_before = job->failed;
+    info = vkr_project_load_json(job, report, VKR_PROJECT_MAX_JSON_BYTES);
+    vkr_project_forgive(job, failed_before);
+  }
+  if (info) {
+    vkr_bakery_touch(report);
+  } else {
+    char id[37];
+    vkr_project_uuid4(id);
+    const char *temporary = vkr_project_printf(job, "%s.%s", report, id);
+    const char *inspect[] = {"--inspect", "--input", mesh, "--output",
+                             temporary};
+    if (!vkr_project_run_tool(job, "mesh", inspect, ArrayCount(inspect), label,
+                              0, NULL)) {
+      (void)vkr_bakery_remove_file(temporary);
+      return NULL;
+    }
+    if (!vkr_bakery_rename(temporary, report, true_v)) {
+      (void)vkr_bakery_remove_file(temporary);
+      vkr_project_fail(job, "Cannot publish %s", report);
+      return NULL;
+    }
+    info = vkr_project_load_json(job, report, VKR_PROJECT_MAX_JSON_BYTES);
+    if (!info) {
+      return NULL;
+    }
+  }
+  vkr_bakery_json_set(job->arena, job->inspections,
+                      vkr_project_strdup(job, digest), info);
+  return info;
+}
+
 VkrBakeryJson *vkr_project_inspect_mesh(VkrProjectJob *job, const char *mesh) {
   char resolved[VKR_PROJECT_PATH];
   if (!vkr_project_resolve(mesh, true_v, resolved, sizeof(resolved))) {
@@ -2438,14 +2498,15 @@ VkrBakeryJson *vkr_project_inspect_mesh(VkrProjectJob *job, const char *mesh) {
   if (cached) {
     return cached;
   }
-  char directory[VKR_PROJECT_PATH];
-  if (job->read_only) {
-    (void)vkr_bakery_path_join(directory, sizeof(directory),
-                               job->runtime_directory, "inspection");
-  } else {
-    (void)snprintf(directory, sizeof(directory), "%s/jobs/inspection",
-                   job->workspace);
+  /* A job that may write keeps reports across jobs; a read-only one writes
+     only below its runtime directory. */
+  if (!job->read_only) {
+    return vkr_project_cached_inspection(job, resolved, digest,
+                                         "Validating cooked model");
   }
+  char directory[VKR_PROJECT_PATH];
+  (void)vkr_bakery_path_join(directory, sizeof(directory),
+                             job->runtime_directory, "inspection");
   if (!vkr_project_make_dirs(job, directory)) {
     return NULL;
   }

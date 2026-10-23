@@ -11,7 +11,6 @@
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
-#include <utime.h>
 #endif
 
 /* Cache layout (docs/proposals/asset-build-system.md section 8.1):
@@ -92,14 +91,6 @@ vkr_internal VkrBakeryJson *vkr_bakery_read_json(Arena *arena,
   VkrBakeryJson *value = vkr_bakery_json_parse(arena, data, length, 64u, NULL);
   free(data);
   return value;
-}
-
-vkr_internal void vkr_bakery_touch(const char *path) {
-#if defined(_WIN32)
-  (void)path; /* Windows gc relies on the record's creation time. */
-#else
-  (void)utime(path, NULL);
-#endif
 }
 
 /* A discovered prerequisite under the build root is recorded relative to it,

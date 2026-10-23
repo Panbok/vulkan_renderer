@@ -1,5 +1,7 @@
 #include "vkr_project_internal.h"
 
+#include "vkr_bakery_identity.h"
+
 #include "assets/vkr_lightmap_set.h"
 #include "filesystem/filesystem.h"
 
@@ -358,15 +360,18 @@ vkr_internal bool8_t vkr_project_bake_mesh_variant(VkrProjectJob *job,
   const uint32_t index = walk->entity_index;
   const char *mesh = vkr_project_strdup(
       job, vkr_project_json_text(vkr_bakery_json_get(entity, "mesh"), "path"));
-  const char *report =
-      vkr_project_printf(job, "%s/%u.inspection.json", bake_root, index);
-  const char *inspect[] = {"--inspect", "--input", mesh ? mesh : "", "--output",
-                           report};
-  VKR_PROJECT_TRY(
-      vkr_project_run_tool(job, "mesh", inspect, ArrayCount(inspect),
-                           "Resolving authored bake geometry", 0, NULL));
-  VkrBakeryJson *info =
-      vkr_project_load_json(job, report, VKR_PROJECT_MAX_JSON_BYTES);
+  if (!mesh) {
+    return vkr_project_fail(job, "[Errno 2] No such file or directory: ''");
+  }
+  const char *source_remap = vkr_project_printf(job, "%s.remap.json", mesh);
+  char mesh_digest[VKR_BAKERY_SHA256_HEX];
+  char remap_digest[VKR_BAKERY_SHA256_HEX];
+  const char *cache = vkr_project_variant_cache(job);
+  VKR_PROJECT_TRY(cache);
+  VKR_PROJECT_TRY(vkr_project_digest(job, mesh, mesh_digest));
+  VKR_PROJECT_TRY(vkr_project_digest(job, source_remap, remap_digest));
+  VkrBakeryJson *info = vkr_project_cached_inspection(
+      job, mesh, mesh_digest, "Resolving authored bake geometry");
   VKR_PROJECT_TRY(info);
   walk->info_nodes = vkr_bakery_json_get(info, "nodes");
   if (!walk->info_nodes) {
@@ -429,49 +434,67 @@ vkr_internal bool8_t vkr_project_bake_mesh_variant(VkrProjectJob *job,
     }
     vkr_bakery_json_append(patches, patch);
   }
-  const char *patch_path =
-      vkr_project_printf(job, "%s/%u.patches.json", bake_root, index);
   VkrBakeryJson *patch_document = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, patch_document, "version",
                       vkr_bakery_json_int(arena, 1));
   vkr_bakery_json_set(arena, patch_document, "source_fingerprint",
                       vkr_project_edit_value(job, info, "fingerprint"));
   vkr_bakery_json_set(arena, patch_document, "nodes", patches);
-  VKR_PROJECT_TRY(vkr_project_atomic_json(job, patch_path, patch_document));
-  const char *variant = vkr_project_printf(job, "%s/%u.vkb", bake_root, index);
-  const char *build[] = {"--input", mesh ? mesh : "",   "--output",
-                         variant,   "--source-patches", patch_path};
-  VKR_PROJECT_TRY(vkr_project_run_tool(job, "mesh", build, ArrayCount(build),
-                                       "Preparing authored bake geometry", 0,
-                                       NULL));
-  VkrBakeryJson *remap = vkr_project_load_json(
-      job, vkr_project_printf(job, "%s.remap.json", mesh ? mesh : ""),
-      VKR_PROJECT_MAX_JSON_BYTES);
-  VKR_PROJECT_TRY(remap);
-  char mesh_directory[VKR_PROJECT_PATH];
-  vkr_bakery_path_parent(mesh_directory, sizeof(mesh_directory),
-                         mesh ? mesh : "");
-  VkrBakeryJson *materials = vkr_bakery_json_object(arena);
-  const VkrBakeryJson *listed = vkr_bakery_json_get(remap, "materials");
-  for (const VkrBakeryJson *entry = listed ? listed->first : NULL; entry;
-       entry = entry->next) {
-    char joined[VKR_PROJECT_PATH];
-    char resolved[VKR_PROJECT_PATH];
-    char relative[VKR_PROJECT_PATH];
-    (void)vkr_bakery_path_join(
-        joined, sizeof(joined), mesh_directory,
-        vkr_project_json_text(listed, (const char *)entry->key.str));
-    (void)vkr_project_resolve(joined, false_v, resolved, sizeof(resolved));
-    if (!vkr_project_relpath(resolved, bake_root, relative, sizeof(relative))) {
-      return vkr_project_fail(job, "Path too long");
-    }
-    vkr_bakery_json_set(
-        arena, materials, (const char *)entry->key.str,
-        vkr_bakery_json_cstr(arena, vkr_project_printf(job, "./%s", relative)));
+  /* The variant's key: the mesh tool, the source mesh's place and content,
+     its material table and the patches. */
+  String8 patch_text = {0};
+  if (!vkr_bakery_json_write(arena, patch_document, VKR_BAKERY_JSON_COMPACT,
+                             &patch_text)) {
+    return vkr_project_fail(job, "Cannot write the source-node patches");
   }
-  vkr_bakery_json_set(arena, remap, "materials", materials);
-  VKR_PROJECT_TRY(vkr_project_atomic_json(
-      job, vkr_project_printf(job, "%s.remap.json", variant), remap));
+  const char *key_text = vkr_project_printf(
+      job, "vkr-mesh-variant 1\n%s\n%s\n%s\n%s\n%.*s", VKR_BAKERY_IDENTITY_MESH,
+      mesh, mesh_digest, remap_digest, (int)patch_text.length,
+      (const char *)patch_text.str);
+  char key[VKR_BAKERY_SHA256_HEX];
+  vkr_bakery_hash_bytes(key_text, strlen(key_text), key);
+  const char *variant = vkr_project_printf(job, "%s/%s.vkb", cache, key);
+  const char *variant_remap = vkr_project_printf(job, "%s.remap.json", variant);
+  /* The remap goes into place last, so a variant counts once both are. */
+  if (vkr_bakery_is_file(variant) && vkr_bakery_is_file(variant_remap)) {
+    vkr_bakery_touch(variant);
+    vkr_bakery_touch(variant_remap);
+  } else {
+    const char *patch_path =
+        vkr_project_printf(job, "%s/%u.patches.json", bake_root, index);
+    VKR_PROJECT_TRY(vkr_project_atomic_json(job, patch_path, patch_document));
+    const char *build[] = {"--input",          mesh,      "--output", variant,
+                           "--source-patches", patch_path};
+    VKR_PROJECT_TRY(vkr_project_run_tool(job, "mesh", build, ArrayCount(build),
+                                         "Preparing authored bake geometry", 0,
+                                         NULL));
+    VkrBakeryJson *remap =
+        vkr_project_load_json(job, source_remap, VKR_PROJECT_MAX_JSON_BYTES);
+    VKR_PROJECT_TRY(remap);
+    char mesh_directory[VKR_PROJECT_PATH];
+    vkr_bakery_path_parent(mesh_directory, sizeof(mesh_directory), mesh);
+    VkrBakeryJson *materials = vkr_bakery_json_object(arena);
+    const VkrBakeryJson *listed = vkr_bakery_json_get(remap, "materials");
+    for (const VkrBakeryJson *entry = listed ? listed->first : NULL; entry;
+         entry = entry->next) {
+      char joined[VKR_PROJECT_PATH];
+      char resolved[VKR_PROJECT_PATH];
+      char relative[VKR_PROJECT_PATH];
+      (void)vkr_bakery_path_join(
+          joined, sizeof(joined), mesh_directory,
+          vkr_project_json_text(listed, (const char *)entry->key.str));
+      (void)vkr_project_resolve(joined, false_v, resolved, sizeof(resolved));
+      if (!vkr_project_relpath(resolved, cache, relative, sizeof(relative))) {
+        return vkr_project_fail(job, "Path too long");
+      }
+      vkr_bakery_json_set(
+          arena, materials, (const char *)entry->key.str,
+          vkr_bakery_json_cstr(arena,
+                               vkr_project_printf(job, "./%s", relative)));
+    }
+    vkr_bakery_json_set(arena, remap, "materials", materials);
+    VKR_PROJECT_TRY(vkr_project_atomic_json(job, variant_remap, remap));
+  }
   VkrBakeryJson *component = vkr_bakery_json_get(entity, "mesh");
   if (vkr_project_truthy(component)) {
     vkr_bakery_json_set(arena, component, "path",

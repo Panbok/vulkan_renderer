@@ -107,6 +107,13 @@ def main():
         age(old_job)
         recent_job = workspace / 'jobs' / str(uuid.uuid4())
         write(recent_job / 'request.json', b'{}')
+        # The variant cache ages out entry by entry and itself stays, even
+        # when every entry is old.
+        variants = workspace / 'jobs' / 'variants'
+        write(variants / 'stale.vkb', b'unused variant')
+        write(variants / 'used.vkb', b'variant a bake read recently')
+        age(variants)
+        os.utime(variants / 'used.vkb', None, **no_follow)
 
         request = {'version': 1, 'operation': 'rename_asset', 'workspace_root': str(workspace),
                    'project_path': str(manifest), 'scene_id': scene_id,
@@ -131,6 +138,7 @@ def main():
         assert absent(generated / 'cutout_v1'), 'Unused derived texture or its empty folder kept'
         assert present(generated / 'gltf_sg3' / 'recent.png'), 'Recent intermediate removed'
         assert absent(old_job) and present(recent_job)
+        assert present(variants / 'used.vkb') and absent(variants / 'stale.vkb'), 'Variant cache aged out as a whole'
         # Files within the grace period stay regardless, so they are not hashed.
         assert jobs.load_json(cache / 'generated-index.json') == {}, 'Recent derived files hashed'
         (generated / 'gltf_sg3' / 'recent.png').unlink()

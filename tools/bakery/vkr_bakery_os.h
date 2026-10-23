@@ -74,6 +74,10 @@ bool8_t vkr_bakery_remove_file(const char *path);
 bool8_t vkr_bakery_remove_tree(const char *path);
 bool8_t vkr_bakery_rename(const char *source, const char *destination,
                           bool8_t overwrite);
+/** Sets a file's modification time to now, so age-based cleanup keeps a
+ * cache entry in use; a no-op on Windows, where cleanup reads creation
+ * times. */
+void vkr_bakery_touch(const char *path);
 /** Replaces `destination` with a copy-on-write clone of `source` where the
  * volume supports it, otherwise a byte copy; the replacement is atomic. */
 bool8_t vkr_bakery_clone_or_copy(const char *source, const char *destination);

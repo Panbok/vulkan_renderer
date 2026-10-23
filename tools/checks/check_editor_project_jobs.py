@@ -285,6 +285,12 @@ def main():
         lights = [entity['point_light'] for entity in baked_nodes if 'point_light' in entity]
         assert len(lights) == 1 and lights[0]['kind'] == 0 and lights[0]['direction_local'] == [1, 0, 0]
         assert any(entity.get('transform', {}).get('matrix', [0] * 16)[4] == 0.25 for entity in baked_nodes)
+        # A second bake of the same edits reuses the cached variant: no new
+        # variant file, and the same path in the effective scene.
+        variant_inode = variant_path.stat().st_ino
+        again = node_job.effective_bake_runtime(node_scene, node_root)
+        again_path = Path(jobs.load_json(again['runtime_path'])['entities'][0]['mesh']['path'])
+        assert again_path == variant_path and again_path.stat().st_ino == variant_inode, 'Unchanged variant was rebuilt'
         if args.diffuse_baker:
             import subprocess
             check = subprocess.run([*tool_command(Path(args.diffuse_baker).resolve(), 'diffuse-baker'), '--scene', effective_node['runtime_path'],

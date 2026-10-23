@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utime.h>
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #endif
@@ -579,6 +580,14 @@ bool8_t vkr_bakery_remove_tree(const char *path) {
   return vkr_bakery_remove_native(path, true_v);
 #else
   return rmdir(path) == 0 || errno == ENOENT;
+#endif
+}
+
+void vkr_bakery_touch(const char *path) {
+#if defined(_WIN32)
+  (void)path;
+#else
+  (void)utime(path, NULL);
 #endif
 }
 

@@ -34,6 +34,29 @@ vkr_internal bool8_t vkr_project_child_path(const char *directory,
   return vkr_bakery_path_join(out, VKR_PROJECT_PATH, directory, name);
 }
 
+/* Drops the variant cache's entries (VKR_PROJECT_VARIANT_CACHE) unused for
+   the job retention: a hit refreshes an entry's time, so entries a bake
+   still reads stay. */
+vkr_internal void vkr_project_clean_variant_cache(VkrProjectCleanup *cleanup,
+                                                  const char *cache) {
+  VkrProjectJob *job = cleanup->job;
+  VkrProjectStrings names;
+  const bool8_t failed_before = job->failed;
+  if (vkr_project_lstat_is_link(cache) || !vkr_bakery_is_directory(cache) ||
+      !vkr_project_list(job, cache, &names)) {
+    vkr_project_forgive(job, failed_before);
+    return;
+  }
+  for (uint32_t i = 0u; i < names.count; ++i) {
+    char entry[VKR_PROJECT_PATH];
+    if (vkr_project_child_path(cache, names.items[i], entry) &&
+        vkr_project_older_than(entry, VKR_PROJECT_JOB_RETENTION_SECONDS,
+                               cleanup->now)) {
+      vkr_project_drop(cleanup, entry);
+    }
+  }
+}
+
 /* Removes empty directories below `directory`, deepest first. */
 vkr_internal void vkr_project_prune_empty(VkrProjectJob *job,
                                           const char *directory) {
@@ -419,10 +442,16 @@ bool8_t vkr_project_collect_garbage(VkrProjectJob *job, int64_t grace_seconds,
       vkr_project_list(job, jobs, &names)) {
     for (uint32_t i = 0u; i < names.count; ++i) {
       char entry[VKR_PROJECT_PATH];
-      if (vkr_project_child_path(jobs, names.items[i], entry) &&
-          strcmp(entry, result_parent) != 0 &&
-          vkr_project_older_than(entry, VKR_PROJECT_JOB_RETENTION_SECONDS,
-                                 cleanup.now)) {
+      if (!vkr_project_child_path(jobs, names.items[i], entry) ||
+          strcmp(entry, result_parent) == 0) {
+        continue;
+      }
+      /* The variant cache stays; its entries age out by their own times,
+         which a hit refreshes. */
+      if (strcmp(names.items[i], VKR_PROJECT_VARIANT_CACHE) == 0) {
+        vkr_project_clean_variant_cache(&cleanup, entry);
+      } else if (vkr_project_older_than(
+                     entry, VKR_PROJECT_JOB_RETENTION_SECONDS, cleanup.now)) {
         vkr_project_drop(&cleanup, entry);
       }
     }
