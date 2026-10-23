@@ -542,6 +542,32 @@ volume, which a bake otherwise keeps when nothing it reads changed
   digest. `vkr_bakery package` warns for every scene whose set is
   incremental, and `vkr_harness baseline propose` refuses a snapshot whose
   scene renders one; both ask for a full bake.
+- **Fixed costs.** A bake whose previous output this baker made with this
+  recipe keeps it without starting the baker when the scene text and every
+  recorded file still have the bytes the previous sidecar records
+  (`vkr_bake_closure_current`; a file beside the previous scene is checked
+  beside the current one). The project's lightmap and volume bake scenes
+  leave out `asset_refs` and the lightmap, volume and reflection-probe
+  blocks, which no lighting bake reads and every bake changes, so unchanged
+  inputs give identical text. Otherwise one baker run loads the scene once:
+  under `--keep-if-unchanged` the baker stops after its manifest when the
+  inputs match the previous index (exit 6; 3 when there is nothing to
+  bake), and the bakery then records the matched closure in the kept
+  sidecar, so the next unchanged bake takes the first path. Sun-key
+  atmospheres are kept in the workspace's `jobs/variants/atmosphere-<id>`
+  (`--atmosphere-cache`), named by the atmosphere code's identity
+  (`VKR_BAKERY_IDENTITY_ATMOSPHERE`) and keyed by the prepared parameters;
+  a cached bake is byte-identical. An incremental bake rasterizes only the
+  instances some layer relights, on the set's and the lamp-direct pages
+  (byte-identical sets; `total_texels` now counts the rectangles' texels).
+  On an APFS copy of the Level Design Test (Release, M1 Pro, 2026-10-23) an
+  unchanged Bake lighting job took 7 s against 48 s, and a job after one
+  prop moved 1 m took 108 s against 183 s before these cuts and 361 s
+  before diffuse probe reuse: lightmaps 56 s (scene load 15.5 s,
+  atmospheres 0.05 s against 6.9 s, lamp-direct pages 1.6 s against 8.5 s),
+  diffuse volume 47 s; peak footprint 2.72 GB. The Editor runs a project
+  job until it finishes or is cancelled; a 30-minute limit stopped full
+  bakes of about 38 minutes.
 - **Bake geometry.** A model with source-node edits bakes from a variant
   of its cooked mesh with the edits patched in. The project runner keeps
   variants and model inspections in the workspace's `jobs/variants`, named

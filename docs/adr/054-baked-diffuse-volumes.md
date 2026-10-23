@@ -217,6 +217,18 @@ After a 1.5 m prop moved 1 m it gathered 3.5% in 10.9 s: sun bands 0.04%
 (worst slot 1.7%), lamp band 0.09% (worst 15%). The rest of the time is
 fixed cost: scene load, placement, visibility and the sun-key atmospheres.
 
+An incremental bake plans before it measures visibility, with each probe
+as the cell it may move within (half its spacing about its lattice
+position). It measures again only the probes some band gathers, those the
+previous volume lacks, and those within the reach plus 2.5 of their own
+spacings of a changed box, where a move can change their relocation or
+distance moments; the others take the previous volume's offset, validity
+and moments as stored. A measured probe keeps its previous SH only at the
+same stored offset. On the Level Design Test copy above (285,765 probes)
+visibility took 5.7 s against 20.6 s and the volume bake after a one-prop
+move 47 s against 84 s, gathering 0.9% of the probe-bands; the job's other
+cuts are in [ADR-088](088-baked-lightmap-sets.md) Rebakes (fixed costs).
+
 ### Runtime
 
 A scene's `diffuse_volume.path` is prepared on a worker
