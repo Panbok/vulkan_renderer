@@ -192,7 +192,11 @@ The owner accepted each recommendation below on 2026-10-20.
   in every run with and without level copies, after 23,733 and 82,549
   submissions; an RGD dump placed the page fault in
   `Transmission.Compact.Fullscreen.0` at an address no live resource holds.
-  The driver's budget passed. The cause is not found.
+  The driver's budget passed. A later run with that pass's `visible_rows`
+  and `materials` reads bounds-checked logged no out-of-range index and
+  reached the texture-ready timeout without a device loss, as 2 of the 8
+  runs at that budget did, so neither index is cleared or blamed. The cause
+  is not found.
 - G-buffer albedo captures along that path after streaming settles, against
   full residency, and a count of frames that sample below the required mip.
 - A budget at half of Bistro's full-resolution texture bytes, with no
