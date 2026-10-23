@@ -305,10 +305,14 @@ static void *editor_bakery_worker(void *argument) {
       .working_directory = vkr_content_root(),
       .stdout_path = job->stdout_path,
       .stderr_path = job->stderr_path,
-      .timeout_ms = job->kind == EDITOR_BAKE_REFLECTION_PROBE
-                        ? 35u * 60u * 1000u
-                    : job->kind == EDITOR_BAKE_PACKAGE ? 0u
-                                                       : 30u * 60u * 1000u,
+      /* A project job, such as a full Level Design Test lighting bake of
+         about 38 minutes, and a package run until they finish or are
+         cancelled; a 30-minute limit once stopped full bakes. */
+      .timeout_ms =
+          job->kind == EDITOR_BAKE_REFLECTION_PROBE ? 35u * 60u * 1000u
+          : job->kind == EDITOR_BAKE_PACKAGE || job->kind == EDITOR_BAKE_PROJECT
+              ? 0u
+              : 30u * 60u * 1000u,
       /* A cancelled package removes its staging folder before it exits. */
       .termination_grace_ms = job->kind == EDITOR_BAKE_PACKAGE ? 5000u : 250u,
       .terminate_process_tree = true_v,
