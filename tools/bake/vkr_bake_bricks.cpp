@@ -271,8 +271,7 @@ Vec3 octahedral_direction(float32_t u, float32_t v) {
   if (direction.z < 0.0f) {
     const float32_t x = direction.x;
     direction.x = (1.0f - std::fabs(direction.y)) * (x >= 0.0f ? 1.0f : -1.0f);
-    direction.y =
-        (1.0f - std::fabs(x)) * (direction.y >= 0.0f ? 1.0f : -1.0f);
+    direction.y = (1.0f - std::fabs(x)) * (direction.y >= 0.0f ? 1.0f : -1.0f);
   }
   return vec3_normalize(direction);
 }
@@ -305,11 +304,11 @@ void trace_probe(const VkrBakeBvh &bvh, const VkrBakeBrickMaterial *materials,
       float64_t sum_squares = 0.0;
       for (uint32_t r = 0u; r < VKR_BAKE_BRICK_RAYS_PER_TEXEL; ++r) {
         const uint32_t ray_seed = seed ^ mix((ty * interior + tx) * 64u + r);
-        const float32_t sx = ((float32_t)(r % strata) + unit(ray_seed)) /
-                             (float32_t)strata;
-        const float32_t sy = ((float32_t)(r / strata) +
-                              unit(ray_seed ^ 0x9e3779b9u)) /
-                             (float32_t)strata;
+        const float32_t sx =
+            ((float32_t)(r % strata) + unit(ray_seed)) / (float32_t)strata;
+        const float32_t sy =
+            ((float32_t)(r / strata) + unit(ray_seed ^ 0x9e3779b9u)) /
+            (float32_t)strata;
         const float32_t u =
             -1.0f + 2.0f * ((float32_t)tx + sx) / (float32_t)interior;
         const float32_t v =
@@ -321,9 +320,9 @@ void trace_probe(const VkrBakeBvh &bvh, const VkrBakeBrickMaterial *materials,
                                  minimum_distance, ray_range, &hit)) {
           const VkrBakeTriangle &triangle =
               bvh.geometry.triangles[hit.triangle_index];
-          const bool back = !materials[triangle.material_index].double_sided &&
-                            vec3_dot(triangle.geometric_normal, direction) >
-                                0.0f;
+          const bool back =
+              !materials[triangle.material_index].double_sided &&
+              vec3_dot(triangle.geometric_normal, direction) > 0.0f;
           if (back) {
             ++out->backfaces;
             if (hit.t < out->closest_backface) {
@@ -393,25 +392,23 @@ void relocate_probe(const VkrBakeBvh &bvh,
   for (uint32_t step = 0u;; ++step) {
     trace_probe(bvh, materials, vec3_add(lattice, offset), seed, moment_range,
                 ray_range, &trace);
-    const float32_t fraction = (float32_t)trace.backfaces / (float32_t)ray_count;
+    const float32_t fraction =
+        (float32_t)trace.backfaces / (float32_t)ray_count;
     if (step == VKR_BAKE_BRICK_RELOCATION_STEPS) {
       break;
     }
     Vec3 next = offset;
     if (fraction > VKR_BAKE_BRICK_INSIDE_BACKFACE_FRACTION) {
-      next = vec3_add(offset,
-                      vec3_scale(trace.closest_backface_direction,
-                                 trace.closest_backface + clearance));
+      next = vec3_add(offset, vec3_scale(trace.closest_backface_direction,
+                                         trace.closest_backface + clearance));
     } else if (trace.closest_frontface < clearance) {
-      next = vec3_sub(offset,
-                      vec3_scale(trace.closest_frontface_direction,
-                                 clearance - trace.closest_frontface));
+      next = vec3_sub(offset, vec3_scale(trace.closest_frontface_direction,
+                                         clearance - trace.closest_frontface));
     } else {
       break;
     }
     next = clamp_offset(next, limit);
-    if (vec3_dot(vec3_sub(next, offset), vec3_sub(next, offset)) <
-        1.0e-10f) {
+    if (vec3_dot(vec3_sub(next, offset), vec3_sub(next, offset)) < 1.0e-10f) {
       break;
     }
     offset = next;
@@ -575,7 +572,7 @@ bool8_t vkr_bake_bricks_visibility(const VkrBakeBvh *bvh,
                                    const VkrBakeBrickMaterial *materials,
                                    uint32_t material_count,
                                    const VkrBakeBrickLayout *layout,
-                                   uint32_t thread_count,
+                                   uint32_t thread_count, const uint8_t *probes,
                                    VkrBakeBrickVisibility *out_visibility) {
   if (!bvh || !layout || !out_visibility ||
       (bvh->geometry.triangle_count && (!materials || !material_count))) {
@@ -585,8 +582,8 @@ bool8_t vkr_bake_bricks_visibility(const VkrBakeBvh *bvh,
      sees its back faces. */
   float32_t ray_range = 1.0f;
   if (bvh->node_count) {
-    const Vec3 extent = vec3_sub(bvh->nodes[0].bounds.max,
-                                 bvh->nodes[0].bounds.min);
+    const Vec3 extent =
+        vec3_sub(bvh->nodes[0].bounds.max, bvh->nodes[0].bounds.min);
     ray_range = Max(ray_range, std::sqrt(vec3_dot(extent, extent)));
   }
   std::atomic<uint32_t> next_probe{0u};
@@ -596,11 +593,14 @@ bool8_t vkr_bake_bricks_visibility(const VkrBakeBvh *bvh,
       if (probe >= layout->probe_count) {
         return;
       }
+      if (probes && !probes[probe]) {
+        continue;
+      }
       const VkrBakeBrickProbe &record = layout->probes[probe];
       const uint32_t seed =
-          mix(record.lattice[0] ^ mix(record.lattice[1] ^
-                                      mix(record.lattice[2] ^
-                                          mix(record.level + 0x51ed27u))));
+          mix(record.lattice[0] ^
+              mix(record.lattice[1] ^
+                  mix(record.lattice[2] ^ mix(record.level + 0x51ed27u))));
       if (!bvh->node_count) {
         VkrBakeBrickVisibility &visibility = out_visibility[probe];
         visibility = VkrBakeBrickVisibility{};
@@ -654,7 +654,8 @@ void vkr_bake_bricks_drop_invalid(VkrBakeBrickLayout *layout,
     }
     remap[b] = kept;
     layout->bricks[kept] = layout->bricks[b];
-    MemCopy(layout->brick_probes + (size_t)kept * VKR_DIFFUSE_VOLUME_BRICK_PROBES,
+    MemCopy(layout->brick_probes +
+                (size_t)kept * VKR_DIFFUSE_VOLUME_BRICK_PROBES,
             probes, VKR_DIFFUSE_VOLUME_BRICK_PROBES * sizeof(uint32_t));
     ++kept;
   }

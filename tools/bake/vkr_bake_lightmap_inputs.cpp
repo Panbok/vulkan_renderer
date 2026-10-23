@@ -1129,10 +1129,12 @@ bool vkr_bake_lightmap_plan_incremental(
 bool vkr_bake_plan_receivers(
     const VkrBakeLightmapInputs &previous, const VkrBakeLightmapInputs &current,
     const std::vector<VkrBakeLightmapPlanLayer> &layers,
-    const std::vector<Vec3> &receivers, float32_t reach,
+    const std::vector<Vec3> &receiver_min,
+    const std::vector<Vec3> &receiver_max, float32_t reach,
     VkrBakeReceiverPlan *out_plan) {
   if (!out_plan || previous.globals != current.globals ||
-      !std::isfinite(reach) || reach < 0.0f) {
+      receiver_min.size() != receiver_max.size() || !std::isfinite(reach) ||
+      reach < 0.0f) {
     return false;
   }
   try {
@@ -1141,17 +1143,17 @@ bool vkr_bake_plan_receivers(
     collect_changes(previous, current, reach, &changes);
     plan.changed_boxes = (uint32_t)changes.boxes.size();
     plan.changed_lights = (uint32_t)changes.lamps.size();
-    plan.gathered_dirty.assign(layers.size(),
-                               std::vector<uint8_t>(receivers.size(), 0u));
-    plan.direct_dirty.assign(layers.size(),
-                             std::vector<uint8_t>(receivers.size(), 0u));
+    const size_t count = receiver_min.size();
+    plan.gathered_dirty.assign(layers.size(), std::vector<uint8_t>(count, 0u));
+    plan.direct_dirty.assign(layers.size(), std::vector<uint8_t>(count, 0u));
     for (size_t l = 0u; l < layers.size(); ++l) {
       const LayerRules rules = layer_rules(layers[l], current, changes, reach);
-      for (size_t r = 0u; r < receivers.size(); ++r) {
-        const Vec3 p = receivers[r];
-        plan.gathered_dirty[l][r] = gathered_changes(rules, p, p) ? 1u : 0u;
+      for (size_t r = 0u; r < count; ++r) {
+        const Vec3 lo = receiver_min[r];
+        const Vec3 hi = receiver_max[r];
+        plan.gathered_dirty[l][r] = gathered_changes(rules, lo, hi) ? 1u : 0u;
         if (layers[l].lamp_direct) {
-          plan.direct_dirty[l][r] = direct_changes(rules, p, p) ? 1u : 0u;
+          plan.direct_dirty[l][r] = direct_changes(rules, lo, hi) ? 1u : 0u;
         }
       }
     }

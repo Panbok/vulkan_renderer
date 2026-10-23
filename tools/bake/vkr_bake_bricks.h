@@ -102,13 +102,15 @@ float32_t vkr_bake_bricks_probe_spacing(const VkrBakeBrickLayout *layout,
  * Relocates every layout probe out of geometry and measures its distance
  * moments (`out_visibility[probe]`), on `thread_count` workers (zero for
  * every hardware thread). Each probe's rays depend only on the probe, so the
- * result is the same for any worker count.
+ * result is the same for any worker count. With `probes`, by probe index,
+ * only the marked probes are measured and the others' records are left as
+ * they are.
  */
 bool8_t vkr_bake_bricks_visibility(const VkrBakeBvh *bvh,
                                    const VkrBakeBrickMaterial *materials,
                                    uint32_t material_count,
                                    const VkrBakeBrickLayout *layout,
-                                   uint32_t thread_count,
+                                   uint32_t thread_count, const uint8_t *probes,
                                    VkrBakeBrickVisibility *out_visibility);
 
 /**

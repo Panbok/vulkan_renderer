@@ -1059,20 +1059,24 @@ bool previous_probe_slots(const VkrDiffuseVolume &previous, Arena *arena,
 }
 
 /*
- * Plans an incremental bake over the previous volume: false with `reason`
- * when it must bake in full. A probe keeps its previous SH in a band when
- * the previous volume holds its own SH at the same relocated position and
- * the band's light there cannot have changed by the lightmap plan's rules
- * (vkr_bake_plan_receivers); the gathered band of a lamp group follows its
- * irradiance rule and its direct band the lamp-direct rule.
+ * Plans an incremental bake over the previous volume, before the probes'
+ * visibility is measured: false with `reason` when it must bake in full.
+ * A probe can keep a band's previous SH when the previous volume stores
+ * its own SH and the band's light in the cell it may move within cannot
+ * have changed by the lightmap plan's rules (vkr_bake_plan_receivers); the
+ * gathered band of a lamp group follows its irradiance rule and its direct
+ * band the lamp-direct rule. `out_measure` marks the probes whose
+ * visibility is measured again: those some band gathers, those without a
+ * previous record, and those a changed box comes near enough to move or to
+ * change their distance moments. The others take the previous volume's.
  */
-bool plan_probe_reuse(const Options &options, const Volume &volume,
+bool plan_probe_reuse(const Options &options, const VkrBakeBrickLayout &layout,
                       const VkrBakeLightmapInputs &inputs,
                       const std::vector<VkrBakeLayerPlan> &plans,
                       const std::vector<VkrBakeAtmosphere> &key_atmospheres,
                       const std::vector<VkrLightLayer> &records,
                       uint32_t lamp_direct_count, Arena *arena, ProbeReuse *out,
-                      std::string *reason) {
+                      std::vector<uint8_t> *out_measure, std::string *reason) {
   VkrBakeLightmapInputs previous_inputs;
   uint32_t previous_crc = 0u;
   uint64_t previous_bytes = 0u;
@@ -1095,7 +1099,6 @@ bool plan_probe_reuse(const Options &options, const Volume &volume,
     return false;
   }
   const VkrDiffuseVolume &previous = out->previous;
-  const VkrBakeBrickLayout &layout = volume.layout;
   bool same_layers = previous.layer_count == records.size() &&
                      previous.lamp_direct_count == lamp_direct_count;
   for (uint32_t l = 0u; same_layers && l < records.size(); ++l) {
@@ -1116,26 +1119,10 @@ bool plan_probe_reuse(const Options &options, const Volume &volume,
     *reason = "the previous volume's bricks do not read";
     return false;
   }
-  /* A probe the previous volume holds at the same relocated position. */
   out->previous_slot.assign(layout.probe_count, UINT32_MAX);
   for (uint32_t p = 0u; p < layout.probe_count; ++p) {
-    if (!volume.baked[p]) {
-      continue;
-    }
     const auto found = slots.find(probe_key(layout.probes[p]));
-    if (found == slots.end()) {
-      continue;
-    }
-    const uint8_t *aux = previous.probe_aux +
-                         (size_t)found->second * VKR_DIFFUSE_VOLUME_AUX_BYTES;
-    bool same_place = true;
-    for (uint32_t axis = 0u; axis < 3u; ++axis) {
-      const uint16_t now =
-          vkr_float32_to_float16(volume.visibility[p].offset.elements[axis]);
-      same_place = same_place && now == (uint16_t)(aux[axis * 2u] |
-                                                   (aux[axis * 2u + 1u] << 8u));
-    }
-    if (same_place) {
+    if (found != slots.end()) {
       out->previous_slot[p] = found->second;
     }
   }
@@ -1151,16 +1138,42 @@ bool plan_probe_reuse(const Options &options, const Volume &volume,
             ? key_atmospheres[(size_t)plan.sun_key].key_light_direction
             : plan.record.sun_direction;
   }
-  std::vector<Vec3> positions(layout.probe_count);
+  /* A probe moves at most half its spacing from its lattice position. */
+  std::vector<Vec3> cell_min(layout.probe_count);
+  std::vector<Vec3> cell_max(layout.probe_count);
   for (uint32_t p = 0u; p < layout.probe_count; ++p) {
-    positions[p] = probe_origin(volume, p);
+    const Vec3 position = vkr_bake_bricks_probe_position(&layout, p);
+    const float32_t half = 0.5f * vkr_bake_bricks_probe_spacing(&layout, p);
+    cell_min[p] = vec3_sub(position, vec3_new(half, half, half));
+    cell_max[p] = vec3_add(position, vec3_new(half, half, half));
   }
+  const float32_t reach = std::max(options.reach, options.spacing);
   VkrBakeReceiverPlan plan;
-  if (!vkr_bake_plan_receivers(previous_inputs, inputs, layers, positions,
-                               std::max(options.reach, options.spacing),
-                               &plan)) {
+  if (!vkr_bake_plan_receivers(previous_inputs, inputs, layers, cell_min,
+                               cell_max, reach, &plan)) {
     *reason = "planning the incremental bake failed";
     return false;
+  }
+  /* A probe's distance moments read up to two of its spacings and its
+     relocation half of one; per level, a lamp layer without lights marks
+     the cells within the reach and that of a changed box. */
+  std::vector<uint8_t> nearby(layout.probe_count, 0u);
+  std::vector<VkrBakeLightmapPlanLayer> near(1u);
+  near[0].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
+  for (uint32_t level = 0u; level < layout.level_count; ++level) {
+    const float32_t spacing = layout.spacing * (float32_t)level_span(level);
+    VkrBakeReceiverPlan level_plan;
+    if (!vkr_bake_plan_receivers(previous_inputs, inputs, near, cell_min,
+                                 cell_max, reach + 2.5f * spacing,
+                                 &level_plan)) {
+      *reason = "planning the incremental bake failed";
+      return false;
+    }
+    for (uint32_t p = 0u; p < layout.probe_count; ++p) {
+      if (layout.probes[p].level == level && level_plan.gathered_dirty[0][p]) {
+        nearby[p] = 1u;
+      }
+    }
   }
   out->changed_instances = plan.changed_boxes;
   out->changed_lights = plan.changed_lights;
@@ -1174,14 +1187,74 @@ bool plan_probe_reuse(const Options &options, const Volume &volume,
       out->dirty.push_back(plan.direct_dirty[l]);
     }
   }
-  for (std::vector<uint8_t> &band : out->dirty) {
-    for (uint32_t p = 0u; p < layout.probe_count; ++p) {
-      if (out->previous_slot[p] == UINT32_MAX) {
+  out_measure->assign(layout.probe_count, 0u);
+  for (uint32_t p = 0u; p < layout.probe_count; ++p) {
+    bool measure = out->previous_slot[p] == UINT32_MAX || nearby[p] != 0u;
+    for (const std::vector<uint8_t> &band : out->dirty) {
+      measure = measure || band[p] != 0u;
+    }
+    (*out_measure)[p] = measure ? 1u : 0u;
+  }
+  return true;
+}
+
+/* The previous volume's relocation, validity and distance moments for the
+   probes not measured again, as it stored them. */
+void reuse_visibility(const ProbeReuse &reuse,
+                      const std::vector<uint8_t> &measure, Volume *volume) {
+  const VkrDiffuseVolume &previous = reuse.previous;
+  for (uint32_t p = 0u; p < volume->layout.probe_count; ++p) {
+    if (measure[p]) {
+      continue;
+    }
+    const uint32_t slot = reuse.previous_slot[p];
+    const uint8_t *aux =
+        previous.probe_aux + (size_t)slot * VKR_DIFFUSE_VOLUME_AUX_BYTES;
+    const uint8_t *tile =
+        previous.moments + (size_t)slot * VKR_DIFFUSE_VOLUME_MOMENT_BYTES;
+    VkrBakeBrickVisibility &visibility = volume->visibility[p];
+    visibility = VkrBakeBrickVisibility{};
+    visibility.offset =
+        vec3_new(load_half(aux), load_half(aux + 2u), load_half(aux + 4u));
+    visibility.valid = true_v;
+    for (uint32_t i = 0u; i < VKR_DIFFUSE_VOLUME_MOMENT_TEXELS * 2u; ++i) {
+      visibility.moments[i] = load_half(tile + i * 2u);
+    }
+  }
+}
+
+/* After visibility: a measured probe keeps its previous SH only where it
+   is still baked and at the same relocated position; the others gather in
+   every band. */
+void settle_probe_reuse(const Volume &volume,
+                        const std::vector<uint8_t> &measure,
+                        ProbeReuse *reuse) {
+  const VkrDiffuseVolume &previous = reuse->previous;
+  for (uint32_t p = 0u; p < volume.layout.probe_count; ++p) {
+    uint32_t &slot = reuse->previous_slot[p];
+    if (slot == UINT32_MAX || !measure[p]) {
+      continue;
+    }
+    const uint8_t *aux =
+        previous.probe_aux + (size_t)slot * VKR_DIFFUSE_VOLUME_AUX_BYTES;
+    bool same_place = volume.baked[p] != 0u;
+    for (uint32_t axis = 0u; same_place && axis < 3u; ++axis) {
+      const uint16_t now =
+          vkr_float32_to_float16(volume.visibility[p].offset.elements[axis]);
+      same_place =
+          now == (uint16_t)(aux[axis * 2u] | (aux[axis * 2u + 1u] << 8u));
+    }
+    if (!same_place) {
+      slot = UINT32_MAX;
+    }
+  }
+  for (std::vector<uint8_t> &band : reuse->dirty) {
+    for (uint32_t p = 0u; p < volume.layout.probe_count; ++p) {
+      if (reuse->previous_slot[p] == UINT32_MAX) {
         band[p] = 1u;
       }
     }
   }
-  return true;
 }
 
 /* The previous volume's SH of `slot` in band `band`, as it was stored. */
@@ -1218,13 +1291,10 @@ struct VolumeReport {
  * copies the others' SH as the previous volume stored it.
  */
 int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
-                const Volume &volume, const VkrBakeLightmapInputs &inputs,
-                Arena *arena, VolumeReport *report) {
-  std::vector<VkrBakeLayerPlan> plans;
-  std::vector<VkrBakeAtmosphere> key_atmospheres;
-  if (!plan_volume_layers(scene, &plans, &key_atmospheres)) {
-    return 1;
-  }
+                const Volume &volume,
+                const std::vector<VkrBakeLayerPlan> &plans,
+                const std::vector<VkrBakeAtmosphere> &key_atmospheres,
+                const ProbeReuse &reuse, Arena *arena, VolumeReport *report) {
   const VkrBakeBrickLayout &layout = volume.layout;
   const uint32_t layer_count = (uint32_t)plans.size();
   const uint32_t slot_count =
@@ -1266,24 +1336,6 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
     }
   }
   const uint32_t band_count = layer_count + lamp_direct_count;
-
-  ProbeReuse reuse;
-  if (options.previous_volume) {
-    report->incremental = plan_probe_reuse(
-        options, volume, inputs, plans, key_atmospheres, layers,
-        lamp_direct_count, arena, &reuse, &report->full_reason);
-  }
-  if (report->incremental) {
-    report->full_reason.clear();
-    report->changed_instances = reuse.changed_instances;
-    report->changed_lights = reuse.changed_lights;
-    std::printf("incremental base=%s changed_instances=%u changed_lights=%u "
-                "reach=%g\n",
-                options.previous_volume, reuse.changed_instances,
-                reuse.changed_lights, std::max(options.reach, options.spacing));
-  } else if (options.previous_volume) {
-    std::printf("full reason=%s\n", report->full_reason.c_str());
-  }
   /* The probes band `band` gathers; every baked probe without a plan. */
   auto band_probes = [&](uint32_t band) {
     if (!report->incremental) {
@@ -1571,15 +1623,20 @@ void count_levels(const VkrBakeBrickLayout &layout, uint32_t out[3]) {
    valid probe. */
 bool prepare_visibility(const Options &options, const VkrBakeBvh &bvh,
                         const std::vector<VkrBakeBrickMaterial> &materials,
-                        Volume *volume) {
+                        const ProbeReuse *reuse,
+                        const std::vector<uint8_t> *measure, Volume *volume) {
   const auto start = std::chrono::steady_clock::now();
   VkrBakeBrickLayout &layout = volume->layout;
   volume->visibility.resize(layout.probe_count);
-  if (!vkr_bake_bricks_visibility(&bvh, materials.data(),
-                                  (uint32_t)materials.size(), &layout,
-                                  options.threads, volume->visibility.data())) {
+  if (!vkr_bake_bricks_visibility(
+          &bvh, materials.data(), (uint32_t)materials.size(), &layout,
+          options.threads, measure ? measure->data() : nullptr,
+          volume->visibility.data())) {
     std::fprintf(stderr, "Probe visibility failed\n");
     return false;
+  }
+  if (reuse && measure) {
+    reuse_visibility(*reuse, *measure, volume);
   }
   const uint32_t placed_bricks = layout.brick_count;
   vkr_bake_bricks_drop_invalid(&layout, volume->visibility.data());
@@ -1789,15 +1846,58 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
     std::printf("kept: the inputs match the previous volume's index\n");
     return VKR_DIFFUSE_VOLUME_KEPT_EXIT;
   }
-  if (!prepare_visibility(options, bvh, materials, &volume)) {
-    return 1;
-  }
   if (options.gpu_parity) {
+    if (!prepare_visibility(options, bvh, materials, nullptr, nullptr,
+                            &volume)) {
+      return 1;
+    }
     return run_gpu_parity(options, scene, bvh, volume, arena);
   }
+  std::vector<VkrBakeLayerPlan> plans;
+  std::vector<VkrBakeAtmosphere> key_atmospheres;
+  if (!plan_volume_layers(scene, &plans, &key_atmospheres)) {
+    return 1;
+  }
+  std::vector<VkrLightLayer> records;
+  uint32_t lamp_direct_count = 0u;
+  for (const VkrBakeLayerPlan &plan : plans) {
+    records.push_back(plan.record);
+    lamp_direct_count += plan.record.kind == VKR_LIGHT_LAYER_LAMP_GROUP;
+  }
+  /* An incremental bake plans before visibility, which it measures again
+     only where an edit can change it. */
   VolumeReport report;
-  const int baked =
-      bake_volume(options, scene, bvh, volume, inputs, arena, &report);
+  ProbeReuse reuse;
+  std::vector<uint8_t> measure;
+  if (options.previous_volume) {
+    report.incremental = plan_probe_reuse(
+        options, volume.layout, inputs, plans, key_atmospheres, records,
+        lamp_direct_count, arena, &reuse, &measure, &report.full_reason);
+  }
+  if (!prepare_visibility(options, bvh, materials,
+                          report.incremental ? &reuse : nullptr,
+                          report.incremental ? &measure : nullptr, &volume)) {
+    return 1;
+  }
+  if (report.incremental) {
+    settle_probe_reuse(volume, measure, &reuse);
+    report.full_reason.clear();
+    report.changed_instances = reuse.changed_instances;
+    report.changed_lights = reuse.changed_lights;
+    uint32_t measured = 0u;
+    for (uint8_t value : measure) {
+      measured += value;
+    }
+    std::printf("incremental base=%s changed_instances=%u changed_lights=%u "
+                "reach=%g measured_probes=%u/%zu\n",
+                options.previous_volume, reuse.changed_instances,
+                reuse.changed_lights, std::max(options.reach, options.spacing),
+                measured, measure.size());
+  } else if (options.previous_volume) {
+    std::printf("full reason=%s\n", report.full_reason.c_str());
+  }
+  const int baked = bake_volume(options, scene, bvh, volume, plans,
+                                key_atmospheres, reuse, arena, &report);
   /* The index names the volume's checksum and size, so a later bake copies
      probes only from the volume it describes. */
   if (baked == 0 && options.index &&

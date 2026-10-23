@@ -395,13 +395,13 @@ void test_incremental_plan_relights_what_edits_reach() {
                                     vec3_new(0.0f, 0.0f, 0.0f),
                                     vec3_new(49.0f, 1.0f, 0.0f)};
   VkrBakeReceiverPlan points;
-  assert(
-      vkr_bake_plan_receivers(previous, moved, layers, probes, 4.0f, &points));
+  assert(vkr_bake_plan_receivers(previous, moved, layers, probes, probes, 4.0f,
+                                 &points));
   assert(points.gathered_dirty[0][0] && points.gathered_dirty[1][0]);
   assert(!points.gathered_dirty[0][1] && !points.gathered_dirty[1][1]);
   assert(!points.direct_dirty[1][2]);
-  assert(
-      vkr_bake_plan_receivers(previous, relit, layers, probes, 4.0f, &points));
+  assert(vkr_bake_plan_receivers(previous, relit, layers, probes, probes, 4.0f,
+                                 &points));
   assert(!points.gathered_dirty[0][2] && points.gathered_dirty[1][2] &&
          points.direct_dirty[1][2] && !points.gathered_dirty[1][1]);
 
@@ -2063,9 +2063,9 @@ void test_sparse_bricks_place_and_relocate() {
 
   std::vector<VkrBakeBrickVisibility> serial(layout.probe_count);
   std::vector<VkrBakeBrickVisibility> parallel(layout.probe_count);
-  ok = vkr_bake_bricks_visibility(&bvh, materials, 1u, &layout, 1u,
+  ok = vkr_bake_bricks_visibility(&bvh, materials, 1u, &layout, 1u, nullptr,
                                   serial.data()) &&
-       vkr_bake_bricks_visibility(&bvh, materials, 1u, &layout, 3u,
+       vkr_bake_bricks_visibility(&bvh, materials, 1u, &layout, 3u, nullptr,
                                   parallel.data());
   assert(ok);
   assert(memcmp(serial.data(), parallel.data(),

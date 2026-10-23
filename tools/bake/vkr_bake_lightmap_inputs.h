@@ -224,16 +224,19 @@ struct VkrBakeReceiverPlan {
 };
 
 /*
- * Plans which of `receivers`, points such as a diffuse volume's probes, an
- * incremental bake of `current` over `previous` (equal globals) relights
- * per layer, by the rules vkr_bake_lightmap_plan_incremental applies to an
- * instance that did not change: a layer's gathered light by its sun-key or
- * lamp-group rule, its lamp-direct light, for a layer with `lamp_direct`,
- * by the lamp-direct rule. A receiver is never itself a changed instance;
+ * Plans which receivers, boxes such as the cells a diffuse volume's probes
+ * may move within, an incremental bake of `current` over `previous` (equal
+ * globals) relights per layer, by the rules
+ * vkr_bake_lightmap_plan_incremental applies to an instance that did not
+ * change: a layer's gathered light by its sun-key or lamp-group rule, its
+ * lamp-direct light, for a layer with `lamp_direct`, by the lamp-direct
+ * rule. A lamp-group layer without lights marks the receivers within
+ * `reach` of a changed box. A receiver is never itself a changed instance;
  * the caller relights receivers whose own inputs changed.
  */
 bool vkr_bake_plan_receivers(
     const VkrBakeLightmapInputs &previous, const VkrBakeLightmapInputs &current,
     const std::vector<VkrBakeLightmapPlanLayer> &layers,
-    const std::vector<Vec3> &receivers, float32_t reach,
+    const std::vector<Vec3> &receiver_min,
+    const std::vector<Vec3> &receiver_max, float32_t reach,
     VkrBakeReceiverPlan *out_plan);
