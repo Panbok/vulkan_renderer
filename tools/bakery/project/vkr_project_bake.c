@@ -836,9 +836,23 @@ vkr_internal void vkr_project_lift_world_blocks(VkrProjectJob *job,
   }
 }
 
+/* Drops what a lightmap or volume bake does not read and an earlier bake's
+   results change: the asset paths runtime references resolve through, the
+   lightmap, volume and reflection-probe blocks. A bake of unchanged inputs
+   then reads byte-identical scene text, which keeps its result without a
+   scene load (vkr_bakery bake, ADR-088). */
+vkr_internal void vkr_project_strip_bake_results(VkrBakeryJson *runtime) {
+  static const char *const keys[] = {"asset_refs", "lightmaps",
+                                     "diffuse_volume", "reflection_probes"};
+  for (uint32_t k = 0u; k < ArrayCount(keys); ++k) {
+    vkr_bakery_json_remove(runtime, keys[k]);
+  }
+}
+
 VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
                                                   VkrBakeryJson *scene,
-                                                  const char *root) {
+                                                  const char *root,
+                                                  bool8_t lighting) {
   Arena *arena = job->arena;
   VkrBakeryJson *result = vkr_project_lower(job, scene, root, true_v);
   if (!result) {
@@ -863,10 +877,13 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
     if (!vkr_project_append_world(job, entities, &world_first, &world_end)) {
       return NULL;
     }
-    if (entities->count == before) {
+    if (entities->count == before && !lighting) {
       return result;
     }
     vkr_project_lift_world_blocks(job, runtime, world_first, world_end);
+    if (lighting) {
+      vkr_project_strip_bake_results(runtime);
+    }
     char id[37];
     vkr_project_uuid4(id);
     char bake_root[VKR_PROJECT_PATH];
@@ -992,6 +1009,9 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
     return NULL;
   }
   vkr_project_lift_world_blocks(job, runtime, world_first, world_end);
+  if (lighting) {
+    vkr_project_strip_bake_results(runtime);
+  }
   const char *runtime_path =
       vkr_project_printf(job, "%s/bake.scene.json", bake_root);
   if (!vkr_project_atomic_json(job, runtime_path, runtime)) {
@@ -1058,8 +1078,8 @@ vkr_internal bool8_t vkr_project_bake_probes(VkrProjectJob *job,
   VkrBakeryJson *capture_scene = vkr_bakery_json_clone(arena, scene);
   vkr_bakery_json_set(arena, capture_scene, "reflection_probes",
                       vkr_bakery_json_array(arena));
-  VkrBakeryJson *runtime =
-      vkr_project_effective_bake_runtime(job, capture_scene, asset_root);
+  VkrBakeryJson *runtime = vkr_project_effective_bake_runtime(
+      job, capture_scene, asset_root, false_v);
   VKR_PROJECT_TRY(runtime);
   const char *runtime_path = vkr_project_json_text(runtime, "runtime_path");
   VkrBakeryJson *probes = vkr_bakery_json_get(scene, "reflection_probes");
@@ -1335,7 +1355,7 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
   VkrBakeryJson *bake_scene = vkr_bakery_json_clone(arena, scene);
   vkr_bakery_json_remove(bake_scene, "diffuse_volume");
   VkrBakeryJson *runtime =
-      vkr_project_effective_bake_runtime(job, bake_scene, asset_root);
+      vkr_project_effective_bake_runtime(job, bake_scene, asset_root, true_v);
   VKR_PROJECT_TRY(runtime);
   char revision[37];
   vkr_project_uuid4(revision);
@@ -1533,7 +1553,7 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
   VkrBakeryJson *bake_scene = vkr_bakery_json_clone(arena, scene);
   vkr_bakery_json_remove(bake_scene, "lightmaps");
   VkrBakeryJson *runtime =
-      vkr_project_effective_bake_runtime(job, bake_scene, asset_root);
+      vkr_project_effective_bake_runtime(job, bake_scene, asset_root, true_v);
   VKR_PROJECT_TRY(runtime);
   char revision[37];
   vkr_project_uuid4(revision);

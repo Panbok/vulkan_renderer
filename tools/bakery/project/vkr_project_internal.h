@@ -634,10 +634,14 @@ bool8_t vkr_project_collect_garbage(VkrProjectJob *job, int64_t grace_seconds,
 // =============================================================================
 
 /** Lowers `scene`, then applies its authored overlay to a bake-only runtime
- * copy under jobs/effective-<uuid>; returns the lower result pointing at it. */
+ * copy under jobs/effective-<uuid>; returns the lower result pointing at it.
+ * With `lighting`, for a lightmap or volume bake, the copy leaves out what
+ * those bakes do not read and earlier bakes change (asset_refs, the
+ * lightmap, volume and reflection-probe blocks). */
 VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
                                                   VkrBakeryJson *scene,
-                                                  const char *root);
+                                                  const char *root,
+                                                  bool8_t lighting);
 bool8_t vkr_project_perform_bakes(VkrProjectJob *job, VkrBakeryJson *scene,
                                   const char *asset_root);
 

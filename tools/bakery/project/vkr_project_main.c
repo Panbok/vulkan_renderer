@@ -305,7 +305,7 @@ vkr_internal VkrBakeryJson *vkr_project_dispatch(VkrProjectJob *job) {
          publishes nothing into the scene. */
       char root[VKR_PROJECT_PATH];
       vkr_bakery_path_parent(root, sizeof(root), path);
-      return vkr_project_effective_bake_runtime(job, scene, root);
+      return vkr_project_effective_bake_runtime(job, scene, root, false_v);
     }
     return vkr_project_prepare_unbuilt(job, path, scene);
   }
