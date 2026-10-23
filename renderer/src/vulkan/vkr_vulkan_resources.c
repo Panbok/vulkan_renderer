@@ -432,8 +432,13 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
       requirements.memoryRequirements.size > pool_block_size;
   // Typed mapped uploads contain Vec4 records. Transfer-only buffers can have
   // a smaller native alignment, which does not satisfy those CPU stores.
+  // Shader loads through a buffer device address declare their type's
+  // alignment, up to 16 bytes for vector records, while the driver may
+  // report 4 for a storage buffer: a buffer placed at such an offset breaks
+  // VUID-RuntimeSpirv-PhysicalStorageBuffer64-06315.
   const VkDeviceSize alignment =
-      (allocation->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+      (allocation->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
+              has_address
           ? Max(requirements.memoryRequirements.alignment,
                 (VkDeviceSize) _Alignof(Vec4))
           : requirements.memoryRequirements.alignment;
@@ -559,7 +564,12 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
         .buffer = out_buffer->handle,
     };
     out_buffer->address = vkGetBufferDeviceAddress(device, &address_info);
-    if (!out_buffer->address) {
+    if (!out_buffer->address ||
+        out_buffer->address % (VkDeviceAddress) _Alignof(Vec4) != 0u) {
+      log_error("Vulkan buffer device address 0x%llx is null or not %u-byte "
+                "aligned",
+                (unsigned long long)out_buffer->address,
+                (uint32_t)_Alignof(Vec4));
       vkr_vk_destroy_buffer(renderer, out_buffer);
       return false_v;
     }

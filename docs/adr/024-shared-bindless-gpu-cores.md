@@ -25,7 +25,17 @@ heaps/buffers/images, mapping, residency, descriptors and queue operations.
 Vulkan suballocates keyed DEVICE, UPLOAD, READBACK and STAGING blocks. Keys distinguish
 resource kind, exact memory type and device-address requirements. Host-visible
 blocks stay mapped; required dedicated allocations bypass the range allocator
-while retaining accounting. Metal uses placement heaps and upload/readback
+while retaining accounting. Host-visible and device-address buffers are
+placed at 16-byte alignment or more, and creation refuses a device address
+that is not, because shader loads through a device address declare their
+type's alignment (VUID-RuntimeSpirv-PhysicalStorageBuffer64-06315) while
+the driver can report 4 for a storage buffer. A `gpu_draw_instances` buffer
+placed at a 4-byte boundary lost the device after 23,733 to 82,549 frames of
+the 1440p Bistro orbit at `VKR_VULKAN_MEMORY_BUDGET_MB=6000` (6 of 8 runs,
+2026-10-23). GPU-assisted validation named unaligned loads from it in
+`VBuffer.Opaque`; a Radeon GPU Detective dump had placed the fault in
+`Transmission.Compact.Fullscreen.0`, which also loads through device
+addresses. With the alignment, 3 of 3 runs kept the device. Metal uses placement heaps and upload/readback
 rings through the same range and submit contracts. There is no VMA, online
 defragmentation or graph transient aliasing.
 

@@ -181,17 +181,10 @@ The owner accepted each recommendation below on 2026-10-20.
   `VKR_VULKAN_MEMORY_BUDGET_MB=10500`, 1.97 GB of Bistro's 3.16 GB resident,
   9 lowering steps and 4 level copies landing in the measured frames, it
   took 13.12, 14.45 and 23.7 ms, with up to 71 texture slots (41 on average)
-  below their measured need. Open defect (2026-10-23): `bistro_vulkan_high_orbit_1440`
-  at `VKR_VULKAN_MEMORY_BUDGET_MB=6000`, where the texture allowance falls
-  to 0 and every texture keeps loading and being evicted, lost the device
-  in every run with and without level copies, after 23,733 and 82,549
-  submissions; an RGD dump placed the page fault in
-  `Transmission.Compact.Fullscreen.0` at an address no live resource holds.
-  The driver's budget passed. A later run with that pass's `visible_rows`
-  and `materials` reads bounds-checked logged no out-of-range index and
-  reached the texture-ready timeout without a device loss, as 2 of the 8
-  runs at that budget did, so neither index is cleared or blamed. The cause
-  is not found.
+  below their measured need. That case at
+  `VKR_VULKAN_MEMORY_BUDGET_MB=6000`, where the texture allowance falls to 0,
+  lost the device until device-address buffers were aligned to 16 bytes
+  (ADR-024).
 - G-buffer albedo captures along that path after streaming settles, against
   full residency, and a count of frames that sample below the required mip.
 - A budget at half of Bistro's full-resolution texture bytes, with no
