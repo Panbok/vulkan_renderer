@@ -321,6 +321,15 @@ uint32_t
 vkr_material_system_pending_replacements(const VkrMaterialSystem *system);
 
 /** Applies up to max_updates ready streamed textures to live material rows. */
+/**
+ * @brief The resident material textures as the budget sees them, one entry
+ * per shared texture: held and required mips, bytes, cap and newest demand
+ * epoch. The entries are the system's scratch, valid until the next pump
+ * or call; for reports such as the harness's texture residency artifact.
+ */
+uint32_t vkr_material_system_texture_residency(
+    VkrMaterialSystem *system, const VkrMaterialTextureCandidate **out_entries);
+
 void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
                                               uint32_t max_updates);
 

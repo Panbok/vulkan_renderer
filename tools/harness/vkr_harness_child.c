@@ -1209,6 +1209,86 @@ vkr_internal bool8_t vkr_harness_child_write_light_layers(
                                          "application/json", path);
 }
 
+/* Writes `texture-residency.json` to the run directory: the material texture
+   budget's state as the measured frames left it, one row per resident
+   texture with the mips it holds, the mips its materials' measured demand
+   needs within the limit, its bytes and source chain (texture streaming
+   proposal, evidence). False with nothing published when it cannot. */
+vkr_internal bool8_t vkr_harness_child_write_texture_residency(
+    const VkrHarnessChildContext *child, VkrStandardSceneRuntime *application,
+    char *out_path, uint64_t path_capacity) {
+  string_format(out_path, path_capacity, "%s/texture-residency.json",
+                child->run_dir);
+  VkrMaterialSystem *materials = &application->assets.material_system;
+  VkrTextureSystem *textures = &application->assets.texture_system;
+  const VkrMaterialTextureCandidate *entries = NULL;
+  const uint32_t count =
+      vkr_material_system_texture_residency(materials, &entries);
+  VkrJsonFileWriter file = {0};
+  if (!vkr_json_file_writer_begin(
+          &file, string8_create_from_cstr((const uint8_t *)out_path,
+                                          string_length(out_path)))) {
+    return false_v;
+  }
+  VkrJsonWriter *writer = &file.writer;
+  uint64_t below_need = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    below_need += entries[i].required_mip_levels > entries[i].mip_levels;
+  }
+  bool8_t ok =
+      vkr_json_writer_begin_object(writer) &&
+      vkr_harness_json_emit_u64(writer, "schema_version", 1u) &&
+      vkr_harness_json_emit_u64(writer, "epoch",
+                                materials->texture_stream_epoch) &&
+      vkr_harness_json_emit_u64(writer, "budget_bytes",
+                                materials->texture_stream_budget_bytes) &&
+      vkr_harness_json_emit_u64(writer, "resident_bytes",
+                                materials->texture_stream_resident_bytes) &&
+      vkr_harness_json_emit_u64(writer, "extent_limit",
+                                materials->texture_extent_limit) &&
+      vkr_harness_json_emit_u64(writer, "texture_count", count) &&
+      vkr_harness_json_emit_u64(writer, "below_need_count", below_need) &&
+      vkr_harness_json_emit_name(writer, "textures") &&
+      vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0u; ok && i < count; ++i) {
+    const VkrMaterialTextureCandidate *entry = &entries[i];
+    const VkrTexture *texture =
+        vkr_texture_system_get_by_handle(textures, entry->texture);
+    const char *name =
+        texture ? textures->texture_keys_by_index[entry->texture.id - 1u]
+                : NULL;
+    ok = vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_string(writer, "name", name ? name : "") &&
+         vkr_harness_json_emit_u64(writer, "bytes", entry->bytes) &&
+         vkr_harness_json_emit_u64(writer, "mip_levels", entry->mip_levels) &&
+         vkr_harness_json_emit_u64(writer, "extent",
+                                   texture ? Max(texture->description.width,
+                                                 texture->description.height)
+                                           : 0u) &&
+         vkr_harness_json_emit_u64(writer, "source_extent",
+                                   texture ? texture->limit_source_extent
+                                           : 0u) &&
+         vkr_harness_json_emit_u64(writer, "source_mip_levels",
+                                   texture ? texture->limit_source_mip_levels
+                                           : 0u) &&
+         vkr_harness_json_emit_u64(writer, "required_extent",
+                                   entry->required_extent) &&
+         vkr_harness_json_emit_u64(writer, "required_mip_levels",
+                                   entry->required_mip_levels) &&
+         vkr_harness_json_emit_u64(writer, "extent_cap", entry->extent_cap) &&
+         vkr_harness_json_emit_u64(writer, "last_used_epoch",
+                                   entry->last_used) &&
+         vkr_json_writer_end_object(writer);
+  }
+  ok = ok && vkr_json_writer_end_array(writer) &&
+       vkr_json_writer_end_object(writer);
+  if (!ok || !vkr_json_file_writer_commit(&file)) {
+    vkr_json_file_writer_abort(&file);
+    return false_v;
+  }
+  return true_v;
+}
+
 /* Bootstrap only: the number the next frame will get, exact once the frame
    the render thread holds has finished. The measured phase never waits. */
 vkr_internal uint64_t
@@ -1935,7 +2015,7 @@ vkr_internal bool8_t vkr_harness_child_write_report(
     const VkrHarnessProfile *profile, const VkrHarnessProvenance *provenance,
     const VkrHarnessSampleSet *samples, const char *samples_path,
     const VkrHarnessReport *capture_source, const char *scene_content_digest,
-    VkrHarnessError *error) {
+    const char *texture_residency_path, VkrHarnessError *error) {
   const bool8_t failed =
       (samples->header.flags & VKR_HARNESS_SAMPLE_FLAG_CHILD_FAILED) != 0u;
   VkrHarnessReport *report =
@@ -1961,10 +2041,12 @@ vkr_internal bool8_t vkr_harness_child_write_report(
   report->event_subjects_truncated = samples->header.event_subjects_truncated;
   const uint32_t capture_capacity =
       capture_source ? capture_source->capture_count : 0u;
-  /* One `samples.raw` row on top of whatever the capture phase published. */
+  /* One `samples.raw` row, and one `asset.texture_residency` row when the
+     run wrote it, on top of whatever the capture phase published. */
   if (!vkr_harness_report_init_storage(
           report, arenas->persistent, capture_capacity,
-          (capture_source ? capture_source->artifact_count : 0u) + 1u)) {
+          (capture_source ? capture_source->artifact_count : 0u) + 1u +
+              (texture_residency_path ? 1u : 0u))) {
     vkr_harness_error_set(error, "report.storage", "$",
                           "Unable to size the child report tables");
     return false_v;
@@ -2049,6 +2131,15 @@ vkr_internal bool8_t vkr_harness_child_write_report(
     if (!ok) {
       vkr_harness_error_set(error, "artifact.samples", "$",
                             "Unable to digest '%s'", samples_path);
+    }
+  }
+  if (ok && texture_residency_path) {
+    ok = vkr_harness_report_add_artifact(
+        report, "asset.texture_residency", "texture-residency.json",
+        "application/json", texture_residency_path);
+    if (!ok) {
+      vkr_harness_error_set(error, "artifact.texture_residency", "$",
+                            "Unable to digest '%s'", texture_residency_path);
     }
   }
   if (ok && samples->header.event_count > 0u) {
@@ -2719,6 +2810,14 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   String8 scene = string8_create_from_cstr((const uint8_t *)scene_path,
                                            string_length(scene_path));
   vkr_harness_child_run_scene(application, &child, scene);
+  /* The budget's state as the measured frames left it, before the scene
+     unloads; a run that failed or only prewarms publishes none. */
+  char texture_residency_path[VKR_HARNESS_PATH_MAX];
+  const bool8_t texture_residency =
+      !prewarm && !child.failed &&
+      vkr_harness_child_write_texture_residency(&child, application,
+                                                texture_residency_path,
+                                                sizeof(texture_residency_path));
 
   vkr_harness_child_device_provenance(application, &case_manifest, &provenance);
   vkr_harness_timestamp_utc(provenance.ended_at);
@@ -2772,7 +2871,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       vkr_harness_child_write_report(
           &arenas, repo_root, report_path, &case_manifest, &profile,
           &provenance, &sample_set, samples_path, child.capture_report,
-          scene_content_digest, &error) &&
+          scene_content_digest,
+          texture_residency ? texture_residency_path : NULL, &error) &&
       (capture_index < 0 || vkr_harness_capture_summary_write(
                                 capture_summary_path, child.capture_report,
                                 arenas.transient, &error))) {

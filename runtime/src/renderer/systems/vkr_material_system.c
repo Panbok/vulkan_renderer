@@ -1824,6 +1824,21 @@ vkr_material_system_count_below_need(VkrMaterialSystem *system) {
   return count;
 }
 
+uint32_t vkr_material_system_texture_residency(
+    VkrMaterialSystem *system,
+    const VkrMaterialTextureCandidate **out_entries) {
+  *out_entries = NULL;
+  if (!system || !system->texture_streams || !system->texture_candidates) {
+    return 0u;
+  }
+  uint64_t projected = 0u;
+  bool8_t caps = false_v;
+  const uint32_t count = vkr_material_system_texture_candidates(
+      system, VKR_TEXTURE_HANDLE_INVALID, &projected, &caps);
+  *out_entries = system->texture_candidates;
+  return count;
+}
+
 void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
                                               uint32_t max_updates) {
   if (!system || !system->texture_streams || max_updates == 0u) {

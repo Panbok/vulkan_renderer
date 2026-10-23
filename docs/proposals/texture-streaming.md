@@ -171,7 +171,15 @@ The owner accepted each recommendation below on 2026-10-20.
 
 - Bistro only. A texture memory report at a fixed camera path: resident bytes
   by texture and level, the budget, and the gap between resident and required
-  mips, on the M1 Pro (tiled) and the RX 6700 XT (desktop).
+  mips, on the M1 Pro (tiled) and the RX 6700 XT (desktop). Every profile
+  run now writes `texture-residency.json`, the `asset.texture_residency`
+  artifact: the budget, resident bytes and, per resident texture, its
+  name, bytes, held and source extent and mips, cap, newest demand epoch
+  and the extent and mips its materials' measured demand needs
+  (`vkr_material_system_texture_residency`). The RX 6700 XT pressure case
+  at `VKR_VULKAN_MEMORY_BUDGET_MB=6000` (2026-10-23) ended with 521
+  textures in 1.106 GB of a 1.106 GB budget, 278 capped, 124 measured and
+  31 below their need. A camera path's report is one run per position.
 - A hitch report while flying through Bistro on a recorded camera path at a
   fixed speed: frame time p95, p99 and maximum, and upload stalls, against
   today's load. First reading (2026-10-23, RX 6700 XT, Release,
