@@ -31,6 +31,11 @@ the recommended option for each open choice:
 3. **The server is a separate service per machine.** The editor shows its
    state and never hosts it.
 
+The Windows session reviewed the first draft (git `c11bac93`) on 2026-10-24.
+This revision takes its corrections: the causes in the table, merging scene
+folders as units, lock and cooked-branch rules after a merge, the Windows
+service form and installed path, and the added evidence.
+
 ## Why: the Level Design Test transfer, 2026-10-23 to 2026-10-24
 
 Moving one scene from the Mac to Windows took two agent sessions and one
@@ -40,10 +45,11 @@ night. Each failure points at a part of the model:
 | --- | --- |
 | Windows could not see the Mac's shared project | Only the sharing editor serves, and the Mac drops inbound traffic. Nothing tells the user that a machine cannot serve. |
 | The Mac's share (`~/VKR Projects/Testbed 2`) had no history in common with the Windows depot copy | Share makes a new store each time. Two copies of one project can have separate histories. |
-| The Windows server had been stopped for 5 days without notice | The server is the editor, a `vkr_depot serve` process or a launchd job, and no surface shows whether any of them runs. |
+| The Windows server had been stopped for 5 days without notice, and stopped 3 times in 24 hours | The server is the editor, a `vkr_depot serve` process or a launchd job, and no surface shows whether any of them runs. A server started from a shell stops with that shell, and nothing restarts one after a reboot. |
 | The transfer needed a hand-made file copy into another working copy | No editor action moves changes between two stores. `mirror` only fast-forwards and stops at diverged branches. |
-| 53 materials, a graph and 43 textures arrived missing | The editor falls back to the repository's `assets/` (ADR-077 overlay), so a project looks complete on the machine that made it. Bakery's `share_project` did not follow surface themes either. |
-| Stale material records of rebuilt models blocked the cook on Windows | Scene folders keep every old build and overlay, and the depot sends them all. |
+| 53 materials, a graph and 43 textures arrived missing | The editor falls back to the repository's `assets/` (ADR-077 overlay), so a project looks complete on the machine that made it. Bakery's `share_project` did not follow surface themes. The commit went straight into a working copy and never ran `share_project` at all, so only a check at commit time would have caught it. |
+| Stale material records of rebuilt models blocked the cook on Windows | A model rebuild or reimport kept the import's old material records live in the inventory. `recook_textures` stopped at the first build it could not cook, and Get latest still reported success. |
+| Get latest said "some textures did not cook", but the scene did not open | A pull reports that the transfer finished, not whether each scene prepares and opens. |
 
 ## Current baseline
 
@@ -102,13 +108,18 @@ git repository or a build folder.
 - `push [remote] [branch]` uploads and moves the remote's branch by
   compare-and-swap from the tracked commit. A push that is not a
   fast-forward is refused, and the user pulls first.
-- `pull [remote] [branch]` runs fetch, then merge.
-- A remote that cannot be reached shows why: no answer, refused key, or
-  "this machine drops inbound traffic". The Mac then pushes to Windows and
-  fetches from it. Windows keeps the Mac as a remote that it does not
-  reach. The connection is still the same rule as git with one shared
-  server, and no tunnel or bypass is added.
+- `pull [remote] [branch]` runs fetch, then merge, then `recook_textures`
+  and `prepare_scene` for each scene the pull changed. It reports per scene
+  whether the scene prepares, not only that the transfer finished.
+- A remote that cannot be reached shows why: no answer, or a refused key.
+  A machine cannot tell a dropped packet from a powered-off peer, so the
+  "outbound only" reason comes from the peer itself: a service configured
+  as outbound only says so whenever it connects. Windows then shows the Mac
+  as "reachable only when the Mac connects". The Mac pushes to Windows and
+  fetches from it. No tunnel or bypass is added.
 - Cooked side branches follow their branch on fetch and push, as today.
+  Each machine publishes the side branch of its own platform for every
+  commit it checks out, merge commits included.
 
 ### Merge
 
@@ -117,7 +128,19 @@ git repository or a build folder.
   path changed on both sides to different content is a conflict. Each
   conflict is settled with Mine or Theirs, and a commit with two parents
   records the result.
-- Locks stay the tool for binary assets that cannot be merged.
+- **A scene folder merges as one unit, and so does `project.json`.** Each
+  Bakery job writes a new `inventory/<uuid>.json` and moves the
+  `inventory` field of `scene.json`, and each edit writes a new
+  `edits/<uuid>.json` the same way. A per-file merge after a job on both
+  machines sees two added inventories with no conflict and one
+  `scene.json` conflict. Mine or Theirs would then drop the other side's
+  imports without a warning. So a conflict on `scene.json`, its live
+  inventory or its live overlay lists the whole scene. Phase 1 also merges
+  the live inventories' record lists by record `id`, and keeps a record
+  that both sides changed as a conflict.
+- Locks stay the tool for binary assets that cannot be merged. A commit
+  checks locks against the last fetched lock list and warns, because it
+  can run offline. A push checks them on the server and refuses, as today.
 - Phase 2 merges scene edit overlays per entity. Overlays already store
   changes per entity, so two machines that edit different parts of a level
   merge with no conflict. Fields changed on both sides remain conflicts.
@@ -125,7 +148,20 @@ git repository or a build folder.
 ### Service
 
 - One `vkr_depot` service per machine runs as a launchd agent on macOS and
-  as a per-user startup task on Windows. It runs without an editor.
+  as a per-user Task Scheduler task on Windows ("At log on", restart on
+  failure). It runs without an editor and survives the sessions that
+  started it. A Windows service (SCM) is not used: it runs in session 0
+  under another account, without the user's identity key or home folder.
+- The service runs from an installed copy at a fixed path:
+  `%LOCALAPPDATA%\VKR\depot\` on Windows and
+  `~/Library/Application Support/VKR/depot/` on macOS.
+  `vkr_depot service install` copies the binary there and restarts the
+  task. Builds never touch the running service. Windows locks a running
+  exe, and each new exe path gets its own firewall prompt and rule (8 such
+  rules exist on the Windows desktop today). The firewall rule binds to the
+  installed path and covers UDP 7320 and the 7319 discovery port. The
+  installer creates it for the active network profile (Public on the
+  Windows desktop), or asks.
 - It serves every repository that the user marks "Allow others to fetch and
   push", each with its own access list, on one UDP port. Discovery answers
   with the machine name and the list of served repositories.
@@ -141,10 +177,17 @@ git repository or a build folder.
   project during the session, as *untracked dependencies*. Commit offers to
   copy them into the project.
 - For a repository project, the editor stops falling back to the git
-  repository's `assets/`. Only the engine's own content still comes from
-  there.
-- Commit prunes builds, overlays and inventories that no live file names.
-  They stay in history.
+  repository's `assets/`. Only engine content still comes from there:
+  paths that git tracks under `assets/` plus the editor bundle, for example
+  the greybox role materials. A theme that names engine content is not
+  flagged as untracked.
+- Commit prunes builds, overlays and inventories that no live file names,
+  with the rules of Bakery's `collect_garbage`: a record's `previous_build`
+  stays (ADR-088 revisions), and recent files get a grace period. Pruned
+  files stay in history.
+- Projects live under a configurable projects root. The default is under
+  the user's profile, which is a non-ASCII path on the Windows desktop
+  (`C:\Users\Пользователь`).
 
 ### Editor
 
@@ -175,6 +218,10 @@ branch | switch | remote | log | lock | unlock | locks | service`. The
 - A working copy made by today's `clone` becomes a repository whose remote
   `origin` is its old server. `~/vkr-depot/work` on the Mac keeps its
   history.
+- A working copy that shares its server's store (`clone --store`, such as
+  `D:\vkr-depot\work`) becomes the served repository itself and gets no
+  `origin`, so it never becomes a remote of itself. A repository's store
+  can be a path outside `.vkrdepot/` for this case.
 - A workspace made by Share becomes a repository with no remote. The user
   can then add one.
 - The editor keeps today's `.vkrdepot/state` reader for one release and
@@ -188,14 +235,21 @@ branch | switch | remote | log | lock | unlock | locks | service`. The
    local commit, remotes, tracking branches, fetch and push with
    fast-forward refusal, and the migration of working copies.
 2. **D2, merge per file.** Merge base search, conflicts, Mine and Theirs,
-   merge commits, and `pull`. `mirror` is retired.
-3. **D3, service and editor.** The per-machine service and its editor state,
-   the Source Control panel, the hub's Open, New and Clone, and the renamed
-   `depot.*` operations. Share and Get are removed.
+   merge commits, scene folders and `project.json` merged as units with
+   inventory records merged by `id`, and `pull` with its per-scene prepare
+   report. `mirror` is retired.
+3. **D3, service and editor.** The per-machine service, `service install`
+   with its fixed path and firewall rule, the service's state in the
+   editor, the Source Control panel, the hub's Open, New and Clone, and the
+   renamed `depot.*` operations. Share and Get are removed.
 4. **D4, self-contained projects.** Projects move outside the git
-   repository, Testbed becomes a template, untracked dependencies show in
-   status, the asset fallback ends for repository projects, and commit
-   prunes dead files.
+   repository under a configurable root, Testbed becomes a template,
+   untracked dependencies show in status, the asset fallback ends for
+   repository projects except engine content, and commit prunes dead files.
+   The `vkr-cross-machine` skill, `tools/checks/check_bakery_share.py` and
+   local tools that copy the repository's Testbed workspace move to the
+   template path. Harness cases read `assets/scenes`, not projects, and do
+   not change.
 5. **D5, merge per entity.** Scene overlay merge per entity, and its
    conflict view.
 
@@ -206,8 +260,9 @@ Mac M1 and the Windows desktop.
 
 - **D1:**
   - A commit on each machine with the network down.
-  - The Mac pushes to Windows; Windows fetches from the Mac and gets the
-    "drops inbound traffic" reason, not a timeout.
+  - The Mac pushes to Windows. Windows shows the Mac as reachable only when
+    the Mac connects, because the Mac's service announced itself as
+    outbound only, not after a timeout.
   - A clone on Windows matches the Mac's tree hash.
 - **D2:**
   - The two machines change different files on `main` and both merges
@@ -215,23 +270,31 @@ Mac M1 and the Windows desktop.
   - The two machines change one file and the conflict is listed. Mine and
     Theirs each give the expected tree, and the merge commit has two
     parents.
+  - Both machines run one import job in the same Bistro scene. The merge
+    keeps both sides' records, or it lists the whole scene as a conflict;
+    it never drops a side.
+  - After every pull, `prepare_scene` passes on every scene of the project.
 - **D3:**
-  - With no editor running, the Mac fetches from the Windows service.
+  - With no editor running, and after a reboot, the Mac fetches from the
+    Windows service.
+  - A rebuild of `vkr_depot` while the service runs leaves the service and
+    its firewall rule untouched.
   - An editor round trip (commit, push, then pull on the other machine)
-    reloads the open scene.
+    reloads the open scene, and `prepare_scene` passes on every scene.
   - The panel shows ahead and behind counts that match `vkr_depot status`.
 - **D4:**
-  - A Bistro edit that uses a material outside the project shows it as
-    untracked.
+  - A scoped Bistro case with one brush whose surface theme names
+    materials outside the project shows those materials and their textures
+    as untracked.
   - After commit, a clone on the other machine opens with no missing-asset
     warnings.
+  - A project under a non-ASCII projects root on Windows clones, cooks and
+    opens.
 - **D5:** two machines each move different Bistro entities in one scene,
   and pull merges both with no conflict.
 
 ## Open questions
 
-- Should a repository's store be shared between clones on one machine, as
-  `clone --store` does today?
+- Beyond the served repository (Migration), should several clones on one
+  machine share one store, as `clone --store` allows today?
 - Which history operations are worth adding: reset, revert, stash?
-- How should the harness and the agent skills find projects once they
-  leave the git repository?
