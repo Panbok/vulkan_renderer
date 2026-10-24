@@ -13,9 +13,9 @@ Source Control window instead of Share and Get. The repository model, the
 merge and the editor's Source Control are implemented and recorded in
 [ADR-133](../adr/133-depot-repositories-remotes-and-merge.md) and
 [ADR-110](../adr/110-project-sharing-in-the-editor.md). This proposal keeps
-the work that remains: the pull report in the editor, the editor on the
-per-machine service, self-contained projects (D4), merge per entity (D5)
-and the evidence between the two machines.
+the work that remains: the editor on the per-machine service, the rest of
+self-contained projects (D4), merge per entity (D5) and the evidence
+between the two machines.
 
 ## Owner decisions, 2026-10-24
 
@@ -57,18 +57,11 @@ night. Each failure points at a part of the model:
 | --- | --- | --- |
 | D1, repositories and remotes | Implemented: local commits, remotes, tracking branches, fetch, fast-forward push and pull, branches, adoption of older working copies, HELLO from every client | ADR-133 |
 | D2, merge per file | Implemented: merge base, per-file decisions, units sent whole to Bakery's `merge_scene_unit` and `merge_project_document`, merge commits, pull that merges, `.vkrdepotmerge` written by `share_project`. A scene overlay both sides edited stays a conflict until D5 | ADR-133 |
-| D3, service and editor | Editor Source Control implemented. The per-machine service landed from the Windows track (git `5e8326a8`, `241587ad`) and is recorded by that track; the editor still serves a repository itself | ADR-110, below |
-| D4, self-contained projects | Not started | below |
+| D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service landed from the Windows track (git `5e8326a8`, `241587ad`) and runs on the Mac as a launchd agent; `vkr_depot sync` syncs a served store with a remote. The editor still serves a repository itself, and the service does not yet sync on an interval | ADR-110, ADR-133, below |
+| D4, self-contained projects | Partly implemented: a repository reads only its own assets and engine content (git `e18d74d2`), Bakery's `untracked_dependencies` lists and adopts the rest (`c4f425d5`), and the editor's Commit stops on them with Copy in and commit (ADR-110). Left: projects under a configurable root, Testbed as a template, pruning on commit | ADR-110, below |
 | D5, merge per entity | Not started | below |
 
 ## Remaining work
-
-### Pull report (D2)
-
-Bakery's `pull_report` (from the Windows track) re-cooks and prepares each
-scene a pull changed and says whether it opens. The editor's pull runs
-`recook_textures` itself today; it should run `pull_report` instead and
-show a scene that does not open as an error of the pull.
 
 ### The editor on the per-machine service (D3)
 
@@ -88,14 +81,10 @@ show a scene that does not open as an error of the pull.
 
 ### Self-contained projects (D4)
 
-- `status` lists every asset the editor or Bakery read from outside the
-  project during the session, as *untracked dependencies*. Commit offers to
-  copy them into the project.
-- For a repository project, the editor stops falling back to the git
-  repository's `assets/`. Only engine content still comes from there:
-  paths that git tracks under `assets/` plus the editor bundle, for example
-  the greybox role materials. A theme that names engine content is not
-  flagged as untracked.
+Implemented: untracked dependencies with Copy in and commit, and the end of
+the asset fallback for repository projects except engine content (see the
+table). Left:
+
 - Commit prunes builds, overlays and inventories that no live file names,
   with the rules of Bakery's `collect_garbage`: a record's `previous_build`
   stays (ADR-088 revisions), and recent files get a grace period. Pruned
@@ -103,6 +92,7 @@ show a scene that does not open as an error of the pull.
 - Projects live under a configurable projects root. The default is under
   the user's profile, which is a non-ASCII path on the Windows desktop
   (`C:\Users\Пользователь`).
+- The repository's Testbed becomes a template that new projects start from.
 
 ### Merge per entity (D5)
 
@@ -112,10 +102,9 @@ changed are conflicts, shown per entity.
 
 ## Phases
 
-1. **D2 pull report in the editor.**
-2. **D3 editor on the service:** once the service's state is in
+1. **D3 editor on the service:** once the service's state is in
    `VkrDepotServiceInfo` on both platforms.
-3. **D4, self-contained projects.** Projects move outside the git
+2. **D4, the rest of self-contained projects.** Projects move outside the git
    repository under a configurable root, Testbed becomes a template,
    untracked dependencies show in status, the asset fallback ends for
    repository projects except engine content, and commit prunes dead files.
@@ -123,7 +112,7 @@ changed are conflicts, shown per entity.
    local tools that copy the repository's Testbed workspace move to the
    template path. Harness cases read `assets/scenes`, not projects, and do
    not change.
-4. **D5, merge per entity.**
+3. **D5, merge per entity.**
 
 ## Evidence for each phase
 
