@@ -75,7 +75,8 @@ server's store gets none. It can select one of the repositories a service
 serves (`VkrDepotCloneConfig.repository`, `clone --repository ID`); `origin`
 keeps that ID, so every later connection selects the same repository.
 Commands that talk to the working copy's server (`refs`, `cooked`, `lock`,
-`unlock`, `locks`) use `origin` and refuse a working copy without one.
+`unlock`, `locks`) use `origin`; without one, `refs` lists the shared
+store's own branches and the others refuse.
 
 Checkout and the older push (`vkr_depot_fetch_checkout`,
 `vkr_depot_commit_push`) move `refs/<branch>` and origin's tracking

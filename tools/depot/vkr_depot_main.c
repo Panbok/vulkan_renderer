@@ -977,6 +977,20 @@ static int depot_switch(const char *directory, const char *name,
   return ok ? 0 : 1;
 }
 
+/* Prints one branch of a store with its commit. */
+static bool8_t depot_print_local_ref(void *context, const char *branch) {
+  const char *store = context;
+  VkrDepotId commit;
+  if (vkr_depot_ref_read(store, branch, &commit)) {
+    char hex[VKR_DEPOT_ID_HEX];
+    vkr_depot_id_hex(&commit, hex);
+    printf("%s %s\n", hex, branch);
+  }
+  return true_v;
+}
+
+/* The branches of the working copy's server: origin's, or, for one that
+   shares its server's store, that store's own. */
 static int depot_refs(const char *directory) {
   VkrDepotWorkspace workspace;
   if (!vkr_depot_workspace_open(&workspace, directory,
@@ -986,9 +1000,13 @@ static int depot_refs(const char *directory) {
   }
   VkrDepotRemoteEntry origin;
   if (!vkr_depot_remote_find(workspace.store.root, VKR_DEPOT_ORIGIN, &origin)) {
-    fprintf(stderr, "%s has no remote origin\n", workspace.root);
+    const int listed =
+        vkr_depot_ref_list(workspace.store.root, depot_print_local_ref,
+                           workspace.store.root)
+            ? 0
+            : 1;
     vkr_depot_workspace_close(&workspace);
-    return 1;
+    return listed;
   }
   const VkrDepotConnectConfig config = {.address = origin.address,
                                         .server_key = origin.key,
