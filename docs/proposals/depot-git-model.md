@@ -57,7 +57,7 @@ night. Each failure points at a part of the model:
 | --- | --- | --- |
 | D1, repositories and remotes | Implemented: local commits, remotes, tracking branches, fetch, fast-forward push and pull, branches, adoption of older working copies, HELLO from every client | ADR-133 |
 | D2, merge per file | Implemented: merge base, per-file decisions, units sent whole to Bakery's `merge_scene_unit` and `merge_project_document`, merge commits, pull that merges, `.vkrdepotmerge` written by `share_project`. A scene overlay both sides edited stays a conflict until D5 | ADR-133 |
-| D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service landed from the Windows track (git `5e8326a8`, `241587ad`) and runs on the Mac as a launchd agent; `vkr_depot sync` syncs a served store with a remote. The editor still serves a repository itself, and the service does not yet sync on an interval | ADR-110, ADR-133, below |
+| D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service runs on the Mac as a launchd agent, follows `service.conf` while it runs, publishes its peers, has `add`, `remove` and `status` in the library, and syncs each served store with remotes that have an interval. The editor still serves a repository itself | ADR-110, ADR-133, ADR-134, below |
 | D4, self-contained projects | Partly implemented: a repository reads only its own assets and engine content (git `e18d74d2`), Bakery's `untracked_dependencies` lists and adopts the rest (`c4f425d5`), and the editor's Commit stops on them with Copy in and commit (ADR-110). Left: projects under a configurable root, Testbed as a template, pruning on commit | ADR-110, below |
 | D5, merge per entity | Not started | below |
 
@@ -66,13 +66,13 @@ night. Each failure points at a part of the model:
 ### The editor on the per-machine service (D3)
 
 - The editor stops hosting the server: Let others fetch and push registers
-  the repository with the installed `vkr_depot service`, starts the service
-  when it does not run, and shows its state (running, address, served
-  repositories, connected peers) from `VkrDepotServiceInfo`. Access
-  requests and the access list come from the service.
-- A remote's "fetch and push every N seconds" setting (`interval` in the
-  remotes file) replaces `mirror`, and the launchd `com.vkr.depot.serve`
-  and `com.vkr.depot.mirror` jobs on the Mac give way to the service.
+  the repository with `vkr_depot_service_add`, starts the service when it
+  does not run, and shows its state (running, address, served repositories,
+  known peers) from `vkr_depot_service_status` (ADR-134). Access requests
+  and the access list come from the service.
+- The service syncs remotes that have an `interval` (ADR-134); the launchd
+  `com.vkr.depot.mirror` job on the Mac gives way to it once a remote of the
+  served store has one.
 - A remote's state shows "reachable only when it connects" for a peer the
   service recorded as outbound only.
 - The working copy's state drops the server it syncs with once nothing
@@ -102,8 +102,8 @@ changed are conflicts, shown per entity.
 
 ## Phases
 
-1. **D3 editor on the service:** once the service's state is in
-   `VkrDepotServiceInfo` on both platforms.
+1. **D3 editor on the service:** the service's settings and status are in
+   the library (ADR-134).
 2. **D4, the rest of self-contained projects.** Projects move outside the git
    repository under a configurable root, Testbed becomes a template,
    untracked dependencies show in status, the asset fallback ends for

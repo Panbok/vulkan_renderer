@@ -659,6 +659,12 @@ static void client_service_closed(void *context, VkrNetConnectionId connection,
 }
 
 static bool8_t client_alive(VkrDepotClient *client) {
+  if (client->closed &&
+      client->close_code == VKR_DEPOT_CLOSE_REPOSITORY_REMOVED) {
+    snprintf(client->error, sizeof(client->error),
+             "the depot service stopped serving this repository");
+    return false_v;
+  }
   if (client->closed) {
     snprintf(client->error, sizeof(client->error),
              "the depot service closed (code %u)", client->close_code);

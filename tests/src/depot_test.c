@@ -1688,6 +1688,152 @@ static void test_depot_service(void) {
   printf("  test_depot_service PASSED\n");
 }
 
+/* Fails when `service add` does not adopt the first store's key (remotes
+   naming it would stop matching), accepts a store twice, or saves settings
+   that do not load back; when a running service does not serve a store
+   added or stop serving one removed through the settings; or when the
+   status a client reads lacks the running service, the client's key or
+   its outbound-only flag. Runs under a temporary home and identity, so the
+   machine's service folder stays untouched. */
+static void test_depot_service_settings(void) {
+  printf("  Running test_depot_service_settings...\n");
+  char home[VKR_DEPOT_PATH_CAPACITY];
+  char roots[2][VKR_DEPOT_PATH_CAPACITY];
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("service_home", home, sizeof(home));
+  depot_test_dir("settings-a", roots[0], sizeof(roots[0]));
+  depot_test_dir("settings-b", roots[1], sizeof(roots[1]));
+  assert(
+      vkr_bakery_path_join(identity, sizeof(identity), home, "identity.key"));
+  char saved_home[VKR_DEPOT_PATH_CAPACITY] = {0};
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *home_value = getenv(DEPOT_TEST_HOME_VARIABLE);
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_home = home_value != NULL;
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_home, sizeof(saved_home), "%s", had_home ? home_value : "");
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv(DEPOT_TEST_HOME_VARIABLE, home);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+  depot_test_setenv("VKR_DEPOT_OUTBOUND_ONLY", "1");
+
+  VkrDepotStore store;
+  assert(vkr_depot_store_open(&store, roots[0], vkr_depot_zstd_codec()) &&
+         vkr_depot_store_open(&store, roots[1], vkr_depot_zstd_codec()));
+  VkrNetKeyPair store_keys;
+  assert(vkr_depot_server_key(roots[0], &store_keys));
+  VkrDepotServicePaths paths;
+  assert(vkr_depot_service_paths(&paths));
+  assert(strncmp(paths.conf, home, strlen(home)) == 0);
+  VkrDepotServiceSettings *settings = malloc(sizeof(VkrDepotServiceSettings));
+  assert(settings && vkr_depot_service_settings_load(&paths, settings));
+  assert(settings->store_count == 0u && !vkr_bakery_is_file(paths.key));
+  snprintf(settings->bind, sizeof(settings->bind), "127.0.0.1:0");
+  settings->discovery_port = 7353u;
+  char message[VKR_DEPOT_PATH_CAPACITY + 256u];
+  assert(vkr_depot_service_add(&paths, settings, roots[0], "first", message,
+                               sizeof(message)));
+  assert(!vkr_depot_service_add(&paths, settings, roots[0], "again", message,
+                                sizeof(message)));
+  assert(vkr_bakery_is_file(paths.key));
+  VkrDepotServiceStatus *status = malloc(sizeof(VkrDepotServiceStatus));
+  assert(status && vkr_depot_service_status(status, 0u));
+  assert(status->has_key &&
+         memcmp(status->key, store_keys.public_key, 32u) == 0 &&
+         status->settings.store_count == 1u &&
+         strcmp(status->settings.stores[0].name, "first") == 0 &&
+         strcmp(status->settings.bind, "127.0.0.1:0") == 0 &&
+         status->settings.discovery_port == 7353u);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), GB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const char *served[1] = {settings->stores[0].root};
+  const char *names[1] = {settings->stores[0].name};
+  const VkrDepotServiceConfig config = {.store_roots = served,
+                                        .store_names = names,
+                                        .store_count = 1u,
+                                        .key_path = paths.key,
+                                        .bind = settings->bind,
+                                        .discovery_port =
+                                            (uint16_t)settings->discovery_port,
+                                        .codec = vkr_depot_zstd_codec(),
+                                        .open_access = true_v};
+  char error[256];
+  VkrDepotService *service =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  VkrDepotServiceInfo *info = malloc(sizeof(VkrDepotServiceInfo));
+  assert(info);
+  vkr_depot_service_info(service, info);
+  assert(memcmp(info->server_key, store_keys.public_key, 32u) == 0);
+
+  /* A client connects; the published status names it as outbound only. */
+  char address[64];
+  snprintf(address, sizeof(address), "127.0.0.1:%u", info->address.port);
+  const VkrDepotConnectConfig connect = {.address = address,
+                                         .server_key = info->server_key,
+                                         .name = "dana@studio",
+                                         .timeout_ms = 5000u};
+  VkrDepotConnectStatus connect_status = VKR_DEPOT_CONNECT_OK;
+  VkrDepotRef refs[4];
+  uint32_t ref_count = 0u;
+  assert(vkr_depot_branches(&allocator, &connect, refs, 4u, &ref_count,
+                            &connect_status, error, sizeof(error)));
+  assert(vkr_depot_service_publish(service, paths.status));
+  assert(vkr_depot_service_status(status, 1500u));
+  if (info->discoverable) {
+    VkrNetKeyPair client;
+    assert(vkr_depot_identity(&client, false_v));
+    assert(status->running && status->known_peer_count == 1u &&
+           memcmp(status->known_peers[0].key, client.public_key, 32u) == 0 &&
+           status->known_peers[0].outbound_only &&
+           strcmp(status->known_peers[0].name, "dana@studio") == 0 &&
+           status->answer.repository_count == 1u &&
+           strcmp(status->answer.repositories[0].name, "first") == 0);
+  } else {
+    printf("    UDP %u is taken; the running check is skipped\n",
+           settings->discovery_port);
+  }
+
+  /* The settings change; the running service follows them. */
+  assert(vkr_depot_service_add(&paths, settings, roots[1], "second", message,
+                               sizeof(message)));
+  VkrDepotServiceSettings *loaded = malloc(sizeof(VkrDepotServiceSettings));
+  assert(loaded && vkr_depot_service_settings_load(&paths, loaded));
+  assert(loaded->store_count == 2u &&
+         strcmp(loaded->stores[1].name, "second") == 0);
+  assert(vkr_depot_service_apply(service, loaded, error, sizeof(error)));
+  vkr_depot_service_info(service, info);
+  assert(info->repository_count == 2u &&
+         strcmp(info->repositories[1].name, "second") == 0);
+  assert(vkr_depot_service_remove(&paths, settings, "first", message,
+                                  sizeof(message)));
+  assert(!vkr_depot_service_remove(&paths, settings, "first", message,
+                                   sizeof(message)));
+  assert(vkr_depot_service_settings_load(&paths, loaded) &&
+         loaded->store_count == 1u);
+  assert(vkr_depot_service_apply(service, loaded, error, sizeof(error)));
+  vkr_depot_service_info(service, info);
+  assert(info->repository_count == 1u &&
+         strcmp(info->repositories[0].name, "second") == 0);
+  vkr_depot_service_stop(service);
+  vkr_dmemory_allocator_destroy(&allocator);
+
+  free(loaded);
+  free(info);
+  free(status);
+  free(settings);
+  depot_test_setenv("VKR_DEPOT_OUTBOUND_ONLY", NULL);
+  depot_test_setenv(DEPOT_TEST_HOME_VARIABLE, had_home ? saved_home : NULL);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  assert(vkr_bakery_remove_tree(roots[0]) && vkr_bakery_remove_tree(roots[1]));
+  assert(vkr_bakery_remove_tree(home));
+  printf("  test_depot_service_settings PASSED\n");
+}
+
 typedef struct DepotRepoWorld {
   VkrAllocator *allocator;
   char address[64];
@@ -3655,6 +3801,88 @@ static void test_depot_repositories_served(void) {
   printf("  test_depot_repositories_served PASSED\n");
 }
 
+/* Fails when a store added to a running server of one takes the first
+   store from a connection that had it, when removing a store leaves its
+   connection open or keeps it in the count, or when removing an earlier
+   store leaves a later store's connection on the wrong repository (its
+   branches would answer from another store) or its peer entry on the old
+   index. */
+static void test_depot_repositories_change(void) {
+  printf("  Running test_depot_repositories_change...\n");
+  char roots[2][VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("change-a", roots[0], sizeof(roots[0]));
+  depot_test_dir("change-b", roots[1], sizeof(roots[1]));
+  const char *const stores[2] = {roots[0], roots[1]};
+  VkrNetKeyPair keys;
+  vkr_net_keypair_generate(&keys);
+  assert(vkr_depot_access_set(roots[0], keys.public_key, VKR_DEPOT_ROLE_WRITE));
+  assert(vkr_depot_access_set(roots[1], keys.public_key, VKR_DEPOT_ROLE_READ));
+  uint8_t ids[2][VKR_DEPOT_REPOSITORY_ID_SIZE];
+  const VkrDepotId zero = {0};
+  VkrDepotId commit;
+  MemSet(commit.bytes, 0x42, sizeof(commit.bytes));
+  assert(vkr_depot_repository_id(roots[0], ids[0], true_v) &&
+         vkr_depot_repository_id(roots[1], ids[1], true_v));
+  assert(vkr_depot_ref_swap(roots[0], "main", &zero, &commit, NULL) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  assert(vkr_depot_ref_swap(roots[1], "dev", &zero, &commit, NULL) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  const VkrNetSimLink link = {.latency_us = 2000u,
+                              .bandwidth = 100u * 1000u * 1000u};
+
+  /* A version 1 connection keeps the first store when a second arrives,
+     and closes when its store goes. */
+  DepotWorld world;
+  depot_world_init_stores(&world, stores, 1u, &link, &keys);
+  DepotRawService raw = {0};
+  depot_raw_open(&world, &raw, true_v);
+  const VkrDepotRequestWire refs = {.request = 1u};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs);
+  assert(raw.last_id == VKR_DEPOT_MSG_REFS &&
+         strcmp(raw.last.refs.refs[0].name, "main") == 0);
+  assert(vkr_depot_server_add_repository(world.server, roots[1], "second"));
+  assert(vkr_depot_server_repository_count(world.server) == 2u);
+  const VkrDepotRequestWire refs_again = {.request = 2u};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs_again);
+  assert(!world.closed && raw.last_id == VKR_DEPOT_MSG_REFS &&
+         raw.last.refs.request == 2u &&
+         strcmp(raw.last.refs.refs[0].name, "main") == 0);
+  vkr_depot_server_remove_repository(world.server, 0u, world.now);
+  assert(vkr_depot_server_repository_count(world.server) == 1u);
+  for (uint32_t i = 0u; i < 20000u && !world.closed; ++i) {
+    (void)depot_world_pump(&world, 10);
+  }
+  assert(world.closed &&
+         world.close_code == VKR_DEPOT_CLOSE_REPOSITORY_REMOVED);
+  VkrDepotServerRepository info;
+  assert(vkr_depot_server_repository(world.server, 0u, &info) && info.has_id &&
+         memcmp(info.id, ids[1], sizeof(ids[1])) == 0 &&
+         strcmp(info.name, "second") == 0);
+  depot_world_destroy(&world);
+
+  /* A connection on the second store follows it down to index 0. */
+  depot_world_init_stores(&world, stores, 2u, &link, &keys);
+  raw = (DepotRawService){0};
+  depot_raw_open(&world, &raw, false_v);
+  VkrDepotHelloWire hello = {.request = 1u,
+                             .repository_size = VKR_DEPOT_REPOSITORY_ID_SIZE};
+  MemCopy(hello.repository, ids[1], sizeof(ids[1]));
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last.hello_reply.status == VKR_DEPOT_HELLO_OK);
+  vkr_depot_server_remove_repository(world.server, 0u, world.now);
+  const VkrDepotRequestWire refs_b = {.request = 2u};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs_b);
+  assert(!world.closed && raw.last_id == VKR_DEPOT_MSG_REFS &&
+         raw.last.refs.ref_count == 1u &&
+         strcmp(raw.last.refs.refs[0].name, "dev") == 0);
+  VkrDepotServerPeer peers[4];
+  assert(vkr_depot_server_peers(world.server, peers, 4u) == 1u &&
+         peers[0].repository == 0 && peers[0].connections == 1u);
+  depot_world_destroy(&world);
+  assert(vkr_bakery_remove_tree(roots[0]) && vkr_bakery_remove_tree(roots[1]));
+  printf("  test_depot_repositories_change PASSED\n");
+}
+
 /* Fails when the server moves a branch to a commit whose tree names the
    depot's state folder, which every working copy that pulls it would let
    overwrite its access list, or when a page of locks with long paths does
@@ -3822,6 +4050,8 @@ bool32_t run_depot_tests(void) {
   test_depot_server_refusals();
   test_depot_hello();
   test_depot_repositories_served();
+  test_depot_repositories_change();
+  test_depot_service_settings();
   test_depot_access_requests();
   printf("--- Asset depot tests completed ---\n");
   return true;

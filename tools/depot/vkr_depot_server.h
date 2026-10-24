@@ -40,11 +40,12 @@
 #define VKR_DEPOT_SERVER_PEERS_MAX 64u
 
 typedef struct VkrDepotServerConfig {
-  /* The store, when `store_count` is zero. */
+  /* The store, when `store_count` is zero; NULL too for a server that
+     starts with none (vkr_depot_server_add_repository). */
   const char *store_root;
-  /* The stores it serves, as repositories (proposal "Service"); each keeps
-     its own access list and locks. A connection selects one with HELLO; a
-     server of one store gives it to every connection. */
+  /* The stores it serves, as repositories (ADR-134); each keeps its own
+     access list and locks. A connection selects one with HELLO; a server
+     of one store gives it to every connection. */
   const char *const *store_roots;
   /* Names discovery and HELLO give each store; NULL, or a NULL entry, for
      its folder's name. */
@@ -181,6 +182,20 @@ uint32_t vkr_depot_server_access_in(const VkrDepotServer *server,
 bool8_t vkr_depot_server_set_role_in(VkrDepotServer *server, uint32_t index,
                                      const uint8_t key[32], VkrDepotRole role,
                                      uint64_t now_us);
+
+/* Serves one more store, as the last repository; false when the server
+   serves VKR_DEPOT_SERVER_REPOSITORIES_MAX or the store does not open.
+   A server of one that gets a second keeps giving the first to the
+   connections it gave it to; new ones select with HELLO. */
+bool8_t vkr_depot_server_add_repository(VkrDepotServer *server,
+                                        const char *store_root,
+                                        const char *name);
+
+/* Stops serving repository `index`: closes its connections with
+   VKR_DEPOT_CLOSE_REPOSITORY_REMOVED and moves the later ones down one
+   index. The last one may go; a server of none refuses every key. */
+void vkr_depot_server_remove_repository(VkrDepotServer *server, uint32_t index,
+                                        uint64_t now_us);
 
 /* Closes every live connection with `code`, as a server that stops does. */
 void vkr_depot_server_close_peers(VkrDepotServer *server, uint16_t code,

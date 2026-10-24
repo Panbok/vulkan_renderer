@@ -36,6 +36,8 @@
 /* Closes a connection that sends a request without selecting a repository,
    as a version 1 client does, to a service that serves several. */
 #define VKR_DEPOT_CLOSE_SELECT_REPOSITORY (VKR_NET_CLOSE_SERVICE_BASE + 1u)
+/* Closes the connections of a repository the service stopped serving. */
+#define VKR_DEPOT_CLOSE_REPOSITORY_REMOVED (VKR_NET_CLOSE_SERVICE_BASE + 2u)
 
 typedef enum VkrDepotMessageId {
   VKR_DEPOT_MSG_REFS_REQUEST = 1,

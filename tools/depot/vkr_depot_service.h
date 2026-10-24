@@ -118,7 +118,134 @@ bool8_t vkr_depot_service_set_role_in(VkrDepotService *service, uint32_t index,
                                       const uint8_t key[32], VkrDepotRole role);
 bool8_t vkr_depot_service_reload_access(VkrDepotService *service);
 
-/* `vkr_depot service add|remove|list|install|uninstall|status|run`, the
-   machine's service (vkr_depot_service_cmd.c, in the vkr_depot command
-   only); `argv[0]` is the verb. Returns the process exit code. */
+/* Serves one more store, or stops serving repository `index` (see
+   vkr_depot_server_add_repository and _remove_repository); discovery lists
+   the change at once. False with a message when the store cannot be
+   served. */
+bool8_t vkr_depot_service_add_repository(VkrDepotService *service,
+                                         const char *store_root,
+                                         const char *name, char *error,
+                                         uint32_t capacity);
+void vkr_depot_service_remove_repository(VkrDepotService *service,
+                                         uint32_t index);
+
+// =============================================================================
+// The machine's service (ADR-134)
+// =============================================================================
+
+/* One background service per user and machine serves every repository
+ * the user lets others fetch from and push to. Its folder, the user data
+ * folder's `depot/`, holds:
+ *
+ *   service.conf    bind, name, discovery port, outbound only and the
+ *                   served stores, one setting per line
+ *   service.key     the service's secret key; the first store added gives
+ *                   its `server.key`, so remotes that name a served store's
+ *                   key stay valid
+ *   service.status  what the running service last published: its address
+ *                   and the keys that connected
+ *   bin/            the installed copy of vkr_depot the service runs
+ *   service.log     what `service run` prints when it runs as the service
+ *
+ * The running service rereads `service.conf` within a second of a change
+ * and serves the stores it lists then; bind, name, port and outbound only
+ * apply when it starts. It also syncs each served store with each of its
+ * remotes that has an interval. The `vkr_depot service` command installs,
+ * registers and runs it (vkr_depot_service_cmd.c, in the vkr_depot command
+ * only). */
+
+typedef struct VkrDepotServicePaths {
+  char folder[VKR_DEPOT_PATH_CAPACITY];
+  char conf[VKR_DEPOT_PATH_CAPACITY];
+  char key[VKR_DEPOT_PATH_CAPACITY];
+  char status[VKR_DEPOT_PATH_CAPACITY];
+  char bin_folder[VKR_DEPOT_PATH_CAPACITY];
+  char binary[VKR_DEPOT_PATH_CAPACITY];
+  char log[VKR_DEPOT_PATH_CAPACITY];
+} VkrDepotServicePaths;
+
+typedef struct VkrDepotServiceStore {
+  /* The repository's name in discovery and HELLO. */
+  char name[VKR_DEPOT_BRANCH_NAME];
+  /* Absolute. */
+  char root[VKR_DEPOT_PATH_CAPACITY];
+} VkrDepotServiceStore;
+
+#define VKR_DEPOT_SERVICE_DEFAULT_BIND "0.0.0.0:7320"
+
+typedef struct VkrDepotServiceSettings {
+  char bind[128];
+  /* Empty for this machine's name. */
+  char name[VKR_DEPOT_DISCOVERY_TEXT];
+  uint32_t discovery_port;
+  bool8_t outbound_only;
+  VkrDepotServiceStore stores[VKR_DEPOT_SERVER_REPOSITORIES_MAX];
+  uint32_t store_count;
+} VkrDepotServiceSettings;
+
+/* The service folder's files, under the user data folder. */
+bool8_t vkr_depot_service_paths(VkrDepotServicePaths *out);
+
+/* Reads `service.conf`; a missing file gives the defaults. Unknown lines
+   are skipped, so a newer setting does not stop an older binary. */
+bool8_t vkr_depot_service_settings_load(const VkrDepotServicePaths *paths,
+                                        VkrDepotServiceSettings *out);
+bool8_t
+vkr_depot_service_settings_save(const VkrDepotServicePaths *paths,
+                                const VkrDepotServiceSettings *settings);
+
+/* Adds `store_root` to the served stores as `name` (NULL for its folder's
+   name) and saves the settings: the store gets a repository ID, and the
+   first store's `server.key` becomes the service's key when it has none.
+   False with a message for a folder that is no store, a name or path
+   already served, or a full list. A running service serves it within a
+   second. */
+bool8_t vkr_depot_service_add(const VkrDepotServicePaths *paths,
+                              VkrDepotServiceSettings *settings,
+                              const char *store_root, const char *name,
+                              char *message, uint32_t capacity);
+
+/* Removes the served store named `which`, or at that path, and saves the
+   settings. False with a message when none matches. */
+bool8_t vkr_depot_service_remove(const VkrDepotServicePaths *paths,
+                                 VkrDepotServiceSettings *settings,
+                                 const char *which, char *message,
+                                 uint32_t capacity);
+
+/* Serves the stores `settings` lists and stops serving the others; a
+   store whose name changed is served again under the new one. False when
+   a store could not be served; the others still apply. */
+bool8_t vkr_depot_service_apply(VkrDepotService *service,
+                                const VkrDepotServiceSettings *settings,
+                                char *error, uint32_t capacity);
+
+/* Writes the running service's address, repositories and known peers to
+   `path` for vkr_depot_service_status, when they changed since the last
+   call. */
+bool8_t vkr_depot_service_publish(VkrDepotService *service, const char *path);
+
+typedef struct VkrDepotServiceStatus {
+  VkrDepotServicePaths paths;
+  VkrDepotServiceSettings settings;
+  /* The service's public key, once it ran or adopted a store's. */
+  bool8_t has_key;
+  uint8_t key[32];
+  /* The service answered discovery on loopback. */
+  bool8_t running;
+  VkrDepotDiscovered answer;
+  /* From `service.status`: when the service last published, and the keys
+     that connected since it started, the latest first. */
+  uint64_t published_us;
+  VkrDepotServerPeer known_peers[VKR_DEPOT_SERVER_PEERS_MAX];
+  uint32_t known_peer_count;
+} VkrDepotServiceStatus;
+
+/* The settings, the key, and, waiting up to `wait_ms` for discovery on
+   loopback, whether the service runs and what it last published. False
+   when the settings cannot be read. */
+bool8_t vkr_depot_service_status(VkrDepotServiceStatus *out, uint32_t wait_ms);
+
+/* `vkr_depot service add|remove|list|install|uninstall|status|run`
+   (vkr_depot_service_cmd.c, in the vkr_depot command only); `argv[0]` is
+   the verb. Returns the process exit code. */
 int vkr_depot_service_command(int argc, char **argv);

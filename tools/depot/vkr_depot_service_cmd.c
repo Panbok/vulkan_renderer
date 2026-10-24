@@ -1,5 +1,7 @@
 #include "vkr_depot_service.h"
 
+#include "core/vkr_atomic.h"
+#include "core/vkr_threads.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
@@ -7,7 +9,6 @@
 #include "vkr_depot_repository.h"
 #include "vkr_depot_sync.h"
 #include "vkr_depot_zstd.h"
-#include "vkr_net_crypto.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,69 +24,29 @@
 #include <unistd.h>
 #endif
 
-/* `vkr_depot service`: the machine's one depot service (proposal
- * docs/proposals/depot-git-model.md, "Service"). Its folder, the user data
- * folder's `depot/`, holds:
+/* `vkr_depot service`: installs, registers and runs the machine's one
+ * depot service (ADR-134). Its folder and settings are the library's
+ * (vkr_depot_service.h, "The machine's service"); this file adds what only
+ * the command does:
  *
- *   service.conf   bind, name, discovery port, outbound only and the
- *                  served stores, one setting per line
- *   service.key    the service's secret key, one per machine; the first
- *                  store added gives its `server.key`, so remotes that
- *                  name a served store's key stay valid
- *   bin/           the installed copy of vkr_depot the service runs, so a
- *                  rebuild never stops the service or locks its binary
- *   service.log    what `service run` prints when it runs as the service
- *
- * `install` copies the binary and registers it to start at logon: a Task
- * Scheduler task that restarts on failure on Windows, which also asks once
- * (UAC) for a Defender rule bound to the installed binary, and a launchd
- * agent kept alive on macOS. The task and the agent run in the user's
- * session, so the store's process lock (`Local\` on Windows) excludes the
- * service and the user's own commits alike. */
+ * `install` copies the binary into the folder's `bin/` and registers it to
+ * start at logon: a Task Scheduler task that restarts on failure on
+ * Windows, which also asks once (UAC) for a Defender rule bound to the
+ * installed binary, and a launchd agent kept alive on macOS. The task and
+ * the agent run in the user's session, so the store's process lock
+ * (`Local\` on Windows) excludes the service and the user's own commits
+ * alike. `run` is what they start: it serves the stores `service.conf`
+ * lists, follows changes to it, publishes `service.status`, and syncs each
+ * served store with each of its remotes that has an interval
+ * (vkr_depot_repository_sync, on a thread of its own). */
 
 #define SERVICE_TASK_NAME "VKR Depot"
 #define SERVICE_LAUNCHD_LABEL "com.vkr.depot.service"
 #define SERVICE_RULE_NAME "VKR Depot"
-#define SERVICE_DEFAULT_BIND "0.0.0.0:7320"
-#define SERVICE_LINE_MAX (VKR_DEPOT_PATH_CAPACITY + 256u)
-
-typedef struct ServiceSettings {
-  char bind[128];
-  char name[VKR_DEPOT_DISCOVERY_TEXT];
-  uint32_t discovery_port;
-  bool8_t outbound_only;
-  char store_names[VKR_DEPOT_SERVER_REPOSITORIES_MAX][VKR_DEPOT_BRANCH_NAME];
-  char stores[VKR_DEPOT_SERVER_REPOSITORIES_MAX][VKR_DEPOT_PATH_CAPACITY];
-  uint32_t store_count;
-} ServiceSettings;
-
-typedef struct ServicePaths {
-  char folder[VKR_DEPOT_PATH_CAPACITY];
-  char conf[VKR_DEPOT_PATH_CAPACITY];
-  char key[VKR_DEPOT_PATH_CAPACITY];
-  char bin_folder[VKR_DEPOT_PATH_CAPACITY];
-  char binary[VKR_DEPOT_PATH_CAPACITY];
-  char log[VKR_DEPOT_PATH_CAPACITY];
-} ServicePaths;
-
-/* Whether two absolute paths name one file: separators either way, and
-   without case on Windows, as its file system compares them. */
-static bool8_t service_same_path(const char *a, const char *b) {
-  for (;; ++a, ++b) {
-    char x = *a == '\\' ? '/' : *a;
-    char y = *b == '\\' ? '/' : *b;
-#if defined(_WIN32)
-    x = x >= 'A' && x <= 'Z' ? (char)(x - 'A' + 'a') : x;
-    y = y >= 'A' && y <= 'Z' ? (char)(y - 'A' + 'a') : y;
-#endif
-    if (x != y) {
-      return false_v;
-    }
-    if (!x) {
-      return true_v;
-    }
-  }
-}
+/* How often `run` looks for a changed `service.conf`, and publishes what
+   `status` reads. */
+#define SERVICE_SETTINGS_POLL_MS 1000u
+#define SERVICE_PUBLISH_MS 5000u
 
 static VkrAllocator *service_cmd_allocator(void) {
   static VkrDMemory memory;
@@ -100,137 +61,6 @@ static VkrAllocator *service_cmd_allocator(void) {
     ready = true_v;
   }
   return &allocator;
-}
-
-static bool8_t service_paths(ServicePaths *out) {
-  char data[VKR_DEPOT_PATH_CAPACITY];
-  if (!vkr_bakery_user_data_directory(data, sizeof(data)) ||
-      !vkr_bakery_path_join(out->folder, sizeof(out->folder), data, "depot") ||
-      !vkr_bakery_path_join(out->conf, sizeof(out->conf), out->folder,
-                            "service.conf") ||
-      !vkr_bakery_path_join(out->key, sizeof(out->key), out->folder,
-                            "service.key") ||
-      !vkr_bakery_path_join(out->bin_folder, sizeof(out->bin_folder),
-                            out->folder, "bin") ||
-      !vkr_bakery_path_join(out->log, sizeof(out->log), out->folder,
-                            "service.log")) {
-    return false_v;
-  }
-#if defined(_WIN32)
-  return vkr_bakery_path_join(out->binary, sizeof(out->binary), out->bin_folder,
-                              "vkr_depot.exe");
-#else
-  return vkr_bakery_path_join(out->binary, sizeof(out->binary), out->bin_folder,
-                              "vkr_depot");
-#endif
-}
-
-// =============================================================================
-// Settings
-// =============================================================================
-
-static void service_settings_default(ServiceSettings *settings) {
-  MemZero(settings, sizeof(*settings));
-  snprintf(settings->bind, sizeof(settings->bind), "%s", SERVICE_DEFAULT_BIND);
-  settings->discovery_port = VKR_DEPOT_DISCOVERY_PORT;
-}
-
-/* Reads `service.conf`; a missing file gives the defaults. Unknown lines
-   are kept out, so a newer setting does not stop an older binary. */
-static bool8_t service_settings_load(const ServicePaths *paths,
-                                     ServiceSettings *settings) {
-  service_settings_default(settings);
-  if (!vkr_bakery_is_file(paths->conf)) {
-    return true_v;
-  }
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  if (!vkr_bakery_read_file(paths->conf, 1u << 20, &bytes, &size)) {
-    return false_v;
-  }
-  uint64_t start = 0u;
-  while (start < size) {
-    uint64_t end = start;
-    while (end < size && bytes[end] != '\n') {
-      ++end;
-    }
-    char line[SERVICE_LINE_MAX];
-    const uint64_t length = Min(end - start, (uint64_t)sizeof(line) - 1u);
-    MemCopy(line, bytes + start, length);
-    line[length] = '\0';
-    while (line[0] && (line[strlen(line) - 1u] == '\r' ||
-                       line[strlen(line) - 1u] == ' ')) {
-      line[strlen(line) - 1u] = '\0';
-    }
-    start = end + 1u;
-    char *value = strchr(line, ' ');
-    if (!value || line[0] == '#') {
-      continue;
-    }
-    *value++ = '\0';
-    if (strcmp(line, "bind") == 0) {
-      snprintf(settings->bind, sizeof(settings->bind), "%s", value);
-    } else if (strcmp(line, "name") == 0) {
-      snprintf(settings->name, sizeof(settings->name), "%s", value);
-    } else if (strcmp(line, "discovery-port") == 0) {
-      const unsigned long port = strtoul(value, NULL, 10);
-      settings->discovery_port = port > 0u && port < 65536u
-                                     ? (uint32_t)port
-                                     : VKR_DEPOT_DISCOVERY_PORT;
-    } else if (strcmp(line, "outbound-only") == 0) {
-      settings->outbound_only = strcmp(value, "1") == 0;
-    } else if (strcmp(line, "store") == 0 &&
-               settings->store_count < VKR_DEPOT_SERVER_REPOSITORIES_MAX) {
-      /* `store NAME PATH`: the path is the rest of the line. */
-      char *path = strchr(value, ' ');
-      if (!path) {
-        continue;
-      }
-      *path++ = '\0';
-      if (!vkr_depot_branch_valid(value) || !path[0]) {
-        continue;
-      }
-      const uint32_t index = settings->store_count++;
-      snprintf(settings->store_names[index],
-               sizeof(settings->store_names[index]), "%s", value);
-      snprintf(settings->stores[index], sizeof(settings->stores[index]), "%s",
-               path);
-    }
-  }
-  free(bytes);
-  return true_v;
-}
-
-static bool8_t service_settings_save(const ServicePaths *paths,
-                                     const ServiceSettings *settings) {
-  const uint64_t capacity =
-      1024u + (uint64_t)settings->store_count * SERVICE_LINE_MAX;
-  char *text = malloc((size_t)capacity);
-  if (!text) {
-    return false_v;
-  }
-  int written = snprintf(text, (size_t)capacity,
-                         "# vkr_depot service settings; `vkr_depot service` "
-                         "writes this file.\n"
-                         "bind %s\n"
-                         "discovery-port %u\n"
-                         "outbound-only %u\n",
-                         settings->bind, settings->discovery_port,
-                         settings->outbound_only ? 1u : 0u);
-  if (settings->name[0]) {
-    written += snprintf(text + written, (size_t)capacity - (size_t)written,
-                        "name %s\n", settings->name);
-  }
-  for (uint32_t i = 0u; i < settings->store_count; ++i) {
-    written += snprintf(text + written, (size_t)capacity - (size_t)written,
-                        "store %s %s\n", settings->store_names[i],
-                        settings->stores[i]);
-  }
-  const bool8_t ok =
-      vkr_bakery_make_directories(paths->folder) &&
-      vkr_bakery_write_file_atomic(paths->conf, text, (uint64_t)written);
-  free(text);
-  return ok;
 }
 
 static void service_print_key(const uint8_t key[32]) {
@@ -269,13 +99,19 @@ static bool8_t service_exec(const char *executable,
 }
 
 /* Copies this executable into the service's `bin/`. */
-static bool8_t service_copy_binary(const ServicePaths *paths) {
+static bool8_t service_copy_binary(const VkrDepotServicePaths *paths) {
   char self[VKR_DEPOT_PATH_CAPACITY];
   if (!vkr_bakery_executable_path(self, sizeof(self)) ||
       !vkr_bakery_make_directories(paths->bin_folder)) {
     return false_v;
   }
-  if (service_same_path(self, paths->binary)) {
+  /* `install` run from the installed copy. */
+  VkrBakeryStat self_stat = {0};
+  VkrBakeryStat installed_stat = {0};
+  if (vkr_bakery_stat(self, &self_stat) &&
+      vkr_bakery_stat(paths->binary, &installed_stat) &&
+      installed_stat.exists && self_stat.device == installed_stat.device &&
+      self_stat.file_id == installed_stat.file_id) {
     return true_v;
   }
   uint8_t *bytes = NULL;
@@ -337,7 +173,7 @@ static bool8_t service_write_utf16(const char *path, const char *text) {
   return ok;
 }
 
-static bool8_t service_register(const ServicePaths *paths) {
+static bool8_t service_register(const VkrDepotServicePaths *paths) {
   char user[256];
   char domain[256];
   user[0] = '\0';
@@ -429,7 +265,7 @@ static bool8_t service_registered(void) {
 /* The Defender rule for the installed binary: one UAC prompt, since only an
    administrator may add one. False, with the command printed, when the
    user declines or the rule could not be added. */
-static bool8_t service_firewall(const ServicePaths *paths) {
+static bool8_t service_firewall(const VkrDepotServicePaths *paths) {
   char rule[64];
   snprintf(rule, sizeof(rule), "name=%s", SERVICE_RULE_NAME);
   const char *show[] = {"advfirewall", "firewall", "show", "rule", rule};
@@ -482,7 +318,7 @@ static void service_domain(char *out, uint32_t capacity) {
   snprintf(out, capacity, "gui/%u", (unsigned)getuid());
 }
 
-static bool8_t service_register(const ServicePaths *paths) {
+static bool8_t service_register(const VkrDepotServicePaths *paths) {
   char plist[VKR_DEPOT_PATH_CAPACITY];
   char folder[VKR_DEPOT_PATH_CAPACITY];
   if (!service_launchd_plist(plist, sizeof(plist))) {
@@ -553,7 +389,7 @@ static bool8_t service_registered(void) {
 
 /* macOS asks the user about incoming connections itself; a managed Mac
    drops them, which `--outbound-only` records. */
-static bool8_t service_firewall(const ServicePaths *paths) {
+static bool8_t service_firewall(const VkrDepotServicePaths *paths) {
   (void)paths;
   return true_v;
 }
@@ -576,148 +412,212 @@ static void service_usage(void) {
                   "  vkr_depot service run [--log FILE]\n");
 }
 
-static int service_add(const ServicePaths *paths, ServiceSettings *settings,
-                       const char *store, const char *name) {
-  char absolute[VKR_DEPOT_PATH_CAPACITY];
-  char objects[VKR_DEPOT_PATH_CAPACITY];
-  if (!vkr_bakery_path_absolute(store, absolute, sizeof(absolute)) ||
-      !vkr_bakery_path_join(objects, sizeof(objects), absolute, "objects") ||
-      !vkr_bakery_is_directory(objects)) {
-    fprintf(stderr, "%s is not a depot store\n", store);
-    return 1;
-  }
-  const char *label = name ? name : vkr_bakery_path_name(absolute);
-  if (!vkr_depot_branch_valid(label)) {
-    fprintf(stderr, "invalid store name %s; give one with --name\n", label);
-    return 1;
-  }
-  for (uint32_t i = 0u; i < settings->store_count; ++i) {
-    if (service_same_path(settings->stores[i], absolute) ||
-        strcmp(settings->store_names[i], label) == 0) {
-      fprintf(stderr, "the service already serves %s as %s\n",
-              settings->stores[i], settings->store_names[i]);
-      return 1;
-    }
-  }
-  if (settings->store_count == VKR_DEPOT_SERVER_REPOSITORIES_MAX) {
-    fprintf(stderr, "the service serves at most %u stores\n",
-            VKR_DEPOT_SERVER_REPOSITORIES_MAX);
-    return 1;
-  }
-  /* The first store's key becomes the machine's, so remotes that name a
-     store this machine served already keep working. */
-  char store_key[VKR_DEPOT_PATH_CAPACITY];
-  if (!vkr_bakery_is_file(paths->key) &&
-      vkr_bakery_path_join(store_key, sizeof(store_key), absolute,
-                           "server.key") &&
-      vkr_bakery_is_file(store_key)) {
-    uint8_t *bytes = NULL;
-    uint64_t size = 0u;
-    const bool8_t adopted =
-        vkr_bakery_read_file(store_key, 64u, &bytes, &size) &&
-        size == VKR_NET_KEY_SIZE &&
-        vkr_bakery_make_directories(paths->folder) &&
-        vkr_bakery_write_private_file_atomic(paths->key, bytes, size);
-    if (bytes) {
-      vkr_net_random(bytes, size);
-    }
-    free(bytes);
-    if (!adopted) {
-      fprintf(stderr, "could not adopt %s's server key\n", absolute);
-      return 1;
-    }
-    printf("the service adopts %s's server key\n", absolute);
-  }
-  /* Discovery and HELLO name a repository by its ID. */
-  uint8_t id[VKR_DEPOT_REPOSITORY_ID_SIZE];
-  if (!vkr_depot_repository_id(absolute, id, true_v)) {
-    fprintf(stderr, "could not give %s a repository ID\n", absolute);
-    return 1;
-  }
-  const uint32_t index = settings->store_count++;
-  snprintf(settings->stores[index], sizeof(settings->stores[index]), "%s",
-           absolute);
-  snprintf(settings->store_names[index], sizeof(settings->store_names[index]),
-           "%s", label);
-  if (!service_settings_save(paths, settings)) {
-    fprintf(stderr, "could not write %s\n", paths->conf);
-    return 1;
-  }
-  printf("serving %s as %s; a running service serves it after it restarts\n",
-         absolute, label);
-  return 0;
-}
-
-static int service_remove(const ServicePaths *paths, ServiceSettings *settings,
-                          const char *which) {
-  char absolute[VKR_DEPOT_PATH_CAPACITY];
-  const bool8_t path =
-      vkr_bakery_path_absolute(which, absolute, sizeof(absolute));
-  for (uint32_t i = 0u; i < settings->store_count; ++i) {
-    if (strcmp(settings->store_names[i], which) == 0 ||
-        (path && service_same_path(settings->stores[i], absolute))) {
-      printf("no longer serving %s\n", settings->stores[i]);
-      for (uint32_t k = i; k + 1u < settings->store_count; ++k) {
-        MemCopy(settings->stores[k], settings->stores[k + 1u],
-                sizeof(settings->stores[k]));
-        MemCopy(settings->store_names[k], settings->store_names[k + 1u],
-                sizeof(settings->store_names[k]));
-      }
-      settings->store_count -= 1u;
-      return service_settings_save(paths, settings) ? 0 : 1;
-    }
-  }
-  fprintf(stderr, "the service serves no %s\n", which);
-  return 1;
-}
-
-static void service_print_settings(const ServicePaths *paths,
-                                   const ServiceSettings *settings) {
+static void service_print_settings(const VkrDepotServicePaths *paths,
+                                   const VkrDepotServiceSettings *settings,
+                                   bool8_t has_key, const uint8_t key[32]) {
   printf("settings %s\n", paths->conf);
   printf("bind %s, discovery UDP %u%s\n", settings->bind,
          settings->discovery_port,
          settings->outbound_only ? ", outbound only" : "");
-  VkrNetKeyPair keys;
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  if (vkr_bakery_is_file(paths->key) &&
-      vkr_bakery_read_file(paths->key, 64u, &bytes, &size) &&
-      size == VKR_NET_KEY_SIZE) {
-    vkr_net_keypair_from_secret(bytes, &keys);
+  if (has_key) {
     printf("key ");
-    service_print_key(keys.public_key);
+    service_print_key(key);
     printf("\n");
-    vkr_net_random(&keys, sizeof(keys));
   } else {
     printf("key: none yet (made when the service first runs)\n");
   }
-  if (bytes) {
-    vkr_net_random(bytes, size);
-  }
-  free(bytes);
   for (uint32_t i = 0u; i < settings->store_count; ++i) {
-    printf("store %s %s\n", settings->store_names[i], settings->stores[i]);
+    printf("store %s %s\n", settings->stores[i].name, settings->stores[i].root);
   }
   if (settings->store_count == 0u) {
     printf("no stores: add one with `vkr_depot service add STORE`\n");
   }
 }
 
-static int service_run(const ServicePaths *paths,
-                       const ServiceSettings *settings, const char *log) {
-  if (log && (!freopen(log, "a", stdout) || !freopen(log, "a", stderr))) {
-    return 1;
+// =============================================================================
+// Interval sync
+// =============================================================================
+
+/* One remote of a served store that has an interval, and when it synced. */
+typedef struct ServiceSyncEntry {
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char remote[VKR_DEPOT_REMOTE_NAME];
+  uint64_t last_s;
+  /* The last round failed: the next failure is not logged again. */
+  bool8_t failing;
+  bool8_t seen;
+} ServiceSyncEntry;
+
+typedef struct ServiceSync {
+  const VkrDepotServicePaths *paths;
+  VkrAtomicBool stopping;
+  VkrThread thread;
+  VkrDMemory memory;
+  VkrAllocator allocator;
+  VkrDepotServiceSettings settings;
+  ServiceSyncEntry
+      entries[VKR_DEPOT_SERVER_REPOSITORIES_MAX * VKR_DEPOT_REMOTES_MAX];
+  uint32_t entry_count;
+} ServiceSync;
+
+typedef struct ServiceSyncVisit {
+  const char *store_name;
+  const char *remote;
+} ServiceSyncVisit;
+
+static void service_sync_print(void *context, const char *branch,
+                               VkrDepotSyncAction action,
+                               const VkrDepotId *commit, const char *detail) {
+  static const char *const actions[] = {"same", "pulled", "pushed", "diverged",
+                                        "failed"};
+  const ServiceSyncVisit *visit = context;
+  /* Only what changed or needs a person. */
+  if (action == VKR_DEPOT_SYNC_SAME) {
+    return;
   }
-  if (settings->store_count == 0u) {
-    fprintf(stderr, "the service serves no store; add one with `vkr_depot "
-                    "service add STORE`\n");
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(commit, hex);
+  printf("sync %s with %s: %s %s %.12s%s%s\n", visit->store_name, visit->remote,
+         actions[action], branch, hex, detail[0] ? ": " : "", detail);
+  fflush(stdout);
+}
+
+static ServiceSyncEntry *service_sync_entry(ServiceSync *sync,
+                                            const char *store_root,
+                                            const char *remote) {
+  for (uint32_t i = 0u; i < sync->entry_count; ++i) {
+    ServiceSyncEntry *entry = &sync->entries[i];
+    if (strcmp(entry->store_root, store_root) == 0 &&
+        strcmp(entry->remote, remote) == 0) {
+      return entry;
+    }
+  }
+  if (sync->entry_count == ArrayCount(sync->entries)) {
+    return NULL;
+  }
+  ServiceSyncEntry *entry = &sync->entries[sync->entry_count++];
+  MemZero(entry, sizeof(*entry));
+  snprintf(entry->store_root, sizeof(entry->store_root), "%s", store_root);
+  snprintf(entry->remote, sizeof(entry->remote), "%s", remote);
+  return entry;
+}
+
+/* Syncs each served store with each of its remotes whose interval has
+   passed. The thread reads the settings and the remotes files itself each
+   second, so it shares nothing with the service but the stores, whose
+   branches move under the store's lock. A sync blocks only this thread. */
+static void *service_sync_thread(void *argument) {
+  ServiceSync *sync = argument;
+  while (!vkr_atomic_bool_load(&sync->stopping, VKR_MEMORY_ORDER_ACQUIRE)) {
+    vkr_platform_sleep(SERVICE_SETTINGS_POLL_MS);
+    if (!vkr_depot_service_settings_load(sync->paths, &sync->settings)) {
+      continue;
+    }
+    const uint64_t now_s = (uint64_t)vkr_bakery_unix_seconds();
+    for (uint32_t i = 0u; i < sync->entry_count; ++i) {
+      sync->entries[i].seen = false_v;
+    }
+    for (uint32_t s = 0u; s < sync->settings.store_count; ++s) {
+      const VkrDepotServiceStore *store = &sync->settings.stores[s];
+      VkrDepotRemoteEntry remotes[VKR_DEPOT_REMOTES_MAX];
+      uint32_t remote_count = 0u;
+      if (!vkr_depot_remotes_load(store->root, remotes, ArrayCount(remotes),
+                                  &remote_count)) {
+        continue;
+      }
+      for (uint32_t r = 0u; r < remote_count; ++r) {
+        if (remotes[r].interval_seconds == 0u ||
+            vkr_atomic_bool_load(&sync->stopping, VKR_MEMORY_ORDER_ACQUIRE)) {
+          continue;
+        }
+        ServiceSyncEntry *entry =
+            service_sync_entry(sync, store->root, remotes[r].name);
+        if (!entry) {
+          continue;
+        }
+        entry->seen = true_v;
+        /* The first round after a start syncs at once. */
+        if (entry->last_s != 0u &&
+            now_s < entry->last_s + remotes[r].interval_seconds) {
+          continue;
+        }
+        entry->last_s = now_s;
+        const ServiceSyncVisit visit = {.store_name = store->name,
+                                        .remote = remotes[r].name};
+        char error[512];
+        const bool8_t ok = vkr_depot_repository_sync(
+            &sync->allocator, store->root, vkr_depot_zstd_codec(),
+            remotes[r].name, service_sync_print, (void *)&visit, NULL, error,
+            sizeof(error));
+        if (!ok && !entry->failing) {
+          printf("sync %s with %s failed: %s\n", store->name, remotes[r].name,
+                 error);
+          fflush(stdout);
+        } else if (ok && entry->failing) {
+          printf("sync %s with %s works again\n", store->name, remotes[r].name);
+          fflush(stdout);
+        }
+        entry->failing = !ok;
+      }
+    }
+    /* A store or remote that went away, or lost its interval, leaves. */
+    uint32_t kept = 0u;
+    for (uint32_t i = 0u; i < sync->entry_count; ++i) {
+      if (sync->entries[i].seen) {
+        sync->entries[kept++] = sync->entries[i];
+      }
+    }
+    sync->entry_count = kept;
+  }
+  return NULL;
+}
+
+static ServiceSync *service_sync_start(const VkrDepotServicePaths *paths) {
+  ServiceSync *sync = calloc(1u, sizeof(ServiceSync));
+  if (!sync) {
+    return NULL;
+  }
+  sync->paths = paths;
+  vkr_atomic_bool_store(&sync->stopping, false_v, VKR_MEMORY_ORDER_RELEASE);
+  /* Its own memory: the sync allocates on this thread only. */
+  if (!vkr_dmemory_create(MB(8), GB(1), &sync->memory)) {
+    free(sync);
+    return NULL;
+  }
+  sync->allocator = (VkrAllocator){.ctx = &sync->memory};
+  vkr_dmemory_allocator_create(&sync->allocator);
+  /* A fetch walks trees on the stack; the default thread stack is small. */
+  if (!vkr_thread_create_with_stack(service_cmd_allocator(), &sync->thread,
+                                    service_sync_thread, sync, MB(8))) {
+    vkr_dmemory_allocator_destroy(&sync->allocator);
+    free(sync);
+    return NULL;
+  }
+  return sync;
+}
+
+/* Waits for a sync in progress to finish. */
+static void service_sync_stop(ServiceSync *sync) {
+  if (!sync) {
+    return;
+  }
+  vkr_atomic_bool_store(&sync->stopping, true_v, VKR_MEMORY_ORDER_RELEASE);
+  (void)vkr_thread_join(sync->thread);
+  (void)vkr_thread_destroy(service_cmd_allocator(), &sync->thread);
+  vkr_dmemory_allocator_destroy(&sync->allocator);
+  free(sync);
+}
+
+static int service_run(const VkrDepotServicePaths *paths,
+                       VkrDepotServiceSettings *settings, const char *log) {
+  if (log && (!freopen(log, "a", stdout) || !freopen(log, "a", stderr))) {
     return 1;
   }
   const char *roots[VKR_DEPOT_SERVER_REPOSITORIES_MAX];
   const char *names[VKR_DEPOT_SERVER_REPOSITORIES_MAX];
   for (uint32_t i = 0u; i < settings->store_count; ++i) {
-    roots[i] = settings->stores[i];
-    names[i] = settings->store_names[i];
+    roots[i] = settings->stores[i].root;
+    names[i] = settings->stores[i].name;
   }
   /* The machine's service answers discovery with the machine's name. */
   char host[VKR_DEPOT_DISCOVERY_TEXT];
@@ -756,33 +656,73 @@ static int service_run(const ServicePaths *paths,
     printf("serving %s as %s\n", info->repositories[i].store_root,
            info->repositories[i].name);
   }
+  if (info->repository_count == 0u) {
+    printf("no store yet: `vkr_depot service add STORE` serves one\n");
+  }
   if (info->discoverable) {
     printf("discoverable as %s on UDP %u\n", info->name, info->discovery_port);
   } else {
     printf("not discoverable: UDP %u is taken\n", info->discovery_port);
   }
   fflush(stdout);
+  /* Without the thread the service still serves; remotes only miss their
+     intervals. */
+  ServiceSync *sync = service_sync_start(paths);
+  if (!sync) {
+    fprintf(stderr, "could not start interval sync\n");
+  }
+  VkrBakeryStat known = {0};
+  (void)vkr_bakery_stat(paths->conf, &known);
+  (void)vkr_depot_service_publish(service, paths->status);
+  uint64_t since_publish_ms = 0u;
   for (;;) {
-    vkr_platform_sleep(500u);
+    vkr_platform_sleep(SERVICE_SETTINGS_POLL_MS);
     vkr_depot_service_info(service, info);
     if (info->failed) {
       fprintf(stderr, "the socket failed\n");
       break;
     }
+    /* `service add` or `remove`, from the command or the editor. */
+    VkrBakeryStat stat = {0};
+    (void)vkr_bakery_stat(paths->conf, &stat);
+    if (stat.exists != known.exists || stat.mtime_ns != known.mtime_ns ||
+        stat.size != known.size) {
+      known = stat;
+      if (vkr_depot_service_settings_load(paths, settings)) {
+        if (!vkr_depot_service_apply(service, settings, error, sizeof(error))) {
+          fprintf(stderr, "%s\n", error);
+        }
+        vkr_depot_service_info(service, info);
+        printf("settings changed: serving %u store%s\n", info->repository_count,
+               info->repository_count == 1u ? "" : "s");
+        for (uint32_t i = 0u; i < info->repository_count; ++i) {
+          printf("serving %s as %s\n", info->repositories[i].store_root,
+                 info->repositories[i].name);
+        }
+        fflush(stdout);
+        since_publish_ms = SERVICE_PUBLISH_MS;
+      }
+    }
+    since_publish_ms += SERVICE_SETTINGS_POLL_MS;
+    if (since_publish_ms >= SERVICE_PUBLISH_MS) {
+      since_publish_ms = 0u;
+      (void)vkr_depot_service_publish(service, paths->status);
+    }
   }
   free(info);
+  service_sync_stop(sync);
   vkr_depot_service_stop(service);
   /* A nonzero exit: Task Scheduler and launchd start it again. */
   return 1;
 }
 
-static int service_install(const ServicePaths *paths,
-                           ServiceSettings *settings) {
+static int service_install(const VkrDepotServicePaths *paths,
+                           VkrDepotServiceSettings *settings) {
   if (settings->store_count == 0u) {
     fprintf(stderr, "add a store first: `vkr_depot service add STORE`\n");
     return 1;
   }
-  if (!service_settings_save(paths, settings)) {
+  if (!vkr_depot_service_settings_save(paths, settings)) {
     fprintf(stderr, "could not write %s\n", paths->conf);
     return 1;
   }
@@ -818,34 +758,44 @@ static int service_install(const ServicePaths *paths,
   return 0;
 }
 
-static int service_status(const ServicePaths *paths,
-                          const ServiceSettings *settings) {
-  service_print_settings(paths, settings);
-  printf("registered to start at logon: %s\n",
-         service_registered() ? "yes" : "no");
-  VkrNetAddress loopback;
-  VkrDepotDiscovered found[4];
-  const uint32_t count =
-      vkr_depot_address("127.0.0.1:0", &loopback)
-          ? vkr_depot_discover(&loopback, (uint16_t)settings->discovery_port,
-                               1500u, found, ArrayCount(found))
-          : 0u;
-  if (count == 0u) {
-    printf("running: no answer on UDP %u\n", settings->discovery_port);
+static int service_status(void) {
+  VkrDepotServiceStatus *status = malloc(sizeof(VkrDepotServiceStatus));
+  if (!status || !vkr_depot_service_status(status, 1500u)) {
+    fprintf(stderr, "could not read the service settings\n");
+    free(status);
     return 1;
   }
-  for (uint32_t i = 0u; i < count; ++i) {
-    printf("running: %s on port %u key ", found[i].name, found[i].address.port);
-    service_print_key(found[i].server_key);
-    printf("%s\n", found[i].outbound_only ? " (outbound only)" : "");
-    for (uint32_t k = 0u; k < found[i].repository_count; ++k) {
-      printf("  repository %s, default branch %s\n",
-             found[i].repositories[k].name,
-             found[i].repositories[k].default_branch[0]
-                 ? found[i].repositories[k].default_branch
-                 : "-");
-    }
+  service_print_settings(&status->paths, &status->settings, status->has_key,
+                         status->key);
+  printf("registered to start at logon: %s\n",
+         service_registered() ? "yes" : "no");
+  if (!status->running) {
+    printf("running: no answer on UDP %u\n", status->settings.discovery_port);
+    free(status);
+    return 1;
   }
+  const VkrDepotDiscovered *answer = &status->answer;
+  printf("running: %s on port %u%s\n", answer->name, answer->address.port,
+         answer->outbound_only ? " (outbound only)" : "");
+  for (uint32_t k = 0u; k < answer->repository_count; ++k) {
+    printf("  repository %s, default branch %s\n", answer->repositories[k].name,
+           answer->repositories[k].default_branch[0]
+               ? answer->repositories[k].default_branch
+               : "-");
+  }
+  const uint64_t now_s = (uint64_t)vkr_bakery_unix_seconds();
+  for (uint32_t i = 0u; i < status->known_peer_count; ++i) {
+    const VkrDepotServerPeer *peer = &status->known_peers[i];
+    const uint64_t seen_s = peer->last_seen_us / 1000000u;
+    printf("  peer ");
+    service_print_key(peer->key);
+    printf(" %s, %u connection%s, seen %llu s ago%s\n",
+           peer->name[0] ? peer->name : "-", peer->connections,
+           peer->connections == 1u ? "" : "s",
+           (unsigned long long)(now_s > seen_s ? now_s - seen_s : 0u),
+           peer->outbound_only ? ", outbound only" : "");
+  }
+  free(status);
   return 0;
 }
 
@@ -854,10 +804,10 @@ int vkr_depot_service_command(int argc, char **argv) {
     service_usage();
     return 1;
   }
-  ServicePaths paths;
-  ServiceSettings *settings = malloc(sizeof(ServiceSettings));
-  if (!settings || !service_paths(&paths) ||
-      !service_settings_load(&paths, settings)) {
+  VkrDepotServicePaths paths;
+  VkrDepotServiceSettings *settings = malloc(sizeof(VkrDepotServiceSettings));
+  if (!settings || !vkr_depot_service_paths(&paths) ||
+      !vkr_depot_service_settings_load(&paths, settings)) {
     fprintf(stderr, "could not read the service settings\n");
     free(settings);
     return 1;
@@ -888,13 +838,22 @@ int vkr_depot_service_command(int argc, char **argv) {
     }
   }
   int result = 1;
-  if (strcmp(verb, "add") == 0 && positional) {
-    result = service_add(&paths, settings, positional, name);
-  } else if (strcmp(verb, "remove") == 0 && positional) {
-    result = service_remove(&paths, settings, positional);
+  char message[VKR_DEPOT_PATH_CAPACITY + 256u];
+  if ((strcmp(verb, "add") == 0 || strcmp(verb, "remove") == 0) && positional) {
+    const bool8_t ok =
+        verb[0] == 'a' ? vkr_depot_service_add(&paths, settings, positional,
+                                               name, message, sizeof(message))
+                       : vkr_depot_service_remove(&paths, settings, positional,
+                                                  message, sizeof(message));
+    fprintf(ok ? stdout : stderr, "%s\n", message);
+    result = ok ? 0 : 1;
   } else if (strcmp(verb, "list") == 0) {
-    service_print_settings(&paths, settings);
-    result = 0;
+    VkrDepotServiceStatus *status = malloc(sizeof(VkrDepotServiceStatus));
+    if (status && vkr_depot_service_status(status, 0u)) {
+      service_print_settings(&paths, settings, status->has_key, status->key);
+      result = 0;
+    }
+    free(status);
   } else if (strcmp(verb, "install") == 0) {
     if (name) {
       snprintf(settings->name, sizeof(settings->name), "%s", name);
@@ -905,7 +864,7 @@ int vkr_depot_service_command(int argc, char **argv) {
     printf("%s\n", result == 0 ? "the service no longer starts at logon"
                                : "the service was not registered");
   } else if (strcmp(verb, "status") == 0) {
-    result = service_status(&paths, settings);
+    result = service_status();
   } else if (strcmp(verb, "run") == 0) {
     result = service_run(&paths, settings, log);
   } else {
