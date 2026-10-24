@@ -11,13 +11,13 @@ authority: adr
 Accepted (partial). A depot store is a repository with local branches,
 remotes and tracked remote branches. Commits are local. Fetch, push and pull
 exchange branches with named remotes, and branches that both sides moved are
-merged per file, with scene units sent to a Bakery driver. The editor's
-Source Control works on this model
-([ADR-110](110-project-sharing-in-the-editor.md)). Bakery's merge operations
-(`merge_scene_unit`, `merge_project_document`) and the D4 and D5 phases of
-[the proposal](../proposals/depot-git-model.md) remain. Until the Bakery
-operations land, a unit both sides changed is a conflict that Use theirs or
-Keep mine settles whole.
+merged per file, with scene units sent to Bakery's merge operations
+(`merge_scene_unit`, `merge_project_document`, from the Windows track). The
+editor's Source Control works on this model
+([ADR-110](110-project-sharing-in-the-editor.md)). A scene whose edit
+overlay both sides changed stays one conflict until merge per entity (D5 of
+[the proposal](../proposals/depot-git-model.md)); self-contained projects
+(D4) remain too.
 
 ## Context
 
@@ -170,9 +170,16 @@ Mac M1, 2026-10-24:
 - The Release editor on an FPS Arena repository on loopback merged a
   commit made from another clone into a local commit (`Merge origin/main`,
   two parents), pushed it, and the other clone pulled both changes.
+- `python3 tools/checks/check_bakery_merge.py --bakery
+  build_release/tools/bakery/vkr_bakery` passes on the Mac. Two editors
+  that each added an entity to one scene and committed: the second one's
+  Commit & Sync stopped with the scene as one conflict, logged as "both
+  sides edited the scene; their edits merge per entity in a later depot
+  version", kept through status checks; Keep mine merged and Sync pushed.
 
-Unverified: Bakery's merge operations, which do not exist yet; a merge of
-two scene changes through them; merge of a sparse working copy.
+Unverified: a scene merge in which one side changed only inventories
+(Bakery's check covers it, a depot run does not); merge of a sparse working
+copy.
 
 ## Revisit when
 

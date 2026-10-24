@@ -371,6 +371,14 @@ static void merge_run_unit(MergeState *state, uint32_t index,
   unit->status =
       state->config->driver(state->config->driver_context, &request,
                             &unit->changes, &conflicts, detail, sizeof(detail));
+  /* Why a unit stays a conflict, for the log of whoever settles it. */
+  if (unit->status != VKR_DEPOT_MERGE_UNIT_MERGED) {
+    fprintf(stderr, "depot: %s was not merged: %s\n", anchor,
+            detail[0] ? detail : "the driver gave no reason");
+    for (uint32_t i = 0u; i < conflicts.count; ++i) {
+      fprintf(stderr, "depot:   %s\n", conflicts.entries[i].path);
+    }
+  }
   vkr_depot_change_list_free(&conflicts);
   if (unit->status == VKR_DEPOT_MERGE_UNIT_MERGED) {
     out_result->units_merged++;
@@ -863,6 +871,51 @@ static bool8_t merge_json_paths(VkrJsonReader *reader, VkrAllocator *allocator,
   }
 }
 
+/* Reads the result's `conflicts`, objects of `path`, `id` and `reason`,
+   into `out` as `path#id: reason`, and the first reason into `detail`. */
+static void merge_json_conflicts(VkrJsonReader *reader, VkrAllocator *allocator,
+                                 VkrDepotChangeList *out, char *detail,
+                                 uint32_t capacity) {
+  vkr_json_reader_reset(reader);
+  if (!vkr_json_find_root_field(reader, "conflicts")) {
+    return;
+  }
+  vkr_json_skip_whitespace(reader);
+  if (reader->pos >= reader->length || reader->data[reader->pos] != '[') {
+    return;
+  }
+  reader->pos++;
+  while (vkr_json_next_array_element(reader)) {
+    String8 object = {0};
+    if (!vkr_json_capture_composite(reader, &object)) {
+      return;
+    }
+    VkrJsonReader item = vkr_json_reader_from_string(object);
+    static const char *const keys[] = {"path", "id", "reason"};
+    char fields[3][VKR_DEPOT_PATH_MAX / 4] = {{0}};
+    for (uint32_t k = 0u; k < ArrayCount(keys); ++k) {
+      String8 text = {0};
+      vkr_json_reader_reset(&item);
+      if (vkr_json_find_root_field(&item, keys[k]) &&
+          vkr_json_parse_string_decoded(&item, allocator, &text)) {
+        snprintf(fields[k], sizeof(fields[k]), "%s", (const char *)text.str);
+        vkr_allocator_free(allocator, text.str, text.length + 1u,
+                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      }
+    }
+    char line[VKR_DEPOT_PATH_MAX];
+    snprintf(line, sizeof(line), "%s%s%s%s%s", fields[0],
+             fields[1][0] ? "#" : "", fields[1], fields[2][0] ? ": " : "",
+             fields[2]);
+    if (out->count == 0u && fields[2][0]) {
+      snprintf(detail, capacity, "%s", fields[2]);
+    }
+    if (!merge_conflict_add(out, line)) {
+      return;
+    }
+  }
+}
+
 VkrDepotMergeUnitStatus vkr_depot_merge_bakery_driver(
     void *context, const VkrDepotMergeUnitRequest *request,
     VkrDepotChangeList *out_changes, VkrDepotChangeList *out_conflicts,
@@ -982,7 +1035,7 @@ VkrDepotMergeUnitStatus vkr_depot_merge_bakery_driver(
   } else {
     status = VKR_DEPOT_MERGE_UNIT_CONFLICT;
     snprintf(detail, capacity, "%s: conflicts", operation);
-    (void)out_conflicts;
+    merge_json_conflicts(&reader, allocator, out_conflicts, detail, capacity);
   }
   vkr_dmemory_allocator_destroy(&decoder);
   free(bytes);

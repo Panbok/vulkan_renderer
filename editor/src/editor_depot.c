@@ -1109,6 +1109,8 @@ static void depot_job_pull(DepotWorker *worker) {
   vkr_depot_change_list_free(&pulled.conflicts);
   vkr_depot_change_list_free(&merged.conflicts);
   if (job->ok) {
+    /* The policy settled every conflict the pull met. */
+    job->conflict_count = 0u;
     depot_job_after_checkout(worker, &before);
   }
   vkr_depot_file_list_free(&before);
@@ -2046,9 +2048,17 @@ static void depot_take_results(VkrEditorDepot *depot) {
     MemCopy(depot->changes, job->changes,
             Min(job->change_count, DEPOT_LIST_MAX) * sizeof(DepotText));
   }
-  depot->conflict_count = job->conflict_count;
-  MemCopy(depot->conflicts, job->conflicts,
-          Min(job->conflict_count, DEPOT_LIST_MAX) * sizeof(DepotText));
+  /* Conflicts stay listed until a step that pulls or switches settles or
+     replaces them; a status check knows nothing about them. */
+  const bool8_t settles = job->kind == DEPOT_JOB_PULL ||
+                          job->kind == DEPOT_JOB_SYNC ||
+                          job->kind == DEPOT_JOB_SWITCH ||
+                          (job->kind == DEPOT_JOB_COMMIT && job->then_sync);
+  if (settles) {
+    depot->conflict_count = job->conflict_count;
+    MemCopy(depot->conflicts, job->conflicts,
+            Min(job->conflict_count, DEPOT_LIST_MAX) * sizeof(DepotText));
+  }
   if (!vkr_depot_id_zero(&job->base)) {
     depot->base = job->base;
   }
@@ -2095,7 +2105,10 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   const float64_t now = vkr_platform_get_absolute_time();
   depot_take_results(depot);
   const bool8_t denied = job->connect == VKR_DEPOT_CONNECT_DENIED;
-  depot->error[0] = '\0';
+  /* A status check keeps the last step's error on screen. */
+  if (job->kind != DEPOT_JOB_STATUS) {
+    depot->error[0] = '\0';
+  }
   depot->waiting_kind = DEPOT_JOB_NONE;
   const bool8_t exchange =
       job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_PULL ||
@@ -3288,9 +3301,21 @@ static void depot_window_conflicts(VkrEditorDepot *depot, VkrEditorUi *editor,
                 depot->conflict_count, depot->conflict_count == 1u ? "" : "s");
   depot_label(ui, "conflict.title", text, 12, *y, width - 24, theme->warning);
   *y += 24;
+  /* The end of a path names it: a scene's id and file, not the projects
+     folder every path shares. */
+  const size_t shown = (size_t)Max(16.0f, (width - 48.0f) / 6.4f);
   for (uint32_t i = 0u; i < Min(depot->conflict_count, 6u); ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
-    depot_caption(ui, "conflict", depot->conflicts[i].text, 24, *y, width - 36);
+    const char *path = depot->conflicts[i].text;
+    char tail[DEPOT_TEXT];
+    const size_t length = string_length(path);
+    if (length > shown) {
+      string_format(tail, sizeof(tail), "\xe2\x80\xa6%s",
+                    path + length - shown + 1u);
+    } else {
+      string_format(tail, sizeof(tail), "%s", path);
+    }
+    depot_caption(ui, "conflict", tail, 24, *y, width - 36);
     (void)vkr_ui_pop_id(ui);
     *y += 18;
   }

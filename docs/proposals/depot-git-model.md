@@ -13,7 +13,7 @@ Source Control window instead of Share and Get. The repository model, the
 merge and the editor's Source Control are implemented and recorded in
 [ADR-133](../adr/133-depot-repositories-remotes-and-merge.md) and
 [ADR-110](../adr/110-project-sharing-in-the-editor.md). This proposal keeps
-the work that remains: Bakery's merge operations, the editor on the
+the work that remains: the pull report in the editor, the editor on the
 per-machine service, self-contained projects (D4), merge per entity (D5)
 and the evidence between the two machines.
 
@@ -56,35 +56,19 @@ night. Each failure points at a part of the model:
 | Phase | State | Record |
 | --- | --- | --- |
 | D1, repositories and remotes | Implemented: local commits, remotes, tracking branches, fetch, fast-forward push and pull, branches, adoption of older working copies, HELLO from every client | ADR-133 |
-| D2, merge per file | Implemented in the depot: merge base, per-file decisions, units sent whole to a driver, merge commits, pull that merges. Missing: Bakery's operations, so a unit both sides changed is always a conflict | ADR-133, below |
+| D2, merge per file | Implemented: merge base, per-file decisions, units sent whole to Bakery's `merge_scene_unit` and `merge_project_document`, merge commits, pull that merges, `.vkrdepotmerge` written by `share_project`. A scene overlay both sides edited stays a conflict until D5 | ADR-133 |
 | D3, service and editor | Editor Source Control implemented. The per-machine service landed from the Windows track (git `5e8326a8`, `241587ad`) and is recorded by that track; the editor still serves a repository itself | ADR-110, below |
 | D4, self-contained projects | Not started | below |
 | D5, merge per entity | Not started | below |
 
 ## Remaining work
 
-### Bakery merge operations (D2)
+### Pull report (D2)
 
-`vkr_depot_merge_bakery_driver` already runs `vkr_bakery project --request
-<file> --result <file>` (ADR-133). Bakery needs the operations:
-
-- `merge_scene_unit` for the `scene` driver and `merge_project_document` for
-  `project`. The request carries `version` 1, `read_only` true,
-  `workspace_root`, `anchor` (the anchor's repository path) and the folders
-  `base`, `mine`, `theirs` and `output`, each holding the unit's member
-  files at their paths relative to the anchor's folder. The scene operation
-  merges the live inventories' records by `id` and the scene file and edit
-  overlay that name them, and keeps a record both sides changed as a
-  conflict. It writes the merged files into `output` and answers
-  `{"merged":true,"write":[…],"delete":[…]}` or `{"merged":false,
-  "conflicts":[{"path","id","reason"}…]}`, paths relative to the folder.
-- `pull_report`: `recook_textures` then `prepare_scene` for each scene a
-  pull changed, with a result per scene, so a pull says whether each scene
-  opens, not only that the transfer finished.
-- `share_project` writes `.vkrdepotmerge` with the rules
-  `unit scene .vkreditor/projects/*/scenes/*/scene.json inventory/*.json edits/*.json`
-  and `unit project .vkreditor/projects/*/project.json`, so every new
-  repository merges its scenes as units.
+Bakery's `pull_report` (from the Windows track) re-cooks and prepares each
+scene a pull changed and says whether it opens. The editor's pull runs
+`recook_textures` itself today; it should run `pull_report` instead and
+show a scene that does not open as an error of the pull.
 
 ### The editor on the per-machine service (D3)
 
@@ -128,8 +112,7 @@ changed are conflicts, shown per entity.
 
 ## Phases
 
-1. **D2 Bakery operations** (Windows track): the three operations and the
-   `.vkrdepotmerge` rules from `share_project`.
+1. **D2 pull report in the editor.**
 2. **D3 editor on the service:** once the service's state is in
    `VkrDepotServiceInfo` on both platforms.
 3. **D4, self-contained projects.** Projects move outside the git
