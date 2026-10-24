@@ -17,7 +17,9 @@
  *                  [--bakery PATH]
  *   vkr_depot merge BRANCH|REMOTE/BRANCH [--dir DIR] [--take-theirs|
  *                   --keep-mine] [--bakery PATH]
- *   vkr_depot remote [list|add NAME ADDR KEY|remove NAME] [--dir DIR]
+ *   vkr_depot remote [list|add NAME ADDR KEY|remove NAME]
+ *                    [--dir DIR|--store STORE]
+ *   vkr_depot sync STORE [--remote NAME]
  *   vkr_depot branch [NAME [--delete [--force]]] [--dir DIR]
  *   vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]
  *   vkr_depot refs [DIR]
@@ -37,8 +39,10 @@
  * --push` commits and pushes, or, when the push is refused, leaves the
  * branch and the working copy as they were, as `commit` did before
  * repositories. A remote defaults to `origin`, the server a clone came from.
- * `serve` also answers LAN discovery (vkr_depot_discovery.h), and `mirror`
- * keeps the branches of the local server and a peer server equal. A running
+ * `sync` does for a served store, with no working directory, what `mirror`
+ * does for two servers, through one of the store's remotes. `serve` also
+ * answers LAN discovery (vkr_depot_discovery.h), and `mirror` keeps the
+ * branches of the local server and a peer server equal. A running
  * server applies `access` within a second; a key it refused waits there as a
  * request. */
 
@@ -736,14 +740,41 @@ static int depot_merge_command(const char *directory, const char *name,
   return result;
 }
 
-static int depot_remote_command(const char *directory, const char *action,
-                                const char *name, const char *address,
-                                const char *key_hex) {
-  VkrDepotWorkspace workspace;
-  if (depot_open(&workspace, directory)) {
+static void depot_sync_print(void *context, const char *branch,
+                             VkrDepotSyncAction action,
+                             const VkrDepotId *commit, const char *detail) {
+  static const char *const actions[] = {"same", "pulled", "pushed", "diverged",
+                                        "failed"};
+  (void)context;
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(commit, hex);
+  printf("%s %s %.12s%s%s\n", actions[action], branch, hex,
+         detail[0] ? ": " : "", detail);
+  fflush(stdout);
+}
+
+/* Syncs a served store with one of its remotes. */
+static int depot_sync_command(const char *store_root, const char *remote) {
+  char error[256];
+  if (!vkr_depot_repository_sync(
+          &depot_allocator, store_root, vkr_depot_zstd_codec(), remote,
+          depot_sync_print, NULL, NULL, error, sizeof(error))) {
+    fprintf(stderr, "%s\n", error);
     return 1;
   }
-  const char *store = workspace.store.root;
+  return 0;
+}
+
+/* The remotes of the working copy at `directory`, or of `store_root` when
+   given: a served store has no working directory. */
+static int depot_remote_command(const char *directory, const char *store_root,
+                                const char *action, const char *name,
+                                const char *address, const char *key_hex) {
+  VkrDepotWorkspace workspace = {0};
+  if (!store_root && depot_open(&workspace, directory)) {
+    return 1;
+  }
+  const char *store = store_root ? store_root : workspace.store.root;
   int result = 1;
   if (!action || strcmp(action, "list") == 0) {
     VkrDepotRemoteEntry remotes[VKR_DEPOT_REMOTES_MAX];
@@ -781,7 +812,9 @@ static int depot_remote_command(const char *directory, const char *action,
   } else {
     fprintf(stderr, "remote takes list, add NAME ADDR KEY or remove NAME\n");
   }
-  vkr_depot_workspace_close(&workspace);
+  if (!store_root) {
+    vkr_depot_workspace_close(&workspace);
+  }
   return result;
 }
 
@@ -997,7 +1030,9 @@ static void depot_usage(void) {
       "                 [--bakery PATH]\n"
       "  vkr_depot merge BRANCH|REMOTE/BRANCH [--dir DIR] [--take-theirs|\n"
       "                  --keep-mine] [--bakery PATH]\n"
-      "  vkr_depot remote [list|add NAME ADDR KEY|remove NAME] [--dir DIR]\n"
+      "  vkr_depot remote [list|add NAME ADDR KEY|remove NAME]\n"
+      "                   [--dir DIR|--store STORE]\n"
+      "  vkr_depot sync STORE [--remote NAME]\n"
       "  vkr_depot branch [NAME [--delete [--force]]] [--dir DIR]\n"
       "  vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]\n"
       "  vkr_depot cooked [DIR]\n"
@@ -1156,9 +1191,12 @@ static int depot_main(int argc, char **argv) {
   if (strcmp(command, "merge") == 0 && positional[0]) {
     return depot_merge_command(dir ? dir : ".", positional[0], policy, bakery);
   }
+  if (strcmp(command, "sync") == 0 && positional[0]) {
+    return depot_sync_command(positional[0], remote);
+  }
   if (strcmp(command, "remote") == 0) {
-    return depot_remote_command(dir ? dir : ".", positional[0], positional[1],
-                                positional[2], positional[3]);
+    return depot_remote_command(dir ? dir : ".", store, positional[0],
+                                positional[1], positional[2], positional[3]);
   }
   if (strcmp(command, "branch") == 0) {
     return depot_branch_command(dir ? dir : ".", positional[0], remove, force);

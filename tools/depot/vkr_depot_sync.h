@@ -509,3 +509,32 @@ bool8_t vkr_depot_switch(VkrDepotWorkspace *workspace, const char *branch,
                          VkrDepotConflictPolicy policy, uint32_t *out_kept,
                          VkrDepotChangeList *out_conflicts, char *error,
                          uint32_t capacity);
+
+typedef enum VkrDepotSyncAction {
+  VKR_DEPOT_SYNC_SAME = 0,
+  /* The remote's branch was new or ahead: the store's branch moved to it. */
+  VKR_DEPOT_SYNC_PULLED,
+  /* The store's branch was new or ahead: the remote's moved to it. */
+  VKR_DEPOT_SYNC_PUSHED,
+  /* Both moved: left alone for a working copy to merge. */
+  VKR_DEPOT_SYNC_DIVERGED,
+  VKR_DEPOT_SYNC_FAILED,
+} VkrDepotSyncAction;
+
+typedef void (*VkrDepotSyncVisit)(void *context, const char *branch,
+                                  VkrDepotSyncAction action,
+                                  const VkrDepotId *commit, const char *detail);
+
+/* Syncs a store that no working directory holds, such as one a service
+   serves, with its `remote` (NULL: origin, else the only one), as `mirror`
+   does for two servers: fetches every branch, cooked side branches
+   included, then fast-forwards each branch of either side to the other's
+   where one is ahead, and leaves a branch both sides moved. The service
+   runs it on each remote's interval. `visit` (may be NULL) hears each
+   branch; false when the remote is unreachable or a branch failed. */
+bool8_t vkr_depot_repository_sync(VkrAllocator *allocator,
+                                  const char *store_root, const VkrCodec *codec,
+                                  const char *remote, VkrDepotSyncVisit visit,
+                                  void *context,
+                                  VkrDepotConnectStatus *out_status,
+                                  char *error, uint32_t capacity);

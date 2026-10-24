@@ -78,8 +78,16 @@ when origin is the working copy's server.
   takes trees only. The history behind each branch arrives as commits and
   trees without their files, so ancestry and logs work.
 - `vkr_depot_push` refuses a push that is not a fast-forward of the remote's
-  branch, uploads every commit the remote lacks oldest first (each against
-  its first parent), then moves the branch by the server's compare-and-swap.
+  branch, uploads oldest first (each against its first parent) every commit
+  that none of the remote's branches reaches, then moves the branch by the
+  server's compare-and-swap. Commits the remote's branches reach are there
+  already, and fetched history holds no files to upload.
+- `vkr_depot_repository_sync` syncs a store that no working directory holds
+  (a served one) with one of its remotes, as `mirror` does for two servers:
+  it fetches every branch, cooked side branches included, fast-forwards
+  either side's branch to the other's where one is ahead, and leaves a
+  branch both sides moved for a working copy to merge. `vkr_depot sync
+  STORE` runs it, and `remote ... --store STORE` edits a store's remotes.
 - `vkr_depot_pull` fetches the working copy's branch, then fast-forwards,
   reports AHEAD, or reports DIVERGED.
 - Every connection to a version 2 service sends HELLO with the remote's
@@ -117,7 +125,7 @@ when origin is the working copy's server.
 
 `vkr_depot commit` is local; `commit --push` commits and pushes, or puts the
 branch, base and index back when the push is refused. `push`, `fetch`,
-`pull`, `merge`, `remote`, `branch` and `switch` follow git's verbs
+`pull`, `merge`, `remote`, `branch`, `switch` and `sync` follow git's verbs
 ([vkr_depot_main.c](../../tools/depot/vkr_depot_main.c)).
 
 ## Consequences
@@ -158,7 +166,8 @@ Mac M1, 2026-10-24:
   with the lock removed), `test_depot_repositories` (local commits, history
   push, fast-forward pull, divergence refused, pull with merge then push,
   branches, older working copies adopted, the served repository, HELLO ID
-  learned and a wrong ID refused) and `test_depot_merge` (per-file merge,
+  learned and a wrong ID refused, a store with no working directory synced
+  both ways and a diverged branch left) and `test_depot_merge` (per-file merge,
   FAIL, Theirs and Mine, unit to driver, unit settled whole, unknown driver
   runs nothing, local changes refused; it fails when a merged unit drops the
   other side's inventory).
