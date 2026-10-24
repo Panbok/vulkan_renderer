@@ -111,6 +111,25 @@ VkrDepotRefStatus vkr_depot_client_update_ref(VkrDepotClient *client,
                                               const VkrDepotId *commit,
                                               VkrDepotId *out_current);
 
+typedef struct VkrDepotHello {
+  VkrDepotHelloStatus status;
+  /* The selected repository; zero size for a store without an ID yet. */
+  uint8_t repository[VKR_DEPOT_REPOSITORY_ID_SIZE];
+  uint32_t repository_size;
+  char name[VKR_DEPOT_BRANCH_NAME];
+  char default_branch[VKR_DEPOT_BRANCH_NAME];
+  /* The service chose version 1, which has no HELLO: nothing was sent and
+     the connection uses the service's only repository. */
+  bool8_t version_1;
+} VkrDepotHello;
+
+/* Selects `repository` (NULL or all zero: the service's default) and sends
+   `flags` (VKR_DEPOT_HELLO_*), once per connection before other requests.
+   False when no reply came; the status tells a refusal. */
+bool8_t vkr_depot_client_hello(VkrDepotClient *client,
+                               const uint8_t *repository, uint64_t flags,
+                               VkrDepotHello *out_hello);
+
 VkrDepotLockStatus vkr_depot_client_lock(VkrDepotClient *client,
                                          const char *path, bool8_t release,
                                          bool8_t force, uint8_t out_owner[32]);

@@ -195,6 +195,8 @@ struct VkrDepotClient {
   bool8_t opened;
   bool8_t closed;
   uint16_t close_code;
+  /* The service version both sides chose, once opened. */
+  uint16_t version;
   uint64_t next_request;
   ClientReply replies[CLIENT_REPLY_SLOTS];
   VkrDepotMessage scratch;
@@ -643,8 +645,9 @@ static void client_service_event(void *context, VkrNetConnectionId connection,
 static void client_service_opened(void *context, VkrNetConnectionId connection,
                                   uint16_t version) {
   (void)connection;
-  (void)version;
-  ((VkrDepotClient *)context)->opened = true_v;
+  VkrDepotClient *client = context;
+  client->version = version;
+  client->opened = true_v;
 }
 
 static void client_service_closed(void *context, VkrNetConnectionId connection,
@@ -811,6 +814,41 @@ bool8_t vkr_depot_client_refs(VkrDepotClient *client, VkrDepotRef *out_refs,
     ++count;
   }
   *out_count = count;
+  return true_v;
+}
+
+bool8_t vkr_depot_client_hello(VkrDepotClient *client,
+                               const uint8_t *repository, uint64_t flags,
+                               VkrDepotHello *out_hello) {
+  MemZero(out_hello, sizeof(*out_hello));
+  if (client->version < VKR_DEPOT_SERVICE_VERSION) {
+    out_hello->status = VKR_DEPOT_HELLO_OK;
+    out_hello->version_1 = true_v;
+    return true_v;
+  }
+  VkrDepotHelloWire *hello = &client->outgoing.hello;
+  MemZero(hello, sizeof(*hello));
+  bool8_t named = false_v;
+  for (uint32_t i = 0u; repository && i < VKR_DEPOT_REPOSITORY_ID_SIZE; ++i) {
+    named |= repository[i] != 0u;
+  }
+  if (named) {
+    MemCopy(hello->repository, repository, VKR_DEPOT_REPOSITORY_ID_SIZE);
+    hello->repository_size = VKR_DEPOT_REPOSITORY_ID_SIZE;
+  }
+  hello->flags = flags;
+  ClientReply *slot = client_request(client, VKR_DEPOT_MSG_HELLO, hello);
+  if (!slot || !client_wait(client, slot, VKR_DEPOT_MSG_HELLO_REPLY)) {
+    return false_v;
+  }
+  const VkrDepotHelloReplyWire *reply = &slot->message->hello_reply;
+  out_hello->status = (VkrDepotHelloStatus)reply->status;
+  out_hello->repository_size =
+      Min(reply->repository_size, VKR_DEPOT_REPOSITORY_ID_SIZE);
+  MemCopy(out_hello->repository, reply->repository, out_hello->repository_size);
+  snprintf(out_hello->name, sizeof(out_hello->name), "%s", reply->name);
+  snprintf(out_hello->default_branch, sizeof(out_hello->default_branch), "%s",
+           reply->default_branch);
   return true_v;
 }
 

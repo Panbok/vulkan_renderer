@@ -1762,8 +1762,10 @@ static bool8_t depot_repo_file_is(const VkrDepotWorkspace *workspace,
    when an unmerged branch is deleted without --force, when a working copy
    of the older form does not get origin, its branch and its tracking branch
    back on open, or when a working copy that shares its server's store gets
-   itself as origin instead of committing into the served branch. Runs a
-   loopback service with a temporary identity. */
+   itself as origin instead of committing into the served branch, when a
+   remote does not learn the served repository's ID from HELLO, or when a
+   remote naming another repository is let in. Runs a loopback service with
+   a temporary identity. */
 static void test_depot_repositories(void) {
   printf("  Running test_depot_repositories...\n");
   char server_store[VKR_DEPOT_PATH_CAPACITY];
@@ -1925,6 +1927,21 @@ static void test_depot_repositories(void) {
          vkr_depot_id_equal(&commit, &served_tip));
   assert(depot_repo_pull(&world, &alice) == VKR_DEPOT_PULL_FAST_FORWARD);
   assert(depot_repo_file_is(&alice, "e.txt", "beside"));
+
+  /* The served store has an ID now (its working copy made one): a remote
+     learns it from HELLO, and a remote naming another is refused. */
+  uint8_t served_id[VKR_DEPOT_REPOSITORY_ID_SIZE];
+  assert(vkr_depot_repository_id(server_store, served_id, false_v));
+  assert(vkr_depot_remote_find(alice.store.root, NULL, &origin));
+  assert(memcmp(origin.repository, served_id, sizeof(served_id)) == 0);
+  VkrDepotRemoteEntry stranger = origin;
+  snprintf(stranger.name, sizeof(stranger.name), "stranger");
+  stranger.repository[0] ^= 0xffu;
+  assert(vkr_depot_remote_set(alice.store.root, &stranger));
+  assert(!vkr_depot_fetch(&allocator, &alice, "stranger", NULL, NULL, NULL,
+                          error, sizeof(error)));
+  assert(strstr(error, "no such repository"));
+  assert(vkr_depot_remote_remove(alice.store.root, "stranger"));
 
   char roots[4][VKR_DEPOT_PATH_CAPACITY];
   snprintf(roots[0], sizeof(roots[0]), "%s", alice.root);

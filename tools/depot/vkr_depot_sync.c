@@ -202,6 +202,62 @@ static void depot_connect_status(VkrDepotConnectStatus *out,
   }
 }
 
+bool8_t vkr_depot_outbound_only(void) {
+  const char *variable = getenv("VKR_DEPOT_OUTBOUND_ONLY");
+  if (variable && variable[0]) {
+    return strcmp(variable, "1") == 0;
+  }
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  char folder[VKR_DEPOT_PATH_CAPACITY];
+  char marker[VKR_DEPOT_PATH_CAPACITY];
+  if (!vkr_depot_identity_path(identity, sizeof(identity))) {
+    return false_v;
+  }
+  vkr_bakery_path_parent(folder, sizeof(folder), identity);
+  return vkr_bakery_path_join(marker, sizeof(marker), folder,
+                              "outbound-only") &&
+         vkr_bakery_is_file(marker);
+}
+
+/* Sends HELLO on a new connection; false with the connection's status and
+   a message when the service refuses it. */
+static bool8_t depot_connect_hello(VkrDepotConnection *link,
+                                   const VkrDepotConnectConfig *config,
+                                   VkrDepotConnectStatus *out_status,
+                                   char *error, uint32_t capacity) {
+  VkrDepotHello hello;
+  const uint64_t flags =
+      vkr_depot_outbound_only() ? VKR_DEPOT_HELLO_OUTBOUND_ONLY : 0u;
+  if (!vkr_depot_client_hello(link->client, config->repository, flags,
+                              &hello)) {
+    depot_connect_status(out_status, VKR_DEPOT_CONNECT_REFUSED);
+    snprintf(error, capacity, "%s did not answer the repository selection: %s",
+             config->address, vkr_depot_client_error(link->client));
+    return false_v;
+  }
+  if (config->out_hello) {
+    *config->out_hello = hello;
+  }
+  if (hello.status == VKR_DEPOT_HELLO_OK) {
+    return true_v;
+  }
+  if (hello.status == VKR_DEPOT_HELLO_NO_ROLE) {
+    depot_connect_status(out_status, VKR_DEPOT_CONNECT_DENIED);
+    snprintf(error, capacity,
+             "%s does not let this machine's key use that repository",
+             config->address);
+  } else if (hello.status == VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY) {
+    depot_connect_status(out_status, VKR_DEPOT_CONNECT_REFUSED);
+    snprintf(error, capacity, "%s serves no such repository", config->address);
+  } else {
+    depot_connect_status(out_status, VKR_DEPOT_CONNECT_REFUSED);
+    snprintf(error, capacity,
+             "%s serves several repositories; name one in the remote",
+             config->address);
+  }
+  return false_v;
+}
+
 VkrDepotConnection *vkr_depot_connect(VkrAllocator *allocator,
                                       const VkrDepotConnectConfig *config,
                                       VkrDepotConnectStatus *out_status,
@@ -309,6 +365,10 @@ VkrDepotConnection *vkr_depot_connect(VkrAllocator *allocator,
     return NULL;
   }
   vkr_depot_client_set_progress(link->client, config->progress);
+  if (!depot_connect_hello(link, config, out_status, error, capacity)) {
+    vkr_depot_disconnect(link);
+    return NULL;
+  }
   depot_connect_status(out_status, VKR_DEPOT_CONNECT_OK);
   return link;
 }
@@ -1864,11 +1924,26 @@ VkrDepotConnection *vkr_depot_connect_remote(VkrAllocator *allocator,
                                              const VkrDepotRemoteEntry *remote,
                                              VkrDepotConnectStatus *out_status,
                                              char *error, uint32_t capacity) {
+  VkrDepotHello hello;
   const VkrDepotConnectConfig config = {.address = remote->address,
                                         .server_key = remote->key,
                                         .store = &workspace->store,
-                                        .progress = workspace->progress};
-  return vkr_depot_connect(allocator, &config, out_status, error, capacity);
+                                        .progress = workspace->progress,
+                                        .repository = remote->repository,
+                                        .out_hello = &hello};
+  VkrDepotConnection *connection =
+      vkr_depot_connect(allocator, &config, out_status, error, capacity);
+  /* A remote added by address alone learns its repository's ID from the
+     first reply, so a service that later serves several keeps finding
+     it. */
+  static const uint8_t none[VKR_DEPOT_REPOSITORY_ID_SIZE] = {0};
+  if (connection && hello.repository_size == VKR_DEPOT_REPOSITORY_ID_SIZE &&
+      MemCompare(remote->repository, none, sizeof(none)) == 0) {
+    VkrDepotRemoteEntry learned = *remote;
+    MemCopy(learned.repository, hello.repository, sizeof(learned.repository));
+    (void)vkr_depot_remote_set(workspace->store.root, &learned);
+  }
+  return connection;
 }
 
 /* `name` NULL finds origin, else the only remote. */

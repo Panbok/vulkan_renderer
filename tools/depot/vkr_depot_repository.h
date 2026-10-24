@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vkr_depot_object.h"
+#include "vkr_depot_protocol.h"
 
 /* A depot repository is a store directory (vkr_depot_store.h) with its
  * branches (docs/proposals/depot-git-model.md, "Repository layout"):
@@ -19,7 +20,6 @@
 
 /* Branches one listing returns at most. */
 #define VKR_DEPOT_REPOSITORY_BRANCHES_MAX 256u
-#define VKR_DEPOT_REPOSITORY_ID_SIZE 16u
 /* A remote's name with its terminator: 1 to 32 of a-z, 0-9, '-' and '_'. */
 #define VKR_DEPOT_REMOTE_NAME 33u
 #define VKR_DEPOT_REMOTE_ADDRESS 256u

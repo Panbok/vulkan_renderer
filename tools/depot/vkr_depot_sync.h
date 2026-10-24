@@ -66,10 +66,23 @@ typedef struct VkrDepotConnectConfig {
   /* Borrowed; NULL for none. The handshake wait stops when it is
      canceled, and the connection's client reports through it. */
   VkrDepotProgress *progress;
+  /* The repository to select, VKR_DEPOT_REPOSITORY_ID_SIZE bytes; NULL or
+     all zero for the service's default. */
+  const uint8_t *repository;
+  /* Receives the service's HELLO reply; may be NULL. */
+  VkrDepotHello *out_hello;
 } VkrDepotConnectConfig;
 
-/* Connects with the user's identity and opens a client. NULL with a
-   message; `out_status` (may be NULL) says why. */
+/* Whether this machine accepts no inbound connections, so its peers reach
+   it only when it connects (docs/proposals/depot-git-model.md, "Service"):
+   `$VKR_DEPOT_OUTBOUND_ONLY` set to 1, or a file `outbound-only` beside the
+   identity key. Every connection's HELLO says so. */
+bool8_t vkr_depot_outbound_only(void);
+
+/* Connects with the user's identity, opens a client and, on a version 2
+   service, sends HELLO for `config->repository`. NULL with a message;
+   `out_status` (may be NULL) says why: a repository the service does not
+   serve is REFUSED, one this key has no role on DENIED. */
 VkrDepotConnection *vkr_depot_connect(VkrAllocator *allocator,
                                       const VkrDepotConnectConfig *config,
                                       VkrDepotConnectStatus *out_status,
