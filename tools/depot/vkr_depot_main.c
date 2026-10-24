@@ -1003,7 +1003,9 @@ static void depot_usage(void) {
       "  vkr_depot cooked [DIR]\n"
       "  vkr_depot stream ADDR SERVER-KEY DIR PATH [--branch NAME]\n"
       "  vkr_depot log [DIR] [--count N]\n"
-      "  vkr_depot lock|unlock PATH [--dir DIR] [--force]\n");
+      "  vkr_depot lock|unlock PATH [--dir DIR] [--force]\n"
+      "  vkr_depot service add|remove|list|install|uninstall|status|run "
+      "...\n");
 }
 
 static int depot_main(int argc, char **argv) {
@@ -1012,6 +1014,10 @@ static int depot_main(int argc, char **argv) {
     return 1;
   }
   const char *command = argv[1];
+  /* The machine's service takes its own arguments. */
+  if (strcmp(command, "service") == 0) {
+    return vkr_depot_service_command(argc - 2, argv + 2);
+  }
   const char *positional[4] = {NULL, NULL, NULL, NULL};
   uint32_t positional_count = 0u;
   const char *bind = NULL;
