@@ -26,7 +26,7 @@
  *   vkr_depot unlock PATH [--dir DIR] [--force]
  *   vkr_depot locks [DIR]
  *
- * A working copy's store is its repository (docs/proposals/depot-git-model.md):
+ * A working copy's store is its repository (ADR-133):
  * `commit` snapshots the directory and moves the branch there, with no
  * network; `push` uploads the commits a remote lacks and moves its branch
  * when that is a fast-forward, `fetch` brings the remotes' branches in and
@@ -435,7 +435,7 @@ static int depot_commit(const char *directory, const char *message,
   } else {
     VkrDepotPushResult pushed;
     if (vkr_depot_push(&depot_allocator, &workspace, remote, NULL, &pushed,
-                       error, sizeof(error))) {
+                       NULL, error, sizeof(error))) {
       depot_print_push(&pushed, workspace.branch,
                        remote ? remote : VKR_DEPOT_ORIGIN);
       result = 0;
@@ -472,7 +472,7 @@ static int depot_push_command(const char *directory, const char *remote,
   char error[256];
   int result = 1;
   if (vkr_depot_push(&depot_allocator, &workspace, remote, branch, &pushed,
-                     error, sizeof(error))) {
+                     NULL, error, sizeof(error))) {
     depot_print_push(&pushed, branch ? branch : workspace.branch,
                      remote ? remote : VKR_DEPOT_ORIGIN);
     result = 0;
@@ -505,7 +505,7 @@ static int depot_fetch_command(const char *directory, const char *remote,
   (void)vkr_depot_remote_find(workspace.store.root, remote, &entry);
   const int result =
       vkr_depot_fetch(&depot_allocator, &workspace, remote, branch,
-                      depot_fetch_print, entry.name, error, sizeof(error))
+                      depot_fetch_print, entry.name, NULL, error, sizeof(error))
           ? 0
           : 1;
   if (result) {
@@ -661,7 +661,7 @@ static int depot_pull(const char *directory, const char *remote,
   char error[256];
   const bool8_t ok =
       vkr_depot_pull_merge(&depot_allocator, &workspace, remote, &config,
-                           &pulled, &merged, error, sizeof(error));
+                           &pulled, &merged, NULL, error, sizeof(error));
   depot_print_conflicts(&pulled.conflicts, policy);
   char hex[VKR_DEPOT_ID_HEX];
   vkr_depot_id_hex(&pulled.commit, hex);

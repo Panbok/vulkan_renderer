@@ -2,8 +2,8 @@
 
 #include "vkr_depot_sync.h"
 
-/* Merges two histories of a branch (docs/proposals/depot-git-model.md,
- * "Merge"). Each path is decided against the merge base: a path one side
+/* Merges two histories of a branch (ADR-133, "Merge"). Each path is
+ * decided against the merge base: a path one side
  * changed takes that side, and a path both sides changed to different
  * content is a conflict.
  *
@@ -145,5 +145,6 @@ bool8_t vkr_depot_pull_merge(VkrAllocator *allocator,
                              VkrDepotWorkspace *workspace, const char *remote,
                              const VkrDepotMergeConfig *config,
                              VkrDepotPullResult *out_pull,
-                             VkrDepotMergeResult *out_merge, char *error,
+                             VkrDepotMergeResult *out_merge,
+                             VkrDepotConnectStatus *out_status, char *error,
                              uint32_t capacity);

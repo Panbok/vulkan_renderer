@@ -1734,8 +1734,8 @@ static VkrDepotPushStatus depot_repo_push(const DepotRepoWorld *world,
                                           uint32_t *out_commits) {
   VkrDepotPushResult result;
   char error[256];
-  (void)vkr_depot_push(world->allocator, workspace, NULL, NULL, &result, error,
-                       sizeof(error));
+  (void)vkr_depot_push(world->allocator, workspace, NULL, NULL, &result, NULL,
+                       error, sizeof(error));
   if (out_commits) {
     *out_commits = result.commits;
   }
@@ -1747,7 +1747,8 @@ static VkrDepotPullStatus depot_repo_pull(const DepotRepoWorld *world,
   VkrDepotPullResult result;
   char error[256];
   if (!vkr_depot_pull(world->allocator, workspace, NULL,
-                      VKR_DEPOT_CONFLICT_FAIL, &result, error, sizeof(error))) {
+                      VKR_DEPOT_CONFLICT_FAIL, &result, NULL, error,
+                      sizeof(error))) {
     printf("    pull failed: %s\n", error);
   }
   vkr_depot_change_list_free(&result.conflicts);
@@ -1878,7 +1879,7 @@ static void test_depot_repositories(void) {
   VkrDepotPullResult pulled;
   VkrDepotMergeResult merged;
   assert(vkr_depot_pull_merge(&allocator, &bob, NULL, &merge_config, &pulled,
-                              &merged, error, sizeof(error)));
+                              &merged, NULL, error, sizeof(error)));
   assert(pulled.status == VKR_DEPOT_PULL_DIVERGED &&
          merged.status == VKR_DEPOT_MERGE_MERGED);
   vkr_depot_change_list_free(&pulled.conflicts);
@@ -1951,7 +1952,7 @@ static void test_depot_repositories(void) {
   stranger.repository[0] ^= 0xffu;
   assert(vkr_depot_remote_set(alice.store.root, &stranger));
   assert(!vkr_depot_fetch(&allocator, &alice, "stranger", NULL, NULL, NULL,
-                          error, sizeof(error)));
+                          NULL, error, sizeof(error)));
   assert(strstr(error, "no such repository"));
   assert(vkr_depot_remote_remove(alice.store.root, "stranger"));
 

@@ -16059,7 +16059,7 @@ static VkrEditorOpStatus ops_run_session_status(OpsContext *ctx) {
 }
 
 // =============================================================================
-// Project sharing (editor_depot.h)
+// Source control (editor_depot.h)
 // =============================================================================
 
 static VkrBakeryJson *ops_depot_status(OpsContext *ctx) {
@@ -17035,12 +17035,18 @@ static VkrEditorOpStatus ops_run_depot_trust(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
-/* Runs a depot action that takes up to three string arguments and answers
+/* Runs a depot action that takes up to four string arguments and answers
    with the status. */
 typedef enum OpsDepotAction {
-  OPS_DEPOT_SHARE = 0,
-  OPS_DEPOT_SUBMIT,
+  OPS_DEPOT_INIT = 0,
+  OPS_DEPOT_COMMIT,
+  OPS_DEPOT_PUSH,
   OPS_DEPOT_PULL,
+  OPS_DEPOT_SYNC,
+  OPS_DEPOT_FETCH,
+  OPS_DEPOT_SWITCH,
+  OPS_DEPOT_REMOTE,
+  OPS_DEPOT_SERVE,
   OPS_DEPOT_CLONE,
   OPS_DEPOT_ALLOW,
   OPS_DEPOT_FIND,
@@ -17055,9 +17061,15 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
   char third[256] = {0};
   char fourth[1024] = {0};
   static const char *const keys[][4] = {
-      [OPS_DEPOT_SHARE] = {"destination", "", "", ""},
-      [OPS_DEPOT_SUBMIT] = {"message", "", "", ""},
-      [OPS_DEPOT_PULL] = {"conflicts", "", "", ""},
+      [OPS_DEPOT_INIT] = {"destination", "", "", ""},
+      [OPS_DEPOT_COMMIT] = {"message", "", "", ""},
+      [OPS_DEPOT_PUSH] = {"remote", "", "", ""},
+      [OPS_DEPOT_PULL] = {"remote", "conflicts", "", ""},
+      [OPS_DEPOT_SYNC] = {"remote", "", "", ""},
+      [OPS_DEPOT_FETCH] = {"", "", "", ""},
+      [OPS_DEPOT_SWITCH] = {"branch", "", "", ""},
+      [OPS_DEPOT_REMOTE] = {"name", "address", "key", "action"},
+      [OPS_DEPOT_SERVE] = {"", "", "", ""},
       [OPS_DEPOT_CLONE] = {"address", "key", "name", "destination"},
       [OPS_DEPOT_ALLOW] = {"key", "role", "", ""},
       [OPS_DEPOT_FIND] = {"address", "", "", ""},
@@ -17077,16 +17089,42 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
   char error[256] = {0};
   bool8_t ok = true_v;
   switch (action) {
-  case OPS_DEPOT_SHARE:
-    ok = vkr_editor_depot_share(depot, ctx->editor, ctx->frame, first, error,
-                                sizeof(error));
+  case OPS_DEPOT_INIT:
+    ok = vkr_editor_depot_init(depot, ctx->editor, ctx->frame, first,
+                               ops_arg_bool(args, "serve", false_v), error,
+                               sizeof(error));
     break;
-  case OPS_DEPOT_SUBMIT:
-    ok = vkr_editor_depot_submit(depot, first, error, sizeof(error));
+  case OPS_DEPOT_COMMIT:
+    ok = vkr_editor_depot_commit(depot, first,
+                                 ops_arg_bool(args, "sync", false_v), error,
+                                 sizeof(error));
+    break;
+  case OPS_DEPOT_PUSH:
+    ok = vkr_editor_depot_push(depot, first, error, sizeof(error));
     break;
   case OPS_DEPOT_PULL:
-    ok = vkr_editor_depot_get_latest(depot, first[0] ? first : "fail", error,
-                                     sizeof(error));
+    ok = vkr_editor_depot_pull(depot, first, second[0] ? second : "fail", error,
+                               sizeof(error));
+    break;
+  case OPS_DEPOT_SYNC:
+    ok = vkr_editor_depot_sync(depot, first, error, sizeof(error));
+    break;
+  case OPS_DEPOT_FETCH:
+    ok = vkr_editor_depot_fetch(depot, error, sizeof(error));
+    break;
+  case OPS_DEPOT_SWITCH:
+    ok = vkr_editor_depot_switch(depot, first,
+                                 ops_arg_bool(args, "create", false_v), error,
+                                 sizeof(error));
+    break;
+  case OPS_DEPOT_REMOTE:
+    ok = vkr_editor_depot_remote(
+        depot, first, string_equals(fourth, "remove") ? NULL : second, third,
+        error, sizeof(error));
+    break;
+  case OPS_DEPOT_SERVE:
+    ok = vkr_editor_depot_serve(depot, ops_arg_bool(args, "serve", true_v),
+                                error, sizeof(error));
     break;
   case OPS_DEPOT_CLONE:
     ok = vkr_editor_depot_clone(depot, first, second, third, fourth,
@@ -17112,33 +17150,24 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
   return VKR_EDITOR_OP_DONE;
 }
 
-static VkrEditorOpStatus ops_run_depot_share(OpsContext *ctx) {
-  return ops_depot_action(ctx, OPS_DEPOT_SHARE);
-}
+#define OPS_DEPOT_RUNNER(name, action)                                         \
+  static VkrEditorOpStatus name(OpsContext *ctx) {                             \
+    return ops_depot_action(ctx, action);                                      \
+  }
 
-static VkrEditorOpStatus ops_run_depot_submit(OpsContext *ctx) {
-  return ops_depot_action(ctx, OPS_DEPOT_SUBMIT);
-}
-
-static VkrEditorOpStatus ops_run_depot_pull(OpsContext *ctx) {
-  return ops_depot_action(ctx, OPS_DEPOT_PULL);
-}
-
-static VkrEditorOpStatus ops_run_depot_clone(OpsContext *ctx) {
-  return ops_depot_action(ctx, OPS_DEPOT_CLONE);
-}
-
-static VkrEditorOpStatus ops_run_depot_allow(OpsContext *ctx) {
-  return ops_depot_action(ctx, OPS_DEPOT_ALLOW);
-}
-
-static VkrEditorOpStatus ops_run_depot_find(OpsContext *ctx) {
-  return ops_depot_action(ctx, OPS_DEPOT_FIND);
-}
-
-static VkrEditorOpStatus ops_run_depot_cancel(OpsContext *ctx) {
-  return ops_depot_action(ctx, OPS_DEPOT_CANCEL);
-}
+OPS_DEPOT_RUNNER(ops_run_depot_init, OPS_DEPOT_INIT)
+OPS_DEPOT_RUNNER(ops_run_depot_commit, OPS_DEPOT_COMMIT)
+OPS_DEPOT_RUNNER(ops_run_depot_push, OPS_DEPOT_PUSH)
+OPS_DEPOT_RUNNER(ops_run_depot_pull, OPS_DEPOT_PULL)
+OPS_DEPOT_RUNNER(ops_run_depot_sync, OPS_DEPOT_SYNC)
+OPS_DEPOT_RUNNER(ops_run_depot_fetch, OPS_DEPOT_FETCH)
+OPS_DEPOT_RUNNER(ops_run_depot_switch, OPS_DEPOT_SWITCH)
+OPS_DEPOT_RUNNER(ops_run_depot_remote, OPS_DEPOT_REMOTE)
+OPS_DEPOT_RUNNER(ops_run_depot_serve, OPS_DEPOT_SERVE)
+OPS_DEPOT_RUNNER(ops_run_depot_clone, OPS_DEPOT_CLONE)
+OPS_DEPOT_RUNNER(ops_run_depot_allow, OPS_DEPOT_ALLOW)
+OPS_DEPOT_RUNNER(ops_run_depot_find, OPS_DEPOT_FIND)
+OPS_DEPOT_RUNNER(ops_run_depot_cancel, OPS_DEPOT_CANCEL)
 
 static VkrEditorOpStatus ops_run_session_host(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
@@ -20977,61 +21006,102 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{}}", ops_run_remote_view_status,
      NULL, OPS_QUICK | OPS_NO_SCENE},
     {"depot.status",
-     "Project sharing: whether this editor shares the open project or holds "
-     "a copy of one, the server, its access requests and list, local changes, "
-     "whether others submitted newer changes, the running step with its "
-     "progress, the textures the last Get cooked or took from the cooked "
-     "side branch, the last error and the servers found on the network.",
+     "Source control: whether the open project is a repository, its branch "
+     "and branches, how far it is ahead of and behind the selected remote, "
+     "the remotes with their state, local changes and conflicts, whether "
+     "this editor serves it with its access requests and list, the running "
+     "step with its progress, the textures the last pull cooked or took "
+     "from the cooked side branch, the last error and the servers found on "
+     "the network.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_status, NULL,
      OPS_NO_SCENE},
-    {"depot.share",
-     "Copies the open project and every file it uses into its own workspace "
-     "('destination', default ~/VKR Projects/<name>), serves it on the "
-     "network while this editor runs, and opens it there.",
+    {"depot.init",
+     "Makes the open project a repository: copies it and every file it uses "
+     "into 'destination' (default ~/VKR Projects/<name>), commits it there "
+     "and opens it; 'serve' lets others fetch and push from the start.",
      "{\"type\":\"object\",\"properties\":{\"destination\":{\"type\":"
-     "\"string\"}}}",
-     ops_run_depot_share, NULL, OPS_NO_SCENE},
-    {"depot.submit",
-     "Submits every local change of the shared project with 'message', "
-     "first taking newer changes from others.",
+     "\"string\"},\"serve\":{\"type\":\"boolean\"}}}",
+     ops_run_depot_init, NULL, OPS_NO_SCENE},
+    {"depot.commit",
+     "Commits every local change with 'message' in the repository; 'sync' "
+     "then pulls and pushes the branch with the selected remote.",
      "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":"
+     "\"string\"},\"sync\":{\"type\":\"boolean\"}}}",
+     ops_run_depot_commit, NULL, OPS_NO_SCENE},
+    {"depot.push",
+     "Pushes the branch to 'remote' (default the selected one) when that is "
+     "a fast-forward there, then this computer's cooked textures.",
+     "{\"type\":\"object\",\"properties\":{\"remote\":{\"type\":"
      "\"string\"}}}",
-     ops_run_depot_submit, NULL, OPS_NO_SCENE},
+     ops_run_depot_push, NULL, OPS_NO_SCENE},
     {"depot.pull",
-     "Gets the newest changes of the shared project, cooks the textures they "
-     "bring and reloads the scene. 'conflicts' (fail, theirs, mine) settles "
-     "files changed both here and there.",
-     "{\"type\":\"object\",\"properties\":{\"conflicts\":{\"type\":"
-     "\"string\"}}}",
+     "Pulls the branch from 'remote' (default the selected one): a "
+     "fast-forward, or a merge when both sides moved it, with scenes merged "
+     "whole by Bakery; then cooks the textures it brings and reloads the "
+     "scene. 'conflicts' (fail, theirs, mine) settles files changed both "
+     "here and there.",
+     "{\"type\":\"object\",\"properties\":{\"remote\":{\"type\":"
+     "\"string\"},\"conflicts\":{\"type\":\"string\"}}}",
      ops_run_depot_pull, NULL, OPS_NO_SCENE},
+    {"depot.sync",
+     "Pulls, then pushes what is left to push, with 'remote' (default the "
+     "selected one).",
+     "{\"type\":\"object\",\"properties\":{\"remote\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_depot_sync, NULL, OPS_NO_SCENE},
+    {"depot.fetch",
+     "Fetches the selected remote's branches, so depot.status shows what "
+     "there is to pull.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_fetch, NULL,
+     OPS_NO_SCENE},
+    {"depot.switch",
+     "Switches to 'branch', making it from the current commit when "
+     "'create'; the scene reloads once its edits are saved.",
+     "{\"type\":\"object\",\"properties\":{\"branch\":{\"type\":"
+     "\"string\"},\"create\":{\"type\":\"boolean\"}},\"required\":"
+     "[\"branch\"]}",
+     ops_run_depot_switch, NULL, OPS_NO_SCENE},
+    {"depot.remote",
+     "Adds or replaces the remote 'name' at 'address' with service 'key', "
+     "or removes it with 'action' remove.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},"
+     "\"address\":{\"type\":\"string\"},\"key\":{\"type\":\"string\"},"
+     "\"action\":{\"type\":\"string\"}},\"required\":[\"name\"]}",
+     ops_run_depot_remote, NULL, OPS_NO_SCENE},
+    {"depot.serve",
+     "Starts ('serve' true, the default) or stops serving the open "
+     "repository to the network while this editor runs.",
+     "{\"type\":\"object\",\"properties\":{\"serve\":{\"type\":"
+     "\"boolean\"}}}",
+     ops_run_depot_serve, NULL, OPS_NO_SCENE},
     {"depot.clone",
-     "Gets the project another editor shares at 'address' with server 'key' "
-     "into 'destination' (default ~/VKR Projects/<name>) and opens it; "
-     "'sparse' fetches each file when something first reads it.",
+     "Clones the repository another computer serves at 'address' with "
+     "service 'key' into 'destination' (default ~/VKR Projects/<name>) and "
+     "opens it; 'sparse' fetches each file when something first reads it.",
      "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
      "\"string\"},\"key\":{\"type\":\"string\"},\"name\":{\"type\":"
      "\"string\"},\"destination\":{\"type\":\"string\"},\"sparse\":{"
      "\"type\":\"boolean\"}},\"required\":[\"address\",\"key\"]}",
      ops_run_depot_clone, NULL, OPS_NO_SCENE},
     {"depot.allow",
-     "Gives the identity 'key' a 'role' (write, read or none) on the project "
-     "this editor shares.",
+     "Gives the identity 'key' a 'role' (write, read or none) on the "
+     "repository this editor serves.",
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":"
      "\"string\"},\"role\":{\"type\":\"string\"}},\"required\":"
      "[\"key\"]}",
      ops_run_depot_allow, NULL, OPS_NO_SCENE},
     {"depot.find",
-     "Probes 'address' (a computer name or address) for a shared project, "
-     "besides the broadcast; depot.status lists what answers.",
+     "Probes 'address' (a computer name or address) for a served "
+     "repository, besides the broadcast; depot.status lists what answers.",
      "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
      "\"string\"}},\"required\":[\"address\"]}",
      ops_run_depot_find, NULL, OPS_NO_SCENE},
     {"depot.trust",
-     "Lets the open shared project's scripts, which another computer "
-     "wrote, build and run here.",
+     "Lets the open repository's scripts, which another computer wrote, "
+     "build and run here.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_trust, NULL,
      OPS_NO_SCENE},
-    {"depot.cancel", "Stops the running sharing step.",
+    {"depot.cancel", "Stops the running source control step.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_cancel, NULL,
      OPS_NO_SCENE},
 };

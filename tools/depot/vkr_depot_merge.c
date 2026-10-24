@@ -718,11 +718,12 @@ bool8_t vkr_depot_pull_merge(VkrAllocator *allocator,
                              VkrDepotWorkspace *workspace, const char *remote,
                              const VkrDepotMergeConfig *config,
                              VkrDepotPullResult *out_pull,
-                             VkrDepotMergeResult *out_merge, char *error,
+                             VkrDepotMergeResult *out_merge,
+                             VkrDepotConnectStatus *out_status, char *error,
                              uint32_t capacity) {
   MemZero(out_merge, sizeof(*out_merge));
   if (!vkr_depot_pull(allocator, workspace, remote, config->policy, out_pull,
-                      error, capacity)) {
+                      out_status, error, capacity)) {
     return false_v;
   }
   if (out_pull->status != VKR_DEPOT_PULL_DIVERGED) {
@@ -734,7 +735,7 @@ bool8_t vkr_depot_pull_merge(VkrAllocator *allocator,
     return false_v;
   }
   VkrDepotConnection *connection = vkr_depot_connect_remote(
-      allocator, workspace, &entry, NULL, error, capacity);
+      allocator, workspace, &entry, out_status, error, capacity);
   if (!connection) {
     return false_v;
   }

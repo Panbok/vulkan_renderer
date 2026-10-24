@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end check of sparse project sharing (ADR-123): a Get that makes a
 sparse working copy, its project opened in the editor with Bakery jobs that
-read the copy's unfetched files, and a Submit.
+read the copy's unfetched files, and a commit and sync.
 
 1. The repository workspace's project that holds a scene named Bistro is
    cloned (APFS, copy on write) into a scratch workspace with Bistro as its
@@ -17,12 +17,12 @@ read the copy's unfetched files, and a Submit.
    Gets the project with `depot.clone` and `sparse`, opens Bistro by name,
    so its Bakery preparation and its loads read files as they arrive,
    captures the same view after the same time, creates and saves one
-   object and Submits.
+   object and commits and syncs.
 
 The check passes when the sparse run showed the scene with cooked textures
 fetched from the side branch and first drawn from previews, some tracked
 files stayed unfetched, the
-Submit carried changes to Bistro alone, left no local change and added only
+The commit carried changes to Bistro alone, left no local change and added only
 a few objects to the server, a second sparse clone lists the new commit's
 files, and the sparse capture differs from the first local one by at most
 1.5 times what the two local ones differ by, with a floor of 0.5 levels of
@@ -79,7 +79,7 @@ create cube
 sel.name = "SparseCube"
 scene.save
 wait 2
-op depot.submit {{{{"message":"sparse edit"}}}}
+op depot.commit {{{{"message":"sparse edit","sync":true}}}}
 wait 30
 op depot.status
 op stream.status
@@ -267,7 +267,7 @@ def main() -> int:
         if not local_captures or not again_captures:
             raise RuntimeError(f"a local run did not capture; see {work}")
 
-        # 4. The sparse Get, Bistro opened from it, an edit and a Submit.
+        # 4. The sparse Get, Bistro opened from it, an edit, a commit, a sync.
         sparse = work / "sparse"
         script = SPARSE_SCRIPT.format(
             address=address, key=key, name=data.get("name", "Project"),
@@ -299,7 +299,7 @@ def main() -> int:
         changes, unfetched, listed = (int(counts.group(i)) for i in (1, 2, 3))
         if changes:
             failures.append(f"{changes} local changes remain after the "
-                            "Submit")
+                            "commit and sync")
         on_disk = len(disk_files(sparse))
         if not unfetched:
             failures.append(f"every one of {listed} tracked files was "
@@ -307,9 +307,9 @@ def main() -> int:
         cooked = [p for p in disk_files(sparse) if p.endswith(".vkt")]
         if not cooked:
             failures.append("the sparse Bistro fetched no cooked texture")
-        # What the Submit carried: with no change left, every tracked file
+        # What the commit carried: with no change left, every tracked file
         # on disk is the new commit's, so those that differ from the shared
-        # folder's are the Submit's; they must be the edit to Bistro alone.
+        # folder's are the commit's; they must be the edit to Bistro alone.
         rules = ignore_rules(shared / ".vkrdepotignore")
         submitted = sorted(
             path for path in disk_files(sparse)
@@ -318,20 +318,20 @@ def main() -> int:
              (shared / path).read_bytes() != (sparse / path).read_bytes()))
         scene_folder = f"/scenes/{scene_id}/"
         if not submitted:
-            failures.append("the Submit carried no change")
+            failures.append("the commit carried no change")
         strays = [path for path in submitted if scene_folder not in path]
         if strays:
-            failures.append(f"the Submit carried changes outside Bistro: "
+            failures.append(f"the commit carried changes outside Bistro: "
                             f"{strays}")
         added = tree_bytes(store) - store_before
         if added > 2_000_000:
-            failures.append(f"the Submit added {added} bytes to the server")
+            failures.append(f"the commit added {added} bytes to the server")
         second = work / "sparse-second"
         recloned = depot([depot_exe, "clone", address, key, str(second),
                           "--sparse"], env, log)
         relisted = re.search(r": (\d+) files", recloned)
         if not relisted or int(relisted.group(1)) < listed:
-            failures.append(f"the Submit's commit lists {recloned.strip()}, "
+            failures.append(f"the commit lists {recloned.strip()}, "
                             f"against {listed} files before")
         noise, noise_share = compare(local_captures[0], again_captures[0])
         mean, share = compare(local_captures[0], sparse_captures[0])

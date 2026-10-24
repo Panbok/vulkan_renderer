@@ -205,7 +205,7 @@ bool8_t vkr_depot_cooked_cache_load(const VkrDepotWorkspace *workspace,
 }
 
 /* Gives the store what a working copy of the older form kept in its state
-   alone (docs/proposals/depot-git-model.md, "Migration"): the server it
+   alone (ADR-133, "Working copies adopt the model on open"): the server it
    syncs with as the remote `origin`, the branch at the base, and origin's
    record of that branch. A working copy whose server is its store's own,
    such as one beside the server sharing its store, is that repository and

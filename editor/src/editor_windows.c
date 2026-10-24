@@ -178,7 +178,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_BAKE_SETTINGS] = {"Bake settings", VKR_UI_ICON_BAKERY, false_v},
     [CMD_LIGHTS] = {"Lights", VKR_UI_ICON_POINT_LIGHT, false_v},
     [CMD_SESSION] = {"Collaborative session", VKR_UI_ICON_CLOUD, false_v},
-    [CMD_DEPOT] = {"Project sharing", VKR_UI_ICON_GIT_BRANCH, false_v},
+    [CMD_DEPOT] = {"Source control", VKR_UI_ICON_GIT_BRANCH, false_v},
     [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, false_v},
     [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, false_v},
     [CMD_SIM_PAUSE] = {"Pause simulation", VKR_UI_ICON_PAUSE, false_v},
@@ -2477,7 +2477,7 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_icon = VKR_UI_ICON_CLOUD;
     break;
   case VKR_EDITOR_WINDOW_DEPOT:
-    title_text = string8_lit("Project sharing");
+    title_text = string8_lit("Source Control");
     title_icon = VKR_UI_ICON_GIT_BRANCH;
     break;
   case VKR_EDITOR_WINDOW_RECORDINGS:

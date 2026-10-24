@@ -2032,14 +2032,15 @@ static bool8_t depot_fetch_over(VkrDepotWorkspace *workspace,
 
 bool8_t vkr_depot_fetch(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
                         const char *remote, const char *branch,
-                        VkrDepotFetchVisit visit, void *context, char *error,
+                        VkrDepotFetchVisit visit, void *context,
+                        VkrDepotConnectStatus *out_status, char *error,
                         uint32_t capacity) {
   VkrDepotRemoteEntry entry;
   if (!depot_remote_named(workspace, remote, &entry, error, capacity)) {
     return false_v;
   }
   VkrDepotConnection *connection = vkr_depot_connect_remote(
-      allocator, workspace, &entry, NULL, error, capacity);
+      allocator, workspace, &entry, out_status, error, capacity);
   if (!connection) {
     return false_v;
   }
@@ -2200,7 +2201,8 @@ static VkrDepotPushStatus depot_push_over(VkrDepotWorkspace *workspace,
 
 bool8_t vkr_depot_push(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
                        const char *remote, const char *branch,
-                       VkrDepotPushResult *out_result, char *error,
+                       VkrDepotPushResult *out_result,
+                       VkrDepotConnectStatus *out_status, char *error,
                        uint32_t capacity) {
   MemZero(out_result, sizeof(*out_result));
   out_result->status = VKR_DEPOT_PUSH_FAILED;
@@ -2214,7 +2216,7 @@ bool8_t vkr_depot_push(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
     return false_v;
   }
   VkrDepotConnection *connection = vkr_depot_connect_remote(
-      allocator, workspace, &entry, NULL, error, capacity);
+      allocator, workspace, &entry, out_status, error, capacity);
   if (!connection) {
     return false_v;
   }
@@ -2232,7 +2234,8 @@ bool8_t vkr_depot_push(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
 
 bool8_t vkr_depot_pull(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
                        const char *remote, VkrDepotConflictPolicy policy,
-                       VkrDepotPullResult *out_result, char *error,
+                       VkrDepotPullResult *out_result,
+                       VkrDepotConnectStatus *out_status, char *error,
                        uint32_t capacity) {
   MemZero(out_result, sizeof(*out_result));
   out_result->status = VKR_DEPOT_PULL_FAILED;
@@ -2241,7 +2244,7 @@ bool8_t vkr_depot_pull(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
     return false_v;
   }
   VkrDepotConnection *connection = vkr_depot_connect_remote(
-      allocator, workspace, &entry, NULL, error, capacity);
+      allocator, workspace, &entry, out_status, error, capacity);
   VkrDepotClient *client = vkr_depot_connection_client(connection);
   if (!client) {
     return false_v;

@@ -1,6 +1,6 @@
 ---
 name: vkr-cross-machine
-description: Move VKR projects, scenes and assets between machines with the editor's project sharing (Share, Get, Submit, Get latest, depot.* operations) or the vkr_depot command (serve, discover, clone, commit, pull, mirror), coordinate with the agent session on the other machine, and diagnose LAN, firewall and endpoint-security failures. Use for any work that spans two machines, such as the Windows desktop and the Mac M1; single-machine depot code changes use the ADRs alone.
+description: Move VKR projects, scenes and assets between machines with the editor's Source Control (Make repository, Clone, Commit, Push, Pull, Sync, remotes, depot.* operations) or the vkr_depot command (serve, discover, clone, commit, push, pull, remote, mirror), coordinate with the agent session on the other machine, and diagnose LAN, firewall and endpoint-security failures. Use for any work that spans two machines, such as the Windows desktop and the Mac M1; single-machine depot code changes use the ADRs alone.
 ---
 
 # VKR across machines
@@ -15,26 +15,36 @@ commands. This skill sets how two machines and their agent sessions use them.
 
 ## Prefer the editor
 
-Share and get projects through the editor; use the command only for a
-standing server, a mirror or a check the editor cannot run.
+Use the editor's Source Control (ADR-110) for projects; use the command
+only for a standing server, a check the editor cannot run, or a working copy
+outside the editor.
 
-- **Share:** open the project, File > Project sharing > Share on network.
-  The editor copies the project and its assets into `~/VKR Projects/<name>`,
-  rebuilds imported models cooked before texture recipes, commits and serves
-  it while the editor runs. Agents run `op depot.share {"destination":...}`
-  and read `op depot.status` (role, server port and key, requests).
-- **Get:** the project hub lists projects found on the network; Get copies
-  one, waits for the other editor's Allow, cooks textures for this computer
-  and opens it. Agents run `op depot.clone {"address","key","name"}`; the
-  launcher answers agents without a scene.
-- **Approve:** the sharing editor shows `N asking` and a card with Allow,
-  View only and Deny; agents run `op depot.allow {"key","role"}`. No key is
-  copied and no server restarts.
-- **Sync:** the top bar button shows changes and new commits;
-  `op depot.submit {"message"}` and `op depot.pull {"conflicts":"fail"|"theirs"|"mine"}`.
+- **Make repository:** open the project, then the top bar's branch button >
+  Make repository. The editor copies the project and its assets into `~/VKR
+  Projects/<name>` (outside the git repository), rebuilds imported models
+  cooked before texture recipes, commits and reopens there. Agents run
+  `op depot.init {"destination":...,"serve":true}` and read
+  `op depot.status` (repository, branch, ahead, behind, remotes, server).
+- **Serve:** Let others fetch and push serves the open repository while its
+  editor runs (`op depot.serve {"serve":true}`).
+- **Clone:** the project hub lists repositories served on the network;
+  Clone copies one, waits for the other editor's Allow, cooks textures for
+  this computer and opens it with the server as `origin`. Agents run
+  `op depot.clone {"address","key","name"}`; the launcher answers agents
+  without a scene.
+- **Approve:** the serving editor shows `N asking` and a card with Allow,
+  Fetch only and Deny; agents run `op depot.allow {"key","role"}`.
+- **Remotes:** Add remote in the window (one click from a service found on
+  the network, or name, address and key); agents run
+  `op depot.remote {"name","address","key"}`.
+- **Work:** `op depot.commit {"message","sync":true}`, `op depot.push`,
+  `op depot.pull {"conflicts":"fail"|"theirs"|"mine"}`, `op depot.sync`,
+  `op depot.fetch`, `op depot.switch {"branch","create"}`. A pull merges
+  when both sides moved the branch; a scene both changed is one conflict
+  until Bakery's scene merge lands (ADR-133).
 - A computer whose endpoint security drops inbound traffic (the company
-  Mac) cannot share; it gets and submits through the other machine's editor
-  or `vkr_depot serve`.
+  Mac) cannot serve; it adds the other machine's repository as a remote and
+  pushes and pulls from its side.
 
 ## Coordinate the two sessions
 

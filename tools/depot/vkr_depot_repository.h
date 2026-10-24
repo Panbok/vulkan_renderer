@@ -4,7 +4,7 @@
 #include "vkr_depot_protocol.h"
 
 /* A depot repository is a store directory (vkr_depot_store.h) with its
- * branches (docs/proposals/depot-git-model.md, "Repository layout"):
+ * branches (ADR-133, "The store is the repository"):
  *
  *   <store>/refs/<branch>              the 32-byte commit ID of each branch
  *   <store>/repository                 the repository's 16-byte ID

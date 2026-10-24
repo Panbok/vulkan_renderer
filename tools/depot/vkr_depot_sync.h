@@ -74,7 +74,7 @@ typedef struct VkrDepotConnectConfig {
 } VkrDepotConnectConfig;
 
 /* Whether this machine accepts no inbound connections, so its peers reach
-   it only when it connects (docs/proposals/depot-git-model.md, "Service"):
+   it only when it connects (ADR-133, "Commit, fetch, push and pull"):
    `$VKR_DEPOT_OUTBOUND_ONLY` set to 1, or a file `outbound-only` beside the
    identity key. Every connection's HELLO says so. */
 bool8_t vkr_depot_outbound_only(void);
@@ -343,7 +343,7 @@ bool8_t vkr_depot_fetch_checkout(
     VkrDepotChangeList *out_conflicts, char *error, uint32_t capacity);
 
 // -----------------------------------------------------------------------------
-// Repositories and remotes (docs/proposals/depot-git-model.md)
+// Repositories and remotes (ADR-133)
 //
 // A working copy commits into its store and moves its branch there
 // (`refs/<branch>`, vkr_depot_repository.h); fetch, push and pull exchange
@@ -417,6 +417,9 @@ typedef void (*VkrDepotFetchVisit)(void *context, const char *branch,
                                    const VkrDepotId *commit,
                                    const char *detail);
 
+/* `out_status` (may be NULL), here and for push and pull, says how the
+   connection went: DENIED while the remote's owner has not let this key
+   in. */
 /* Fetches `remote`'s branches (`branch` NULL for all but the cooked side
    branches) into the store and records where each is: a sparse working copy
    takes trees only. The history behind each branch arrives as commits and
@@ -424,7 +427,8 @@ typedef void (*VkrDepotFetchVisit)(void *context, const char *branch,
    NULL) hears each branch. */
 bool8_t vkr_depot_fetch(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
                         const char *remote, const char *branch,
-                        VkrDepotFetchVisit visit, void *context, char *error,
+                        VkrDepotFetchVisit visit, void *context,
+                        VkrDepotConnectStatus *out_status, char *error,
                         uint32_t capacity);
 
 typedef enum VkrDepotPushStatus {
@@ -454,7 +458,8 @@ typedef struct VkrDepotPushResult {
    OK and UP_TO_DATE; the error explains any other status. */
 bool8_t vkr_depot_push(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
                        const char *remote, const char *branch,
-                       VkrDepotPushResult *out_result, char *error,
+                       VkrDepotPushResult *out_result,
+                       VkrDepotConnectStatus *out_status, char *error,
                        uint32_t capacity);
 
 typedef enum VkrDepotPullStatus {
@@ -482,7 +487,8 @@ typedef struct VkrDepotPullResult {
    FAILED; the caller frees `conflicts`. */
 bool8_t vkr_depot_pull(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
                        const char *remote, VkrDepotConflictPolicy policy,
-                       VkrDepotPullResult *out_result, char *error,
+                       VkrDepotPullResult *out_result,
+                       VkrDepotConnectStatus *out_status, char *error,
                        uint32_t capacity);
 
 /* Creates `branch` at the working copy's base; false when it exists. */

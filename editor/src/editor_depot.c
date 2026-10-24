@@ -18,6 +18,7 @@
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_json.h"
 #include "vkr_bakery_os.h"
+#include "vkr_depot_merge.h"
 #include "vkr_depot_remote.h"
 #include "vkr_depot_service.h"
 #include "vkr_depot_sync.h"
@@ -48,26 +49,33 @@
 #define DEPOT_PROBE_SECONDS 2.0
 #define DEPOT_BRANCH "main"
 
-typedef enum DepotRole {
-  DEPOT_ROLE_NONE = 0,
-  /* This editor serves the workspace's store. */
-  DEPOT_ROLE_SHARER,
-  /* The workspace is a copy of a project another editor serves. */
-  DEPOT_ROLE_MEMBER,
-} DepotRole;
-
 typedef enum DepotJobKind {
   DEPOT_JOB_NONE = 0,
   DEPOT_JOB_STATUS,
-  DEPOT_JOB_SUBMIT,
+  DEPOT_JOB_COMMIT,
+  DEPOT_JOB_PUSH,
   DEPOT_JOB_PULL,
+  DEPOT_JOB_SYNC,
+  DEPOT_JOB_FETCH,
   DEPOT_JOB_CLONE,
-  DEPOT_JOB_SHARE,
+  DEPOT_JOB_INIT,
+  DEPOT_JOB_SWITCH,
 } DepotJobKind;
 
-static const char *const depot_job_names[] = {
-    "",       "Checking", "Submitting", "Getting latest", "Getting project",
-    "Sharing"};
+static const char *const depot_job_names[] = {"",
+                                              "Checking",
+                                              "Committing",
+                                              "Pushing",
+                                              "Pulling",
+                                              "Syncing",
+                                              "Fetching",
+                                              "Cloning",
+                                              "Making a repository",
+                                              "Switching branch"};
+
+/* Branches and commit rows the window lists. */
+#define DEPOT_BRANCHES_MAX 16u
+#define DEPOT_COMMITS_MAX 8u
 
 typedef struct DepotText {
   char text[DEPOT_TEXT];
@@ -79,6 +87,10 @@ typedef struct DepotHistory {
   uint64_t time_us;
 } DepotHistory;
 
+typedef struct DepotBranch {
+  char name[VKR_DEPOT_BRANCH_NAME];
+} DepotBranch;
+
 /* One step on the worker thread. The UI thread fills the inputs, starts it
    and reads the outputs once `done` is set; the worker owns everything in
    between, except `progress`, which both read. */
@@ -89,13 +101,22 @@ typedef struct DepotJob {
   DepotJobKind kind;
   /* Inputs. */
   char directory[DEPOT_PATH];
+  /* The remote a step exchanges with, and its address and key for the
+     cooked side branch; empty for none. */
+  char remote[VKR_DEPOT_REMOTE_NAME];
   char address[DEPOT_TEXT];
   uint8_t server_key[32];
-  bool8_t save_remote;
-  /* A Get that makes a sparse working copy, whose files arrive when read. */
+  /* A Clone that makes a sparse working copy, whose files arrive when
+     read. */
   bool8_t sparse;
   char message[DEPOT_TEXT];
   VkrDepotConflictPolicy policy;
+  /* Commit: pull and push after it. Init: serve the new repository. Switch:
+     make the branch first. */
+  bool8_t then_sync;
+  bool8_t serve;
+  bool8_t create_branch;
+  char branch[VKR_DEPOT_BRANCH_NAME];
   char source[DEPOT_PATH];
   char project_id[40];
   /* Outputs. */
@@ -106,18 +127,32 @@ typedef struct DepotJob {
   DepotText changes[DEPOT_LIST_MAX];
   uint32_t conflict_count;
   DepotText conflicts[DEPOT_LIST_MAX];
-  /* Paths a pull or clone wrote, for the scene reload and texture cook. */
+  /* Paths a pull, switch or clone wrote, for the scene reload and texture
+     cook. */
   bool8_t scene_files_changed;
   bool8_t materials_changed;
   /* A project's Scripts folder changed: native code someone else wrote. */
   bool8_t scripts_changed;
+  /* A pull merged both sides, or fast-forwarded. */
+  bool8_t merged;
   uint32_t textures_cooked;
   uint32_t textures_failed;
   /* Cooked textures the side branch for this computer brought instead. */
   uint32_t textures_fetched;
   VkrDepotId base;
+  /* The working copy's branch, its commit in the store and the remote's
+     as last fetched, and how far apart they are. */
+  char current_branch[VKR_DEPOT_BRANCH_NAME];
   VkrDepotId remote_head;
   bool8_t remote_known;
+  uint32_t ahead;
+  uint32_t behind;
+  uint32_t branch_count;
+  DepotBranch branches[DEPOT_BRANCHES_MAX];
+  uint32_t outgoing_count;
+  DepotHistory outgoing[DEPOT_COMMITS_MAX];
+  uint32_t incoming_count;
+  DepotHistory incoming[DEPOT_COMMITS_MAX];
   uint32_t history_count;
   DepotHistory history[DEPOT_HISTORY_MAX];
   char opened_project[40];
@@ -168,11 +203,21 @@ struct VkrEditorDepot {
   char workspace[DEPOT_PATH];
   char project_id[40];
   char project_name[96];
-  DepotRole role;
-  char remote[DEPOT_TEXT];
-  uint8_t server_key[32];
-  /* The address jobs use: the server's loopback port when sharing. */
+  /* The workspace is a depot working copy, and this editor serves its
+     store (the store holds a server key). */
+  bool8_t repository;
+  bool8_t serving;
+  /* The store's remotes and the one steps use: origin, else the first. */
+  VkrDepotRemoteEntry remotes[VKR_DEPOT_REMOTES_MAX];
+  uint32_t remote_count;
+  uint32_t selected_remote;
+  /* What each remote's last exchange gave, by index. */
+  VkrDepotConnectStatus remote_connect[VKR_DEPOT_REMOTES_MAX];
+  bool8_t remote_tried[VKR_DEPOT_REMOTES_MAX];
+  /* This editor's own server, over its loopback, for the cooked side
+     branch of a served repository. */
   char address[DEPOT_TEXT];
+  uint8_t server_key[32];
 
   /* Allocates its networking from memory of its own; the retained
      allocator makes only its thread's handle, on the UI thread. */
@@ -208,6 +253,15 @@ struct VkrEditorDepot {
   VkrDepotId base;
   VkrDepotId remote_head;
   bool8_t remote_known;
+  char branch[VKR_DEPOT_BRANCH_NAME];
+  uint32_t ahead;
+  uint32_t behind;
+  uint32_t branch_count;
+  DepotBranch branches[DEPOT_BRANCHES_MAX];
+  uint32_t outgoing_count;
+  DepotHistory outgoing[DEPOT_COMMITS_MAX];
+  uint32_t incoming_count;
+  DepotHistory incoming[DEPOT_COMMITS_MAX];
   uint32_t history_count;
   DepotHistory history[DEPOT_HISTORY_MAX];
   char error[DEPOT_TEXT];
@@ -222,7 +276,13 @@ struct VkrEditorDepot {
 
   /* Forms. */
   char message[DEPOT_TEXT];
-  char share_destination[DEPOT_PATH];
+  char init_destination[DEPOT_PATH];
+  bool8_t init_serve;
+  char new_branch[VKR_DEPOT_BRANCH_NAME];
+  char remote_name[VKR_DEPOT_REMOTE_NAME];
+  char remote_address[DEPOT_TEXT];
+  char remote_key[VKR_DEPOT_ID_HEX];
+  bool8_t remote_form_open;
   char find_address[DEPOT_TEXT];
   bool8_t dialog_open;
   char dialog_name[VKR_DEPOT_DISCOVERY_TEXT];
@@ -230,14 +290,14 @@ struct VkrEditorDepot {
   char dialog_address[VKR_NET_ADDRESS_TEXT];
   uint8_t dialog_key[32];
   char dialog_destination[DEPOT_PATH];
-  /* The Get makes a sparse working copy. */
+  /* The Clone makes a sparse working copy. */
   bool8_t dialog_sparse;
   /* A finished clone the hub opens on its next build. */
   char open_directory[DEPOT_PATH];
   char open_project[40];
   float64_t open_retry_at;
-  /* A finished share the editor switches to. */
-  bool8_t share_switch;
+  /* A finished Make repository the editor switches to. */
+  bool8_t init_switch;
   float32_t window_scroll;
   float32_t window_height;
 };
@@ -488,7 +548,7 @@ static void depot_registry_save(const VkrEditorDepot *depot) {
   if (vkr_bakery_json_write(arena, root, VKR_BAKERY_JSON_PRETTY, &text) &&
       vkr_bakery_make_directories(directory) &&
       !vkr_bakery_write_file_atomic(path, text.str, text.length)) {
-    log_warn("Project sharing: %s could not be written", path);
+    log_warn("Source control: %s could not be written", path);
   }
   arena_destroy(arena);
 }
@@ -715,22 +775,75 @@ static void depot_job_history(DepotJob *job, const VkrDepotWorkspace *ws) {
   }
 }
 
-/* The server's commit of the branch; false with the connection's error. */
-static bool8_t depot_job_remote_head(DepotWorker *worker) {
-  DepotJob *job = worker->job;
-  VkrDepotConnection *connection =
-      depot_job_connect(worker, &worker->workspace->store);
-  VkrDepotClient *client = vkr_depot_connection_client(connection);
-  bool8_t exists = false_v;
-  const bool8_t ok =
-      client && vkr_depot_find_ref(client, worker->workspace->branch,
-                                   &job->remote_head, &exists);
-  if (ok && !exists) {
-    MemZero(&job->remote_head, sizeof(job->remote_head));
+static bool8_t depot_branch_visit(void *context, const char *branch) {
+  DepotJob *job = context;
+  if (job->branch_count < DEPOT_BRANCHES_MAX) {
+    string_format(job->branches[job->branch_count++].name,
+                  VKR_DEPOT_BRANCH_NAME, "%s", branch);
   }
-  job->remote_known = ok;
-  vkr_depot_disconnect(connection);
-  return ok;
+  return true_v;
+}
+
+typedef struct DepotCommitRows {
+  DepotHistory *rows;
+  uint32_t *count;
+} DepotCommitRows;
+
+static bool8_t depot_commit_row_visit(void *context,
+                                      const VkrDepotLogEntry *entry) {
+  DepotCommitRows *rows = context;
+  if (*rows->count >= DEPOT_COMMITS_MAX) {
+    return false_v;
+  }
+  DepotHistory *row = &rows->rows[(*rows->count)++];
+  vkr_depot_id_hex(&entry->id, row->id);
+  const uint32_t length =
+      Min(entry->message_size, (uint32_t)sizeof(row->message) - 1u);
+  MemCopy(row->message, entry->message, length);
+  row->message[length] = '\0';
+  for (char *c = row->message; *c; ++c) {
+    if (*c == '\n' || *c == '\r') {
+      *c = '\0';
+      break;
+    }
+  }
+  row->time_us = entry->time_us;
+  return true_v;
+}
+
+/* The branch, the store's branches, and how the branch stands against the
+   remote's as last fetched: commits to push and to pull, newest first. */
+static void depot_job_summary(DepotJob *job, const VkrDepotWorkspace *ws) {
+  string_format(job->current_branch, sizeof(job->current_branch), "%s",
+                ws->branch);
+  job->branch_count = 0u;
+  (void)vkr_depot_ref_list(ws->store.root, depot_branch_visit, job);
+  job->ahead = 0u;
+  job->behind = 0u;
+  job->outgoing_count = 0u;
+  job->incoming_count = 0u;
+  job->remote_known = false_v;
+  VkrDepotId local = {0};
+  if (!vkr_depot_ref_read(ws->store.root, ws->branch, &local)) {
+    local = ws->base;
+  }
+  if (!job->remote[0] ||
+      !vkr_depot_tracking_read(ws->store.root, job->remote, ws->branch,
+                               &job->remote_head)) {
+    return;
+  }
+  job->remote_known = true_v;
+  if (!vkr_depot_ahead_behind(&ws->store, &local, &job->remote_head,
+                              &job->ahead, &job->behind)) {
+    return;
+  }
+  DepotCommitRows outgoing = {job->outgoing, &job->outgoing_count};
+  DepotCommitRows incoming = {job->incoming, &job->incoming_count};
+  (void)vkr_depot_log(&ws->store, &local, Min(job->ahead, DEPOT_COMMITS_MAX),
+                      depot_commit_row_visit, &outgoing);
+  (void)vkr_depot_log(&ws->store, &job->remote_head,
+                      Min(job->behind, DEPOT_COMMITS_MAX),
+                      depot_commit_row_visit, &incoming);
 }
 
 /* Whether a path a pull wrote is part of a scene, its World or the
@@ -836,7 +949,7 @@ static void depot_job_cook(DepotJob *job, const char *root,
       job->textures_cooked++;
     } else {
       job->textures_failed++;
-      log_warn("Project sharing: textures in %s did not cook (exit %d)",
+      log_warn("Source control: textures in %s did not cook (exit %d)",
                list.folders[i], exit_code);
     }
     vkr_atomic_uint32_store(&job->cook_done, i + 1u, VKR_MEMORY_ORDER_RELAXED);
@@ -875,12 +988,12 @@ static void depot_job_fetch_cooked(DepotJob *job, VkrDepotWorkspace *ws,
   char error[DEPOT_TEXT] = {0};
   if (!vkr_depot_fetch_cooked(ws, client, ws->branch, &fetched, error,
                               sizeof(error))) {
-    log_warn("Project sharing: cooked textures did not arrive: %s", error);
+    log_warn("Source control: cooked textures did not arrive: %s", error);
     return;
   }
   job->textures_fetched = fetched.written;
   if (!vkr_depot_id_zero(&fetched.commit)) {
-    log_info("Project sharing: %u cooked textures from %s (%u here already, "
+    log_info("Source control: %u cooked textures from %s (%u here already, "
              "%u to cook from changed sources)",
              fetched.written, fetched.branch, fetched.present, fetched.stale);
   }
@@ -900,8 +1013,7 @@ static void depot_job_publish_cooked(DepotWorker *worker) {
   char error[DEPOT_TEXT] = {0};
   if (!vkr_depot_cooked_snapshot(ws, &tree, &files, error, sizeof(error))) {
     if (files) {
-      log_warn("Project sharing: cooked textures were not published: %s",
-               error);
+      log_warn("Source control: cooked textures were not published: %s", error);
     }
     return;
   }
@@ -911,131 +1023,147 @@ static void depot_job_publish_cooked(DepotWorker *worker) {
   if (client && vkr_depot_publish_cooked(ws, client, ws->branch, &tree, files,
                                          &result, error, sizeof(error))) {
     if (!result.unchanged) {
-      log_info("Project sharing: published %u cooked textures to %s",
+      log_info("Source control: published %u cooked textures to %s",
                result.files, result.branch);
     }
   } else {
-    log_warn("Project sharing: cooked textures were not published: %s",
+    log_warn("Source control: cooked textures were not published: %s",
              client ? error : job->error);
   }
   vkr_depot_disconnect(connection);
   string_format(job->error, sizeof(job->error), "%s", saved);
 }
 
-/* Fetches the server's commit and checks it out; cooks the textures it
-   brought and notes whether the scene must reload. */
+/* The texture work that follows files a pull, switch or merge wrote:
+   cooked textures from this computer's side branch on the remote, then a
+   cook of the rest, published back for others of its GPU family. A sparse
+   working copy's textures come cooked from the side branch when read; a
+   cook would read every source. */
+static void depot_job_after_checkout(DepotWorker *worker,
+                                     const VkrDepotFileList *before) {
+  DepotJob *job = worker->job;
+  VkrDepotWorkspace *ws = worker->workspace;
+  (void)vkr_depot_file_list_diff(before, &ws->index, depot_pull_visit, job);
+  if (ws->sparse) {
+    return;
+  }
+  if (job->address[0]) {
+    VkrDepotConnection *connection = depot_job_connect(worker, &ws->store);
+    VkrDepotClient *client = vkr_depot_connection_client(connection);
+    if (client) {
+      depot_job_fetch_cooked(job, ws, client);
+    }
+    vkr_depot_disconnect(connection);
+    job->error[0] = '\0';
+  }
+  depot_job_cook(job, ws->root, &ws->index);
+  depot_job_recook(job, ws->root);
+  if (job->textures_cooked && job->address[0]) {
+    depot_job_publish_cooked(worker);
+  }
+}
+
+static VkrDepotFileList depot_index_copy(const VkrDepotWorkspace *ws) {
+  VkrDepotFileList copy = {0};
+  for (uint32_t i = 0u; i < ws->index.count; ++i) {
+    const VkrDepotIndexEntry *entry = &ws->index.entries[i];
+    (void)vkr_depot_file_list_add(&copy, entry->path, entry->size,
+                                  entry->mtime_ns, &entry->blob);
+  }
+  return copy;
+}
+
+/* Pulls the branch from the remote: a fast-forward, or a merge when both
+   sides moved it, whose scene units Bakery merges. Conflicts it could not
+   settle under the job's policy stop it with them listed. */
 static void depot_job_pull(DepotWorker *worker) {
   DepotJob *job = worker->job;
   VkrDepotWorkspace *ws = worker->workspace;
-  VkrDepotFileList before = {0};
-  for (uint32_t i = 0u; i < ws->index.count; ++i) {
-    const VkrDepotIndexEntry *entry = &ws->index.entries[i];
-    (void)vkr_depot_file_list_add(&before, entry->path, entry->size,
-                                  entry->mtime_ns, &entry->blob);
+  VkrDepotFileList before = depot_index_copy(ws);
+  char bakery[DEPOT_PATH];
+  string_format(bakery, sizeof(bakery), "%s",
+                vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY));
+  const VkrDepotMergeConfig config = {
+      .driver = vkr_depot_merge_bakery_driver,
+      .driver_context = bakery,
+      .policy = job->policy,
+  };
+  VkrDepotPullResult pulled;
+  VkrDepotMergeResult merged;
+  job->ok = vkr_depot_pull_merge(&worker->allocator, ws, job->remote, &config,
+                                 &pulled, &merged, &job->connect, job->error,
+                                 sizeof(job->error));
+  depot_job_take_changes(
+      job, merged.conflicts.count ? &merged.conflicts : &pulled.conflicts,
+      job->conflicts, &job->conflict_count);
+  if (job->ok && merged.status == VKR_DEPOT_MERGE_CONFLICTS) {
+    job->ok = false_v;
+    string_format(job->error, sizeof(job->error),
+                  "%u files changed here and on %s; choose whose to keep",
+                  merged.conflicts.count, job->remote);
+  } else if (job->ok && pulled.status == VKR_DEPOT_PULL_DIVERGED) {
+    job->merged = merged.status == VKR_DEPOT_MERGE_MERGED;
+  } else if (job->ok) {
+    job->merged = pulled.status == VKR_DEPOT_PULL_FAST_FORWARD;
   }
-  VkrDepotConnection *connection = depot_job_connect(worker, &ws->store);
-  VkrDepotClient *client = vkr_depot_connection_client(connection);
-  bool8_t exists = false_v;
-  if (client &&
-      vkr_depot_find_ref(client, ws->branch, &job->remote_head, &exists)) {
-    job->remote_known = true_v;
-    if (!exists || vkr_depot_id_equal(&job->remote_head, &ws->base)) {
-      job->ok = true_v;
-    } else {
-      uint32_t kept = 0u;
-      VkrDepotChangeList conflicts = {0};
-      job->ok = vkr_depot_fetch_checkout(ws, client, &job->remote_head,
-                                         job->policy, &kept, &conflicts,
-                                         job->error, sizeof(job->error));
-      depot_job_take_changes(job, &conflicts, job->conflicts,
-                             &job->conflict_count);
-      vkr_depot_change_list_free(&conflicts);
-    }
-  }
-  if (job->ok && client && !ws->sparse) {
-    depot_job_fetch_cooked(job, ws, client);
-  }
-  vkr_depot_disconnect(connection);
+  vkr_depot_change_list_free(&pulled.conflicts);
+  vkr_depot_change_list_free(&merged.conflicts);
   if (job->ok) {
-    (void)vkr_depot_file_list_diff(&before, &ws->index, depot_pull_visit, job);
-    /* A sparse working copy's textures come cooked from the side branch
-       when read; a cook would read every source. */
-    if (!ws->sparse) {
-      depot_job_cook(job, ws->root, &ws->index);
-      depot_job_recook(job, ws->root);
-      if (job->textures_cooked) {
-        depot_job_publish_cooked(worker);
-      }
-    }
+    depot_job_after_checkout(worker, &before);
   }
   vkr_depot_file_list_free(&before);
 }
 
-/* Commits every local change on top of the server's newest commit. A
-   newer commit there is checked out first, keeping local changes; a path
-   changed on both sides stops with the conflicts listed. */
-static void depot_job_submit(DepotWorker *worker) {
+/* Pushes the branch to the remote, then this computer's cooked textures to
+   its side branch there. A sparse working copy holds only the cooked files
+   it read: publishing them would drop the rest from the side branch. */
+static void depot_job_push(DepotWorker *worker) {
   DepotJob *job = worker->job;
   VkrDepotWorkspace *ws = worker->workspace;
-  if (job->save_remote) {
-    string_format(ws->remote, sizeof(ws->remote), "%s", job->address);
-    MemCopy(ws->server_key, job->server_key, 32u);
-    if (!ws->branch[0]) {
-      string_format(ws->branch, sizeof(ws->branch), "%s", DEPOT_BRANCH);
-    }
-    if (!vkr_depot_workspace_save(ws)) {
-      string_format(job->error, sizeof(job->error),
-                    "The working copy's state could not be saved");
-      return;
-    }
-  }
-  if (!depot_job_remote_head(worker)) {
-    return;
-  }
-  if (!vkr_depot_id_zero(&job->remote_head) &&
-      !vkr_depot_id_equal(&job->remote_head, &ws->base)) {
-    depot_job_pull(worker);
-    if (!job->ok) {
-      return;
-    }
-    job->ok = false_v;
-  }
-  /* A snapshot of a large change outlasts a connection's idle time, so it
-     runs before the upload connects. */
-  VkrDepotPendingCommit pending = {0};
-  if (!vkr_depot_commit_snapshot(ws, &ws->base, job->message, &pending,
-                                 job->error, sizeof(job->error))) {
-    return;
-  }
-  VkrDepotConnection *connection = depot_job_connect(worker, &ws->store);
-  VkrDepotClient *client = vkr_depot_connection_client(connection);
-  const VkrDepotId parent = ws->base;
-  if (client) {
-    job->ok = vkr_depot_commit_push(ws, client, ws->branch, &parent,
-                                    &job->remote_head, &pending, job->error,
-                                    sizeof(job->error));
-    if (job->ok) {
-      job->remote_head = pending.commit;
-    }
-  }
-  vkr_depot_pending_commit_free(&pending);
-  vkr_depot_disconnect(connection);
-  /* The new commit's cooked textures, for others of this GPU family. A
-     sparse working copy holds only those it read: publishing them would
-     drop the rest from the side branch. */
-  if (job->ok && !ws->sparse) {
+  VkrDepotPushResult pushed;
+  job->ok = vkr_depot_push(&worker->allocator, ws, job->remote, NULL, &pushed,
+                           &job->connect, job->error, sizeof(job->error));
+  if (job->ok && !ws->sparse && pushed.status == VKR_DEPOT_PUSH_OK) {
     depot_job_publish_cooked(worker);
+  }
+}
+
+/* Records every local change in the repository; a served repository
+   publishes its cooked textures to its own side branch, for the computers
+   that clone it. */
+static void depot_job_commit(DepotWorker *worker) {
+  DepotJob *job = worker->job;
+  VkrDepotWorkspace *ws = worker->workspace;
+  VkrDepotCommitResult committed;
+  job->ok = vkr_depot_commit_local(ws, job->message, &committed, job->error,
+                                   sizeof(job->error));
+  if (job->ok && committed.empty && !job->then_sync) {
+    job->ok = false_v;
+    string_format(job->error, sizeof(job->error), "Nothing to commit");
+    return;
+  }
+  if (job->ok && job->then_sync && job->remote[0]) {
+    depot_job_pull(worker);
+    if (job->ok) {
+      depot_job_push(worker);
+    }
+  }
+}
+
+static void depot_job_fetch_visit(void *context, const char *branch,
+                                  VkrDepotFetchAction action,
+                                  const VkrDepotId *commit,
+                                  const char *detail) {
+  (void)context;
+  (void)commit;
+  if (action == VKR_DEPOT_FETCH_FAILED) {
+    log_warn("Source control: fetching %s failed: %s", branch, detail);
   }
 }
 
 static void depot_job_status(DepotWorker *worker) {
   DepotJob *job = worker->job;
   VkrDepotWorkspace *ws = worker->workspace;
-  /* A server that moved: discovery found its key at a new address. */
-  if (job->save_remote && !string_equals(ws->remote, job->address)) {
-    string_format(ws->remote, sizeof(ws->remote), "%s", job->address);
-    (void)vkr_depot_workspace_save(ws);
-  }
   VkrDepotChangeList changes = {0};
   if (!vkr_depot_status(ws, &changes, job->error, sizeof(job->error))) {
     return;
@@ -1043,9 +1171,38 @@ static void depot_job_status(DepotWorker *worker) {
   depot_job_take_changes(job, &changes, job->changes, &job->change_count);
   vkr_depot_change_list_free(&changes);
   job->ok = true_v;
-  if (job->address[0]) {
-    (void)depot_job_remote_head(worker);
+  /* The remote's branches, so the window shows what there is to pull; an
+     unreachable remote leaves the last fetch's view. */
+  if (job->remote[0] &&
+      !vkr_depot_fetch(&worker->allocator, ws, job->remote, NULL,
+                       depot_job_fetch_visit, NULL, &job->connect, job->error,
+                       sizeof(job->error))) {
+    log_info("Source control: %s: %s", job->remote, job->error);
+    job->error[0] = '\0';
   }
+}
+
+/* Switches the working copy to another branch, keeping no local change a
+   switch would overwrite, and makes the branch first when asked. */
+static void depot_job_switch(DepotWorker *worker) {
+  DepotJob *job = worker->job;
+  VkrDepotWorkspace *ws = worker->workspace;
+  if (job->create_branch &&
+      !vkr_depot_branch_create(ws, job->branch, job->error,
+                               sizeof(job->error))) {
+    return;
+  }
+  VkrDepotFileList before = depot_index_copy(ws);
+  uint32_t kept = 0u;
+  VkrDepotChangeList conflicts = {0};
+  job->ok = vkr_depot_switch(ws, job->branch, VKR_DEPOT_CONFLICT_FAIL, &kept,
+                             &conflicts, job->error, sizeof(job->error));
+  depot_job_take_changes(job, &conflicts, job->conflicts, &job->conflict_count);
+  vkr_depot_change_list_free(&conflicts);
+  if (job->ok) {
+    depot_job_after_checkout(worker, &before);
+  }
+  vkr_depot_file_list_free(&before);
 }
 
 /* The id of the first project folder under `<directory>/.vkreditor/projects`.
@@ -1266,7 +1423,7 @@ static void depot_job_recook(DepotJob *job, const char *folder) {
     /* A project may list a scene it does not share; that scene has nothing
        here to cook for. */
     if (scene_path[0] && !vkr_bakery_is_file(scene_path)) {
-      log_info("Project sharing: scene %s is not in this copy; its textures "
+      log_info("Source control: scene %s is not in this copy; its textures "
                "are not prepared",
                scene_id);
     } else if (scene_path[0]) {
@@ -1291,13 +1448,13 @@ static void depot_job_recook(DepotJob *job, const char *folder) {
            uncooked; the scene's other textures are ready. */
         if (skipped > 0) {
           job->textures_failed += (uint32_t)skipped;
-          log_warn("Project sharing: scene %s: %lld textures did not cook; "
+          log_warn("Source control: scene %s: %lld textures did not cook; "
                    "their mesh source snapshot is missing",
                    scene_id, (long long)skipped);
         }
       } else {
         job->textures_failed++;
-        log_warn("Project sharing: %s", job->error);
+        log_warn("Source control: %s", job->error);
         job->error[0] = '\0';
       }
     }
@@ -1313,7 +1470,7 @@ static void depot_job_recook(DepotJob *job, const char *folder) {
       !depot_project_job(job, folder, arena, request, "Preparing textures",
                          &result)) {
     job->textures_failed++;
-    log_warn("Project sharing: %s", job->error);
+    log_warn("Source control: %s", job->error);
     job->error[0] = '\0';
   }
   vkr_atomic_uint32_store(&job->cook_done, total, VKR_MEMORY_ORDER_RELAXED);
@@ -1371,7 +1528,7 @@ static void depot_job_rebuild_old_models(DepotJob *job,
       const VkrBakeryJson *result = NULL;
       if (!depot_project_job(job, job->directory, arena, request,
                              "Rebuilding a model for sharing", &result)) {
-        log_warn("Project sharing: %s", job->error);
+        log_warn("Source control: %s", job->error);
         job->textures_failed++;
         job->error[0] = '\0';
       }
@@ -1392,12 +1549,12 @@ static void depot_job_rebuild_old_models(DepotJob *job,
   if (!vkr_depot_progress_canceled(&job->progress) &&
       !depot_project_job(job, job->directory, arena, request,
                          "Removing replaced builds", &result)) {
-    log_warn("Project sharing: %s", job->error);
+    log_warn("Source control: %s", job->error);
     job->error[0] = '\0';
   } else if (result) {
     int64_t freed = 0;
     (void)vkr_bakery_json_get_int(result, "freed_bytes", &freed);
-    log_info("Project sharing: removed %lld bytes of replaced builds",
+    log_info("Source control: removed %lld bytes of replaced builds",
              (long long)freed);
   }
   arena_destroy(arena);
@@ -1405,9 +1562,9 @@ static void depot_job_rebuild_old_models(DepotJob *job,
 
 /* Copies the project's live files and every asset they use into the new
    workspace (Bakery's share_project), rebuilds models cooked before texture
-   recipes, then makes it a working copy whose store the server serves. The
-   first commit follows once the server runs. */
-static void depot_job_share(DepotWorker *worker) {
+   recipes, makes it a repository and commits it. With `serve`, the store
+   gets a server key, which marks it as this editor's to serve. */
+static void depot_job_init(DepotWorker *worker) {
   DepotJob *job = worker->job;
   Arena *arena = arena_create(MB(1), KB(256));
   if (!arena) {
@@ -1444,23 +1601,27 @@ static void depot_job_share(DepotWorker *worker) {
   if (!vkr_depot_workspace_create(ws, job->directory, NULL,
                                   vkr_depot_zstd_codec())) {
     string_format(job->error, sizeof(job->error),
-                  "%s could not become a working copy", job->directory);
+                  "%s could not become a repository", job->directory);
     return;
   }
   string_format(ws->branch, sizeof(ws->branch), "%s", DEPOT_BRANCH);
-  job->ok = vkr_depot_workspace_save(ws);
+  ws->progress = &job->progress;
+  VkrDepotCommitResult committed;
+  job->ok = vkr_depot_workspace_save(ws) &&
+            vkr_depot_commit_local(ws, job->message, &committed, job->error,
+                                   sizeof(job->error));
   vkr_depot_workspace_close(ws);
-  /* The store's server key marks the workspace as this editor's to
-     serve. */
-  char store[DEPOT_PATH];
-  VkrNetKeyPair keys;
-  string_format(store, sizeof(store), "%s/" VKR_DEPOT_META_DIR "/store",
-                job->directory);
-  job->ok = job->ok && vkr_depot_server_key(store, &keys);
-  vkr_net_random(keys.secret_key, sizeof(keys.secret_key));
-  if (!job->ok) {
-    string_format(job->error, sizeof(job->error),
-                  "%s could not become a working copy", job->directory);
+  if (job->ok && job->serve) {
+    char store[DEPOT_PATH];
+    VkrNetKeyPair keys;
+    string_format(store, sizeof(store), "%s/" VKR_DEPOT_META_DIR "/store",
+                  job->directory);
+    job->ok = vkr_depot_server_key(store, &keys);
+    vkr_net_random(keys.secret_key, sizeof(keys.secret_key));
+    if (!job->ok) {
+      string_format(job->error, sizeof(job->error), "%s could not be served",
+                    job->directory);
+    }
   }
 }
 
@@ -1480,25 +1641,50 @@ static void *depot_worker(void *argument) {
     string_format(job->error, sizeof(job->error), "out of memory");
   } else if (job->kind == DEPOT_JOB_CLONE) {
     depot_job_clone(&worker);
-  } else if (job->kind == DEPOT_JOB_SHARE) {
-    depot_job_share(&worker);
+  } else if (job->kind == DEPOT_JOB_INIT) {
+    depot_job_init(&worker);
   } else if (!vkr_depot_workspace_open(worker.workspace, job->directory,
                                        vkr_depot_zstd_codec())) {
-    string_format(job->error, sizeof(job->error), "No working copy at %s",
+    string_format(job->error, sizeof(job->error), "No repository at %s",
                   job->directory);
   } else {
     VkrDepotWorkspace *ws = worker.workspace;
     ws->progress = &job->progress;
-    if (job->kind == DEPOT_JOB_STATUS) {
+    switch (job->kind) {
+    case DEPOT_JOB_STATUS:
       depot_job_status(&worker);
-    } else if (job->kind == DEPOT_JOB_SUBMIT) {
-      depot_job_submit(&worker);
-    } else if (job->kind == DEPOT_JOB_PULL) {
+      break;
+    case DEPOT_JOB_COMMIT:
+      depot_job_commit(&worker);
+      break;
+    case DEPOT_JOB_PUSH:
+      depot_job_push(&worker);
+      break;
+    case DEPOT_JOB_PULL:
       depot_job_pull(&worker);
+      break;
+    case DEPOT_JOB_SYNC:
+      depot_job_pull(&worker);
+      if (job->ok) {
+        depot_job_push(&worker);
+      }
+      break;
+    case DEPOT_JOB_FETCH:
+      job->ok = vkr_depot_fetch(&worker.allocator, ws, job->remote, NULL,
+                                depot_job_fetch_visit, NULL, &job->connect,
+                                job->error, sizeof(job->error));
+      break;
+    case DEPOT_JOB_SWITCH:
+      depot_job_switch(&worker);
+      break;
+    default:
+      break;
     }
-    /* What the window shows after any step: the base, its history and,
-       after a change, what is left to submit. */
+    /* What the window shows after any step: the base, the branches, how
+       the branch stands against the remote, its history and, after a
+       change, what is left to commit. */
     job->base = ws->base;
+    depot_job_summary(job, ws);
     depot_job_history(job, ws);
     if (job->kind != DEPOT_JOB_STATUS && job->ok) {
       VkrDepotChangeList changes = {0};
@@ -1538,6 +1724,12 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   job->scene_files_changed = false_v;
   job->materials_changed = false_v;
   job->scripts_changed = false_v;
+  job->merged = false_v;
+  job->branch_count = 0u;
+  job->outgoing_count = 0u;
+  job->incoming_count = 0u;
+  job->ahead = 0u;
+  job->behind = 0u;
   job->textures_cooked = 0u;
   job->textures_failed = 0u;
   job->textures_fetched = 0u;
@@ -1554,13 +1746,41 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   return true_v;
 }
 
-/* Fills the inputs every workspace step needs. */
-static void depot_job_inputs(VkrEditorDepot *depot) {
+/* The remote steps use: the named one, else the selected one; NULL when
+   the repository has none. */
+static const VkrDepotRemoteEntry *
+depot_remote_entry(const VkrEditorDepot *depot, const char *name) {
+  for (uint32_t i = 0u; name && name[0] && i < depot->remote_count; ++i) {
+    if (string_equals(depot->remotes[i].name, name)) {
+      return &depot->remotes[i];
+    }
+  }
+  if (name && name[0]) {
+    return NULL;
+  }
+  return depot->selected_remote < depot->remote_count
+             ? &depot->remotes[depot->selected_remote]
+             : NULL;
+}
+
+/* Fills the inputs every workspace step needs: the remote it exchanges
+   with, or, for a served repository with none, this editor's own server
+   for the cooked side branch. */
+static void depot_job_inputs(VkrEditorDepot *depot, const char *remote) {
   DepotJob *job = depot->job;
   string_format(job->directory, sizeof(job->directory), "%s", depot->workspace);
-  string_format(job->address, sizeof(job->address), "%s", depot->address);
-  MemCopy(job->server_key, depot->server_key, 32u);
-  job->save_remote = false_v;
+  const VkrDepotRemoteEntry *entry = depot_remote_entry(depot, remote);
+  job->remote[0] = '\0';
+  job->address[0] = '\0';
+  MemZero(job->server_key, sizeof(job->server_key));
+  if (entry) {
+    string_format(job->remote, sizeof(job->remote), "%s", entry->name);
+    string_format(job->address, sizeof(job->address), "%s", entry->address);
+    MemCopy(job->server_key, entry->key, 32u);
+  } else if (depot->serving && depot->address[0]) {
+    string_format(job->address, sizeof(job->address), "%s", depot->address);
+    MemCopy(job->server_key, depot->server_key, 32u);
+  }
 }
 
 // =============================================================================
@@ -1599,7 +1819,7 @@ static bool8_t depot_service_start(VkrEditorDepot *depot) {
       vkr_depot_service_start(depot->allocator, &config, depot->service_error,
                               sizeof(depot->service_error));
   if (!depot->service) {
-    log_warn("Project sharing: the server did not start: %s",
+    log_warn("Source control: the server did not start: %s",
              depot->service_error);
     return false_v;
   }
@@ -1614,7 +1834,7 @@ static bool8_t depot_service_start(VkrEditorDepot *depot) {
                     ? "[::1]:%u"
                     : "127.0.0.1:%u",
                 (uint32_t)depot->service_info.address.port);
-  log_info("Project sharing: serving %s on UDP %u%s", depot->project_name,
+  log_info("Source control: serving %s on UDP %u%s", depot->project_name,
            (uint32_t)depot->service_info.address.port,
            depot->service_info.discoverable ? "" : " (not discoverable)");
   return true_v;
@@ -1647,14 +1867,46 @@ static void depot_reset_status(VkrEditorDepot *depot) {
   depot->conflict_count = 0u;
   depot->history_count = 0u;
   depot->remote_known = false_v;
+  depot->ahead = 0u;
+  depot->behind = 0u;
+  depot->branch_count = 0u;
+  depot->outgoing_count = 0u;
+  depot->incoming_count = 0u;
+  depot->branch[0] = '\0';
   depot->error[0] = '\0';
   depot->waiting_kind = DEPOT_JOB_NONE;
+  MemZero(depot->remote_tried, sizeof(depot->remote_tried));
   MemZero(&depot->base, sizeof(depot->base));
   MemZero(&depot->remote_head, sizeof(depot->remote_head));
 }
 
+/* Reads the store's remotes and keeps the selected one by name: origin
+   when the selection is gone, else the first. */
+static void depot_load_remotes(VkrEditorDepot *depot) {
+  char store[DEPOT_PATH];
+  char selected[VKR_DEPOT_REMOTE_NAME] = {0};
+  if (depot->selected_remote < depot->remote_count) {
+    string_format(selected, sizeof(selected), "%s",
+                  depot->remotes[depot->selected_remote].name);
+  }
+  depot_store_root(depot->workspace, store, sizeof(store));
+  depot->remote_count = 0u;
+  if (!vkr_depot_remotes_load(store, depot->remotes, VKR_DEPOT_REMOTES_MAX,
+                              &depot->remote_count)) {
+    depot->remote_count = 0u;
+  }
+  depot->selected_remote = 0u;
+  for (uint32_t i = 0u; i < depot->remote_count; ++i) {
+    if (selected[0] ? string_equals(depot->remotes[i].name, selected)
+                    : string_equals(depot->remotes[i].name, VKR_DEPOT_ORIGIN)) {
+      depot->selected_remote = i;
+    }
+  }
+}
+
 /* Reads the open workspace's depot state when it changed: a working copy
-   whose store holds a server key is this editor's to serve. */
+   is a repository, and one whose store holds a server key is this editor's
+   to serve. */
 static void depot_follow_workspace(VkrEditorDepot *depot, VkrEditorUi *editor) {
   char folder[DEPOT_PATH] = {0};
   const struct VkrEditorProject *project =
@@ -1673,13 +1925,15 @@ static void depot_follow_workspace(VkrEditorDepot *depot, VkrEditorUi *editor) {
   depot_service_stop(depot);
   depot_reset_status(depot);
   string_format(depot->workspace, sizeof(depot->workspace), "%s", folder);
-  depot->role = DEPOT_ROLE_NONE;
+  depot->repository = false_v;
+  depot->serving = false_v;
+  depot->remote_count = 0u;
+  depot->selected_remote = 0u;
   depot->address[0] = '\0';
-  depot->remote[0] = '\0';
   MemZero(depot->server_key, sizeof(depot->server_key));
   depot->project_id[0] = '\0';
   depot->project_name[0] = '\0';
-  depot->share_destination[0] = '\0';
+  depot->init_destination[0] = '\0';
   if (!project) {
     return;
   }
@@ -1692,28 +1946,28 @@ static void depot_follow_workspace(VkrEditorDepot *depot, VkrEditorUi *editor) {
   if (!vkr_bakery_is_directory(meta)) {
     return;
   }
+  /* Opening adopts a working copy of the older form: its server becomes
+     the remote origin (vkr_depot_workspace.h). */
   VkrDepotWorkspace *ws = vkr_heap_alloc_zeroed(1u, sizeof(*ws));
   if (!ws || !vkr_depot_workspace_open(ws, folder, vkr_depot_zstd_codec())) {
     vkr_heap_free(ws);
     return;
   }
-  string_format(depot->remote, sizeof(depot->remote), "%s", ws->remote);
-  MemCopy(depot->server_key, ws->server_key, 32u);
+  depot->repository = true_v;
   depot->base = ws->base;
+  string_format(depot->branch, sizeof(depot->branch), "%s", ws->branch);
   vkr_depot_workspace_close(ws);
   vkr_heap_free(ws);
+  depot_load_remotes(depot);
   char key_path[DEPOT_PATH];
   string_format(key_path, sizeof(key_path),
                 "%s/" VKR_DEPOT_META_DIR "/store/server.key", folder);
   if (vkr_bakery_is_file(key_path)) {
-    depot->role = DEPOT_ROLE_SHARER;
+    depot->serving = true_v;
     (void)depot_service_start(depot);
-  } else if (depot->remote[0]) {
-    depot->role = DEPOT_ROLE_MEMBER;
-    string_format(depot->address, sizeof(depot->address), "%s", depot->remote);
   }
   depot_remember_project(depot, folder, depot->project_name, depot->project_id,
-                         depot->role == DEPOT_ROLE_SHARER);
+                         depot->serving);
   depot->next_status = 0.0;
 }
 
@@ -1774,6 +2028,17 @@ void vkr_editor_depot_destroy(VkrEditorDepot *depot) {
 // Finishing steps
 // =============================================================================
 
+/* The selected remote's index, or UINT32_MAX for none. */
+static uint32_t depot_remote_index(const VkrEditorDepot *depot,
+                                   const char *name) {
+  for (uint32_t i = 0u; name[0] && i < depot->remote_count; ++i) {
+    if (string_equals(depot->remotes[i].name, name)) {
+      return i;
+    }
+  }
+  return UINT32_MAX;
+}
+
 static void depot_take_results(VkrEditorDepot *depot) {
   DepotJob *job = depot->job;
   if (job->kind == DEPOT_JOB_STATUS || job->ok) {
@@ -1792,12 +2057,30 @@ static void depot_take_results(VkrEditorDepot *depot) {
     MemCopy(depot->history, job->history,
             job->history_count * sizeof(DepotHistory));
   }
-  if (job->remote_known) {
-    depot->remote_known = true_v;
+  if (job->current_branch[0]) {
+    string_format(depot->branch, sizeof(depot->branch), "%s",
+                  job->current_branch);
+    depot->branch_count = job->branch_count;
+    MemCopy(depot->branches, job->branches,
+            job->branch_count * sizeof(DepotBranch));
+    depot->remote_known = job->remote_known;
     depot->remote_head = job->remote_head;
+    depot->ahead = job->ahead;
+    depot->behind = job->behind;
+    depot->outgoing_count = job->outgoing_count;
+    MemCopy(depot->outgoing, job->outgoing,
+            job->outgoing_count * sizeof(DepotHistory));
+    depot->incoming_count = job->incoming_count;
+    MemCopy(depot->incoming, job->incoming,
+            job->incoming_count * sizeof(DepotHistory));
+  }
+  const uint32_t remote = depot_remote_index(depot, job->remote);
+  if (remote != UINT32_MAX && job->kind != DEPOT_JOB_COMMIT) {
+    depot->remote_connect[remote] = job->connect;
+    depot->remote_tried[remote] = true_v;
   }
   depot->connect = job->connect;
-  depot->connected = job->remote_known;
+  depot->connected = job->connect == VKR_DEPOT_CONNECT_OK && job->remote[0];
   depot->status_known = depot->status_known || job->ok;
 }
 
@@ -1814,49 +2097,78 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   const bool8_t denied = job->connect == VKR_DEPOT_CONNECT_DENIED;
   depot->error[0] = '\0';
   depot->waiting_kind = DEPOT_JOB_NONE;
-  if (denied && (job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_PULL ||
-                 job->kind == DEPOT_JOB_SUBMIT)) {
-    /* The server recorded a request; ask again until its owner answers. */
+  const bool8_t exchange =
+      job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_PULL ||
+      job->kind == DEPOT_JOB_PUSH || job->kind == DEPOT_JOB_SYNC;
+  if (denied && exchange) {
+    /* The remote recorded a request; ask again until its owner answers. */
     depot->waiting_kind = job->kind;
     depot->retry_at = now + DEPOT_RETRY_SECONDS;
   } else if (!job->ok && job->kind != DEPOT_JOB_STATUS &&
              !vkr_depot_progress_canceled(&job->progress)) {
     string_format(depot->error, sizeof(depot->error), "%s", job->error);
   }
-  if (job->kind == DEPOT_JOB_PULL || job->kind == DEPOT_JOB_CLONE) {
+  if (job->kind == DEPOT_JOB_PULL || job->kind == DEPOT_JOB_SYNC ||
+      job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_SWITCH ||
+      (job->kind == DEPOT_JOB_COMMIT && job->then_sync)) {
     depot->textures_cooked = job->textures_cooked;
     depot->textures_fetched = job->textures_fetched;
     depot->textures_failed = job->textures_failed;
+  }
+  const bool8_t wrote_files = job->scene_files_changed ||
+                              job->materials_changed || job->scripts_changed;
+  if (job->ok && wrote_files && job->kind != DEPOT_JOB_CLONE) {
+    depot->reload_pending = job->scene_files_changed;
+    if (job->scripts_changed) {
+      /* Someone else's native code: it runs once this user trusts it. */
+      depot_set_trusted(depot, depot->workspace, false_v);
+      vkr_editor_scripts_hold(editor->scripts, true_v);
+      depot->scripts_prompt_dismissed = false_v;
+    }
+    if (job->materials_changed) {
+      vkr_editor_material_index_reset(editor->materials);
+    }
   }
   switch (job->kind) {
   case DEPOT_JOB_STATUS:
     depot->next_status = now + DEPOT_STATUS_SECONDS;
     break;
-  case DEPOT_JOB_SUBMIT:
+  case DEPOT_JOB_COMMIT:
     if (job->ok) {
       depot->message[0] = '\0';
-      string_format(depot->notice, sizeof(depot->notice), "Submitted");
       vkr_editor_toast(editor, VKR_UI_ICON_CHECK_CIRCLE,
-                       vkr_ui_theme()->success, "Changes submitted");
+                       vkr_ui_theme()->success,
+                       job->then_sync ? "Committed and synced" : "Committed");
     }
-    depot->next_status = now + DEPOT_STATUS_SECONDS;
+    depot->next_status = now + 1.0;
+    break;
+  case DEPOT_JOB_PUSH:
+    if (job->ok) {
+      vkr_editor_toast(editor, VKR_UI_ICON_ARROW_UP, vkr_ui_theme()->success,
+                       "Pushed");
+    }
+    depot->next_status = now + 1.0;
     break;
   case DEPOT_JOB_PULL:
+  case DEPOT_JOB_SYNC:
     if (job->ok) {
-      depot->reload_pending = job->scene_files_changed;
-      if (job->scripts_changed) {
-        /* Someone else's native code: it runs once this user trusts it. */
-        depot_set_trusted(depot, depot->workspace, false_v);
-        vkr_editor_scripts_hold(editor->scripts, true_v);
-        depot->scripts_prompt_dismissed = false_v;
-      }
-      if (job->materials_changed) {
-        vkr_editor_material_index_reset(editor->materials);
-      }
       vkr_editor_toast(editor, VKR_UI_ICON_ARROW_DOWN, vkr_ui_theme()->success,
-                       job->textures_failed ? "Got the latest; some textures "
-                                              "did not cook"
-                                            : "Got the latest changes");
+                       job->textures_failed
+                           ? "Pulled; some textures did not cook"
+                       : job->kind == DEPOT_JOB_SYNC ? "Synced"
+                       : job->merged ? "Pulled the latest changes"
+                                     : "Already up to date");
+    }
+    depot->next_status = now + 1.0;
+    break;
+  case DEPOT_JOB_FETCH:
+    depot->next_status = now + DEPOT_STATUS_SECONDS;
+    break;
+  case DEPOT_JOB_SWITCH:
+    if (job->ok) {
+      depot->new_branch[0] = '\0';
+      vkr_editor_toast(editor, VKR_UI_ICON_GIT_BRANCH, vkr_ui_theme()->success,
+                       "Switched branch");
     }
     depot->next_status = now + 1.0;
     break;
@@ -1873,11 +2185,11 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
       depot->dialog_open = false_v;
     }
     break;
-  case DEPOT_JOB_SHARE:
+  case DEPOT_JOB_INIT:
     if (job->ok) {
-      depot->share_switch = true_v;
+      depot->init_switch = true_v;
       depot_remember_project(depot, job->directory, depot->project_name,
-                             job->project_id, true_v);
+                             job->project_id, job->serve);
     }
     break;
   default:
@@ -1928,16 +2240,12 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
       depot->open_retry_at = opening + DEPOT_OPEN_RETRY_SECONDS;
     }
   }
-  if (depot->share_switch && !depot_busy(depot)) {
-    depot->share_switch = false_v;
+  if (depot->init_switch && !depot_busy(depot)) {
+    depot->init_switch = false_v;
     string_format(depot->open_directory, sizeof(depot->open_directory), "%s",
                   depot->job->directory);
     string_format(depot->open_project, sizeof(depot->open_project), "%s",
                   depot->job->project_id);
-    /* The project now lives in the new workspace; the first commit runs
-       once the editor serves it there. */
-    string_format(depot->message, sizeof(depot->message), "Shared %s",
-                  depot->project_name);
   }
   depot_follow_workspace(depot, editor);
 
@@ -1962,30 +2270,22 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
     }
   }
 
-  /* The first commit of a project shared a moment ago. */
-  if (depot->role == DEPOT_ROLE_SHARER && depot->service &&
-      vkr_depot_id_zero(&depot->base) && !depot_busy(depot) &&
-      !depot->error[0]) {
-    depot_job_inputs(depot);
-    depot->job->save_remote = true_v;
-    string_format(depot->job->message, sizeof(depot->job->message), "Shared %s",
-                  depot->project_name);
-    (void)depot_start(depot, DEPOT_JOB_SUBMIT);
-  }
-
   if (depot->waiting_kind != DEPOT_JOB_NONE && now >= depot->retry_at &&
       !depot_busy(depot)) {
     const DepotJobKind kind = depot->waiting_kind;
     depot->waiting_kind = DEPOT_JOB_NONE;
     if (kind != DEPOT_JOB_CLONE) {
-      depot_job_inputs(depot);
+      char remote[VKR_DEPOT_REMOTE_NAME];
+      string_format(remote, sizeof(remote), "%s", depot->job->remote);
+      depot_job_inputs(depot, remote);
     }
     (void)depot_start(depot, kind);
   }
 
-  if (depot->role != DEPOT_ROLE_NONE && !depot_busy(depot) &&
+  if (depot->repository && !depot_busy(depot) &&
       depot->waiting_kind == DEPOT_JOB_NONE && now >= depot->next_status) {
-    depot_job_inputs(depot);
+    depot_load_remotes(depot);
+    depot_job_inputs(depot, NULL);
     depot->next_status = now + DEPOT_STATUS_SECONDS;
     (void)depot_start(depot, DEPOT_JOB_STATUS);
   }
@@ -2022,20 +2322,27 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
       vkr_depot_browser_probe(&depot->browser, true_v);
     }
     (void)vkr_depot_browser_update(&depot->browser);
-    /* A member whose server moved to another address follows its key. */
-    if (depot->role == DEPOT_ROLE_MEMBER &&
-        depot->connect == VKR_DEPOT_CONNECT_UNREACHABLE) {
+    /* A remote that stopped answering follows its key to the address
+       discovery hears it at, and keeps it in the store. */
+    for (uint32_t r = 0u; r < depot->remote_count && !depot_busy(depot); ++r) {
+      if (depot->remote_connect[r] != VKR_DEPOT_CONNECT_UNREACHABLE) {
+        continue;
+      }
       for (uint32_t i = 0u; i < depot->browser.found_count; ++i) {
         const VkrDepotDiscovered *found = &depot->browser.found[i];
         char text[VKR_NET_ADDRESS_TEXT];
         vkr_net_address_format(&found->address, text, sizeof(text));
-        if (MemCompare(found->server_key, depot->server_key, 32u) == 0 &&
-            !string_equals(text, depot->address) && !depot_busy(depot)) {
-          string_format(depot->address, sizeof(depot->address), "%s", text);
-          depot_job_inputs(depot);
-          depot->job->save_remote = true_v;
-          depot->connect = VKR_DEPOT_CONNECT_OK;
-          (void)depot_start(depot, DEPOT_JOB_STATUS);
+        if (MemCompare(found->server_key, depot->remotes[r].key, 32u) == 0 &&
+            !string_equals(text, depot->remotes[r].address)) {
+          VkrDepotRemoteEntry moved = depot->remotes[r];
+          string_format(moved.address, sizeof(moved.address), "%s", text);
+          char store[DEPOT_PATH];
+          depot_store_root(depot->workspace, store, sizeof(store));
+          if (vkr_depot_remote_set(store, &moved)) {
+            depot->remotes[r] = moved;
+            depot->remote_connect[r] = VKR_DEPOT_CONNECT_OK;
+            depot->next_status = 0.0;
+          }
         }
       }
     }
@@ -2047,12 +2354,57 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
 // Actions
 // =============================================================================
 
-bool8_t vkr_editor_depot_share(VkrEditorDepot *depot, VkrEditorUi *editor,
-                               const VkrSampleUiFrame *frame,
-                               const char *destination, char *error,
+/* Whether a step on the open repository may start; false with the reason. */
+static bool8_t depot_can_start(const VkrEditorDepot *depot, char *error,
                                uint32_t capacity) {
-  if (!depot || depot->role != DEPOT_ROLE_NONE || !depot->project_id[0]) {
-    string_format(error, capacity, "Open a project that is not shared yet");
+  if (!depot || !depot->repository) {
+    string_format(error, capacity, "This project is not a repository");
+    return false_v;
+  }
+  if (depot_busy(depot)) {
+    string_format(error, capacity, "Wait for the current step to finish");
+    return false_v;
+  }
+  return true_v;
+}
+
+/* Starts `kind` with the remote `remote` (NULL: the selected one), which a
+   step that exchanges with one needs. */
+static bool8_t depot_start_with(VkrEditorDepot *depot, DepotJobKind kind,
+                                const char *remote, bool8_t needs_remote,
+                                char *error, uint32_t capacity) {
+  depot_job_inputs(depot, remote);
+  if (needs_remote && !depot->job->remote[0]) {
+    string_format(error, capacity,
+                  remote && remote[0]
+                      ? "No remote %s"
+                      : "Add a remote first: another computer's repository",
+                  remote ? remote : "");
+    return false_v;
+  }
+  if (!depot_start(depot, kind)) {
+    string_format(error, capacity, "The step could not start");
+    return false_v;
+  }
+  depot->error[0] = '\0';
+  return true_v;
+}
+
+static VkrDepotConflictPolicy depot_policy(const char *policy) {
+  return policy && string_equals(policy, "theirs")
+             ? VKR_DEPOT_CONFLICT_TAKE_THEIRS
+         : policy && string_equals(policy, "mine")
+             ? VKR_DEPOT_CONFLICT_KEEP_MINE
+             : VKR_DEPOT_CONFLICT_FAIL;
+}
+
+bool8_t vkr_editor_depot_init(VkrEditorDepot *depot, VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame,
+                              const char *destination, bool8_t serve,
+                              char *error, uint32_t capacity) {
+  if (!depot || depot->repository || !depot->project_id[0]) {
+    string_format(error, capacity,
+                  "Open a project that is not a repository yet");
     return false_v;
   }
   if (depot_busy(depot)) {
@@ -2061,7 +2413,7 @@ bool8_t vkr_editor_depot_share(VkrEditorDepot *depot, VkrEditorUi *editor,
   }
   if (!depot_journals_saved(frame)) {
     string_format(error, capacity,
-                  "Save the scene first; Share copies the saved "
+                  "Save the scene first; the repository takes the saved "
                   "files");
     return false_v;
   }
@@ -2084,7 +2436,12 @@ bool8_t vkr_editor_depot_share(VkrEditorDepot *depot, VkrEditorUi *editor,
   depot_workspace_folder(editor, job->source, sizeof(job->source));
   string_format(job->project_id, sizeof(job->project_id), "%s",
                 depot->project_id);
-  if (!depot_start(depot, DEPOT_JOB_SHARE)) {
+  string_format(job->message, sizeof(job->message), "Created %s",
+                depot->project_name);
+  job->serve = serve;
+  job->remote[0] = '\0';
+  job->address[0] = '\0';
+  if (!depot_start(depot, DEPOT_JOB_INIT)) {
     string_format(error, capacity, "The step could not start");
     return false_v;
   }
@@ -2092,50 +2449,155 @@ bool8_t vkr_editor_depot_share(VkrEditorDepot *depot, VkrEditorUi *editor,
   return true_v;
 }
 
-bool8_t vkr_editor_depot_submit(VkrEditorDepot *depot, const char *message,
-                                char *error, uint32_t capacity) {
-  if (!depot || depot->role == DEPOT_ROLE_NONE) {
-    string_format(error, capacity, "This project is not shared");
+bool8_t vkr_editor_depot_commit(VkrEditorDepot *depot, const char *message,
+                                bool8_t sync, char *error, uint32_t capacity) {
+  if (!depot_can_start(depot, error, capacity)) {
     return false_v;
   }
-  if (depot_busy(depot)) {
-    string_format(error, capacity, "Wait for the current step to finish");
-    return false_v;
-  }
-  depot_job_inputs(depot);
   const char *text = message && message[0] ? message : depot->message;
-  if (!text[0]) {
-    text = "Changes";
-  }
-  string_format(depot->job->message, sizeof(depot->job->message), "%s", text);
-  if (!depot_start(depot, DEPOT_JOB_SUBMIT)) {
-    string_format(error, capacity, "The step could not start");
+  string_format(depot->job->message, sizeof(depot->job->message), "%s",
+                text[0] ? text : "Changes");
+  depot->job->then_sync = sync;
+  depot->job->policy = VKR_DEPOT_CONFLICT_FAIL;
+  return depot_start_with(depot, DEPOT_JOB_COMMIT, NULL, sync, error, capacity);
+}
+
+bool8_t vkr_editor_depot_push(VkrEditorDepot *depot, const char *remote,
+                              char *error, uint32_t capacity) {
+  return depot_can_start(depot, error, capacity) &&
+         depot_start_with(depot, DEPOT_JOB_PUSH, remote, true_v, error,
+                          capacity);
+}
+
+bool8_t vkr_editor_depot_pull(VkrEditorDepot *depot, const char *remote,
+                              const char *policy, char *error,
+                              uint32_t capacity) {
+  if (!depot_can_start(depot, error, capacity)) {
     return false_v;
   }
-  depot->error[0] = '\0';
+  depot->job->policy = depot_policy(policy);
+  return depot_start_with(depot, DEPOT_JOB_PULL, remote, true_v, error,
+                          capacity);
+}
+
+bool8_t vkr_editor_depot_sync(VkrEditorDepot *depot, const char *remote,
+                              char *error, uint32_t capacity) {
+  if (!depot_can_start(depot, error, capacity)) {
+    return false_v;
+  }
+  depot->job->policy = VKR_DEPOT_CONFLICT_FAIL;
+  return depot_start_with(depot, DEPOT_JOB_SYNC, remote, true_v, error,
+                          capacity);
+}
+
+bool8_t vkr_editor_depot_fetch(VkrEditorDepot *depot, char *error,
+                               uint32_t capacity) {
+  return depot_can_start(depot, error, capacity) &&
+         depot_start_with(depot, DEPOT_JOB_FETCH, NULL, true_v, error,
+                          capacity);
+}
+
+bool8_t vkr_editor_depot_switch(VkrEditorDepot *depot, const char *branch,
+                                bool8_t create, char *error,
+                                uint32_t capacity) {
+  if (!depot_can_start(depot, error, capacity)) {
+    return false_v;
+  }
+  if (!branch || !vkr_depot_branch_valid(branch)) {
+    string_format(error, capacity,
+                  "A branch name uses letters, digits, '.', '-' and '_'");
+    return false_v;
+  }
+  string_format(depot->job->branch, sizeof(depot->job->branch), "%s", branch);
+  depot->job->create_branch = create;
+  return depot_start_with(depot, DEPOT_JOB_SWITCH, NULL, false_v, error,
+                          capacity);
+}
+
+bool8_t vkr_editor_depot_remote(VkrEditorDepot *depot, const char *name,
+                                const char *address, const char *key_hex,
+                                char *error, uint32_t capacity) {
+  if (!depot || !depot->repository) {
+    string_format(error, capacity, "This project is not a repository");
+    return false_v;
+  }
+  char store[DEPOT_PATH];
+  depot_store_root(depot->workspace, store, sizeof(store));
+  if (!address) {
+    if (!vkr_depot_remote_remove(store, name)) {
+      string_format(error, capacity, "No remote %s", name ? name : "");
+      return false_v;
+    }
+    depot_load_remotes(depot);
+    return true_v;
+  }
+  VkrDepotRemoteEntry remote = {0};
+  VkrNetAddress parsed;
+  if (!name || !vkr_depot_remote_name_valid(name)) {
+    string_format(error, capacity,
+                  "A remote's name uses a-z, 0-9, '-' and '_', at most 32");
+    return false_v;
+  }
+  if (!vkr_depot_address(address, &parsed)) {
+    string_format(error, capacity, "'%s' is not an address or a computer name",
+                  address);
+    return false_v;
+  }
+  if (!depot_key_parse(key_hex, remote.key)) {
+    string_format(error, capacity, "A key is 64 hexadecimal digits");
+    return false_v;
+  }
+  string_format(remote.name, sizeof(remote.name), "%s", name);
+  string_format(remote.address, sizeof(remote.address), "%s", address);
+  if (!vkr_depot_remote_set(store, &remote)) {
+    string_format(error, capacity, "The remote could not be saved");
+    return false_v;
+  }
+  depot_load_remotes(depot);
+  for (uint32_t i = 0u; i < depot->remote_count; ++i) {
+    if (string_equals(depot->remotes[i].name, name)) {
+      depot->selected_remote = i;
+      depot->remote_tried[i] = false_v;
+    }
+  }
+  depot->next_status = 0.0;
   return true_v;
 }
 
-bool8_t vkr_editor_depot_get_latest(VkrEditorDepot *depot, const char *policy,
-                                    char *error, uint32_t capacity) {
-  if (!depot || depot->role == DEPOT_ROLE_NONE) {
-    string_format(error, capacity, "This project is not shared");
+bool8_t vkr_editor_depot_serve(VkrEditorDepot *depot, bool8_t serve,
+                               char *error, uint32_t capacity) {
+  if (!depot || !depot->repository) {
+    string_format(error, capacity, "This project is not a repository");
     return false_v;
   }
-  if (depot_busy(depot)) {
-    string_format(error, capacity, "Wait for the current step to finish");
+  char store[DEPOT_PATH];
+  char key_path[DEPOT_PATH];
+  depot_store_root(depot->workspace, store, sizeof(store));
+  string_format(key_path, sizeof(key_path), "%s/server.key", store);
+  if (!serve) {
+    depot_service_stop(depot);
+    depot->serving = false_v;
+    depot->address[0] = '\0';
+    /* The key stays out of the store, so the next open serves nothing;
+       computers that cloned keep their copies and can push again once
+       it serves with a new key. */
+    if (vkr_bakery_is_file(key_path) && !vkr_bakery_remove_file(key_path)) {
+      string_format(error, capacity, "The server key could not be removed");
+      return false_v;
+    }
+    return true_v;
+  }
+  VkrNetKeyPair keys;
+  if (!vkr_depot_server_key(store, &keys)) {
+    string_format(error, capacity, "The server key could not be made");
     return false_v;
   }
-  depot_job_inputs(depot);
-  depot->job->policy =
-      policy && string_equals(policy, "theirs") ? VKR_DEPOT_CONFLICT_TAKE_THEIRS
-      : policy && string_equals(policy, "mine") ? VKR_DEPOT_CONFLICT_KEEP_MINE
-                                                : VKR_DEPOT_CONFLICT_FAIL;
-  if (!depot_start(depot, DEPOT_JOB_PULL)) {
-    string_format(error, capacity, "The step could not start");
+  vkr_net_random(keys.secret_key, sizeof(keys.secret_key));
+  depot->serving = true_v;
+  if (!depot->service && !depot_service_start(depot)) {
+    string_format(error, capacity, "%s", depot->service_error);
     return false_v;
   }
-  depot->error[0] = '\0';
   return true_v;
 }
 
@@ -2435,10 +2897,11 @@ static float32_t depot_job_text(const VkrEditorDepot *depot, char *out,
   if (cook_total && cook_done < cook_total &&
       (view.phase == VKR_DEPOT_PHASE_DONE ||
        view.phase == VKR_DEPOT_PHASE_CHECKOUT || job->kind == DEPOT_JOB_PULL ||
-       job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_SHARE)) {
+       job->kind == DEPOT_JOB_SYNC || job->kind == DEPOT_JOB_SWITCH ||
+       job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_INIT)) {
     string_format(
         out, capacity,
-        job->kind == DEPOT_JOB_SHARE
+        job->kind == DEPOT_JOB_INIT
             ? "%s: rebuilding imported models for other computers %u/%u"
             : "%s: preparing textures for this computer %u/%u",
         step, cook_done, cook_total);
@@ -2459,7 +2922,7 @@ static float32_t depot_job_text(const VkrEditorDepot *depot, char *out,
     string_format(out, capacity, "%s: connecting", step);
     return -1.0f;
   case VKR_DEPOT_PHASE_SNAPSHOT:
-    if (job->kind == DEPOT_JOB_SHARE) {
+    if (job->kind == DEPOT_JOB_INIT) {
       string_format(out, capacity, "%s: copying the project and its assets",
                     step);
       return -1.0f;
@@ -2486,15 +2949,47 @@ static float32_t depot_job_text(const VkrEditorDepot *depot, char *out,
 }
 
 static bool8_t depot_incoming(const VkrEditorDepot *depot) {
-  return depot->remote_known && !vkr_depot_id_zero(&depot->remote_head) &&
-         !vkr_depot_id_equal(&depot->remote_head, &depot->base);
+  return depot->remote_known && depot->behind > 0u;
 }
 
 static const char *depot_role_name(VkrDepotRole role) {
   return role == VKR_DEPOT_ROLE_ADMIN   ? "owner"
-         : role == VKR_DEPOT_ROLE_WRITE ? "can edit"
-         : role == VKR_DEPOT_ROLE_READ  ? "can view"
+         : role == VKR_DEPOT_ROLE_WRITE ? "can push"
+         : role == VKR_DEPOT_ROLE_READ  ? "can fetch"
                                         : "no access";
+}
+
+static const VkrDepotRemoteEntry *depot_selected(const VkrEditorDepot *depot) {
+  return depot->selected_remote < depot->remote_count
+             ? &depot->remotes[depot->selected_remote]
+             : NULL;
+}
+
+/* What a remote's last exchange says about reaching it. */
+static const char *depot_remote_state(const VkrEditorDepot *depot,
+                                      uint32_t index) {
+  if (!depot->remote_tried[index]) {
+    return "not reached yet";
+  }
+  switch (depot->remote_connect[index]) {
+  case VKR_DEPOT_CONNECT_OK:
+    return "reachable";
+  case VKR_DEPOT_CONNECT_DENIED:
+    return "waiting for its owner to allow this computer";
+  case VKR_DEPOT_CONNECT_UNREACHABLE:
+    return "not answering: its editor or service is stopped, or a firewall "
+           "blocks it";
+  case VKR_DEPOT_CONNECT_REFUSED:
+    return "refused the connection";
+  default:
+    return "not reached";
+  }
+}
+
+static bool8_t depot_found_is_self(const VkrEditorDepot *depot,
+                                   const VkrDepotDiscovered *found) {
+  return depot->service && MemCompare(found->server_key,
+                                      depot->service_info.server_key, 32u) == 0;
 }
 
 // =============================================================================
@@ -2510,54 +3005,54 @@ void vkr_editor_depot_chip_build(VkrEditorDepot *depot, VkrEditorUi *editor,
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   char text[96];
-  const char *tooltip = "Project sharing";
-  VkrUiIcon icon = VKR_UI_ICON_CLOUD;
+  const char *tooltip = "Source control";
+  VkrUiIcon icon = VKR_UI_ICON_GIT_BRANCH;
   Vec4 icon_color = theme->text_secondary;
+  const char *branch = depot->branch[0] ? depot->branch : DEPOT_BRANCH;
   if (depot_busy(depot) && depot->job->kind != DEPOT_JOB_STATUS) {
     icon = VKR_UI_ICON_SPINNER;
     icon_color = theme->accent_hover;
     string_format(text, sizeof(text), "%s", depot_job_names[depot->job->kind]);
-  } else if (depot->role == DEPOT_ROLE_NONE) {
-    string_format(text, sizeof(text), "Share");
-    tooltip = "Share this project with other computers on your network";
-  } else if (depot->waiting_kind != DEPOT_JOB_NONE) {
-    icon = VKR_UI_ICON_CLOCK;
-    icon_color = theme->warning;
-    string_format(text, sizeof(text), "Waiting for access");
-    tooltip = "The sharing computer has not allowed this one yet";
-  } else if (depot->request_count) {
-    icon = VKR_UI_ICON_BELL;
-    icon_color = theme->warning;
-    string_format(text, sizeof(text), "%u asking", depot->request_count);
-    tooltip = "Other computers ask to work on this project";
+  } else if (!depot->repository) {
+    string_format(text, sizeof(text), "Not a repository");
+    tooltip = "Make this project a repository to commit, branch and sync it";
   } else if (depot->conflict_count) {
     icon = VKR_UI_ICON_WARNING_FILL;
     icon_color = theme->warning;
-    string_format(text, sizeof(text), "Conflicts");
+    string_format(text, sizeof(text), "%s \xc2\xb7 conflicts", branch);
+  } else if (depot->waiting_kind != DEPOT_JOB_NONE) {
+    icon = VKR_UI_ICON_CLOCK;
+    icon_color = theme->warning;
+    string_format(text, sizeof(text), "%s \xc2\xb7 waiting for access", branch);
+    tooltip = "The remote's owner has not allowed this computer yet";
+  } else if (depot->request_count) {
+    icon = VKR_UI_ICON_BELL;
+    icon_color = theme->warning;
+    string_format(text, sizeof(text), "%s \xc2\xb7 %u asking", branch,
+                  depot->request_count);
+    tooltip = "Other computers ask to fetch from and push to this repository";
   } else if (depot_incoming(depot)) {
     icon = VKR_UI_ICON_ARROW_DOWN;
     icon_color = theme->accent_hover;
-    string_format(text, sizeof(text), "New changes");
-    tooltip = "Others submitted changes; Get latest brings them here";
+    string_format(text, sizeof(text), "%s \xc2\xb7 %u to pull", branch,
+                  depot->behind);
+    tooltip = "The remote has commits this repository lacks; Pull or Sync";
   } else if (depot->change_count) {
+    icon_color = theme->accent_hover;
+    string_format(text, sizeof(text), "%s \xc2\xb7 %u change%s", branch,
+                  depot->change_count, depot->change_count == 1u ? "" : "s");
+    tooltip = "Local changes to commit";
+  } else if (depot->ahead) {
     icon = VKR_UI_ICON_ARROW_UP;
     icon_color = theme->accent_hover;
-    string_format(text, sizeof(text), "%u change%s", depot->change_count,
-                  depot->change_count == 1u ? "" : "s");
-    tooltip = "Changes on this computer that others do not have yet";
-  } else if (depot->role == DEPOT_ROLE_MEMBER && depot->status_known &&
-             !depot->connected) {
-    icon_color = theme->text_disabled;
-    string_format(text, sizeof(text), "Offline");
-    tooltip = "The sharing computer does not answer";
-  } else if (depot->role == DEPOT_ROLE_SHARER && depot->service) {
-    icon = VKR_UI_ICON_CHECK_CIRCLE;
-    icon_color = theme->success;
-    string_format(text, sizeof(text), "Shared");
+    string_format(text, sizeof(text), "%s \xc2\xb7 %u to push", branch,
+                  depot->ahead);
+    tooltip = "Commits the remote lacks; Push or Sync";
   } else {
-    icon = VKR_UI_ICON_CHECK_CIRCLE;
     icon_color = depot->status_known ? theme->success : theme->text_disabled;
-    string_format(text, sizeof(text), "Synced");
+    string_format(text, sizeof(text), "%s", branch);
+    tooltip = depot->remote_count ? "Up to date with the remote"
+                                  : "No remote yet: add one to sync";
   }
   VkrUiWidgetConfig chip =
       vkr_editor_text_config(theme->font_caption, theme->text_secondary);
@@ -2587,116 +3082,500 @@ void vkr_editor_depot_chip_build(VkrEditorDepot *depot, VkrEditorUi *editor,
 }
 
 // =============================================================================
-// Project sharing window
+// Source Control window
 // =============================================================================
 
-static void depot_window_not_shared(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame,
-                                    VkrUiSystem *ui, float32_t *y,
-                                    float32_t width) {
-  depot_heading(editor, ui, "share.title", "Share this project",
-                VKR_UI_ICON_CLOUD, 12, *y, width - 24);
+static void depot_window_not_repository(VkrEditorDepot *depot,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        VkrUiSystem *ui, float32_t *y,
+                                        float32_t width) {
+  depot_heading(editor, ui, "init.title", "Make this project a repository",
+                VKR_UI_ICON_GIT_BRANCH, 12, *y, width - 24);
   *y += 30;
   *y += depot_paragraph(
-      ui, "share.text",
-      "Other computers on your network can then get it, and you exchange "
-      "changes from here. It is served while this editor is open. The "
-      "project and every asset it uses move to this folder, where you keep "
+      ui, "init.text",
+      "A repository keeps the project's history: commit your changes, make "
+      "branches, and sync with other computers' repositories. The project "
+      "and every asset it uses move to this folder, where you keep "
       "working:",
       12, *y, width - 24);
   *y += 6;
-  if (!depot->share_destination[0]) {
-    depot_default_destination(depot->project_name, depot->share_destination,
-                              sizeof(depot->share_destination));
+  if (!depot->init_destination[0]) {
+    depot_default_destination(depot->project_name, depot->init_destination,
+                              sizeof(depot->init_destination));
   }
-  depot_field(ui, "share.destination", depot->share_destination,
-              sizeof(depot->share_destination), 12, *y, width - 24);
-  *y += 36;
+  depot_field(ui, "init.destination", depot->init_destination,
+              sizeof(depot->init_destination), 12, *y, width - 24);
+  *y += 34;
+  VkrUiWidgetConfig serve = depot_widget(12, *y, width - 24, 22);
+  serve.tooltip = string8_lit(
+      "Other computers on your network can clone it and push to it while "
+      "this editor runs");
+  (void)vkr_ui_checkbox(ui, string8_lit("init.serve"),
+                        string8_lit("Let others fetch and push"),
+                        &depot->init_serve, &serve);
+  *y += 30;
   char error[DEPOT_TEXT] = {0};
-  if (depot_button(editor, ui, "share.go", "Share on network", 12, *y, 170,
+  if (depot_button(editor, ui, "init.go", "Make repository", 12, *y, 170,
                    true_v, depot_busy(depot)) &&
-      !vkr_editor_depot_share(depot, editor, frame, depot->share_destination,
-                              error, sizeof(error))) {
+      !vkr_editor_depot_init(depot, editor, frame, depot->init_destination,
+                             depot->init_serve, error, sizeof(error))) {
     string_format(depot->error, sizeof(depot->error), "%s", error);
   }
-  *y += 36;
-  *y += depot_paragraph(ui, "share.firewall",
-                        "The first time, your computer may ask whether VKR "
-                        "Editor may use the network. Choose Allow.",
+  *y += 40;
+}
+
+/* A row of small toggle buttons, one per item, the chosen one primary;
+   returns the index clicked, or UINT32_MAX. */
+static uint32_t depot_choice_row(VkrEditorUi *editor, VkrUiSystem *ui,
+                                 const char *id, const char *const *names,
+                                 uint32_t count, uint32_t chosen, float32_t x,
+                                 float32_t *y, float32_t width,
+                                 bool8_t disabled) {
+  uint32_t clicked = UINT32_MAX;
+  float32_t cursor = x;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const float32_t button =
+        Min(160.0f, 24.0f + 7.0f * (float32_t)string_length(names[i]));
+    if (cursor + button > x + width && cursor > x) {
+      cursor = x;
+      *y += 32;
+    }
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (depot_button(editor, ui, id, names[i], cursor, *y, button, i == chosen,
+                     disabled) &&
+        i != chosen) {
+      clicked = i;
+    }
+    (void)vkr_ui_pop_id(ui);
+    cursor += button + 8;
+  }
+  *y += 32;
+  return clicked;
+}
+
+static void depot_window_branch(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                VkrUiSystem *ui, float32_t *y, float32_t width,
+                                bool8_t busy) {
+  char text[DEPOT_TEXT];
+  depot_heading(editor, ui, "repo.title", depot->project_name,
+                VKR_UI_ICON_GIT_BRANCH, 12, *y, width - 24);
+  *y += 28;
+  const VkrDepotRemoteEntry *remote = depot_selected(depot);
+  if (remote && depot->remote_known) {
+    string_format(text, sizeof(text),
+                  "On %s  \xc2\xb7  %u to push, %u to pull against %s/%s",
+                  depot->branch, depot->ahead, depot->behind, remote->name,
+                  depot->branch);
+  } else if (remote) {
+    string_format(text, sizeof(text), "On %s  \xc2\xb7  %s has no %s yet",
+                  depot->branch, remote->name, depot->branch);
+  } else {
+    string_format(text, sizeof(text), "On %s  \xc2\xb7  no remote",
+                  depot->branch);
+  }
+  depot_caption(ui, "repo.branch", text, 12, *y, width - 24);
+  *y += 24;
+  if (depot->branch_count > 1u) {
+    const char *names[DEPOT_BRANCHES_MAX];
+    uint32_t chosen = UINT32_MAX;
+    for (uint32_t i = 0u; i < depot->branch_count; ++i) {
+      names[i] = depot->branches[i].name;
+      if (string_equals(names[i], depot->branch)) {
+        chosen = i;
+      }
+    }
+    const uint32_t clicked =
+        depot_choice_row(editor, ui, "branch", names, depot->branch_count,
+                         chosen, 12, y, width - 24, busy);
+    char error[DEPOT_TEXT] = {0};
+    if (clicked != UINT32_MAX &&
+        !vkr_editor_depot_switch(depot, names[clicked], false_v, error,
+                                 sizeof(error))) {
+      string_format(depot->error, sizeof(depot->error), "%s", error);
+    }
+  }
+  const float32_t field = Min(width - 160.0f, 260.0f);
+  depot_field(ui, "branch.new", depot->new_branch, sizeof(depot->new_branch),
+              12, *y, field);
+  if (!depot->new_branch[0]) {
+    VkrUiWidgetConfig hint = depot_widget(18, *y + 3, field - 12, 20);
+    hint.style.text_color = vkr_ui_theme()->text_disabled;
+    hint.style.font_size_pt = vkr_ui_theme()->font_caption;
+    vkr_ui_label(ui, string8_lit("branch.hint"), string8_lit("New branch name"),
+                 &hint);
+  }
+  char error[DEPOT_TEXT] = {0};
+  if (depot_button(editor, ui, "branch.create", "New branch", 20 + field, *y,
+                   120, false_v, busy || !depot->new_branch[0]) &&
+      !vkr_editor_depot_switch(depot, depot->new_branch, true_v, error,
+                               sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  *y += 38;
+}
+
+static void depot_window_sync(VkrEditorDepot *depot, VkrEditorUi *editor,
+                              VkrUiSystem *ui, float32_t *y, float32_t width,
+                              bool8_t busy) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  if (!depot->remote_count) {
+    return;
+  }
+  if (depot->remote_count > 1u) {
+    const char *names[VKR_DEPOT_REMOTES_MAX];
+    for (uint32_t i = 0u; i < depot->remote_count; ++i) {
+      names[i] = depot->remotes[i].name;
+    }
+    const uint32_t clicked =
+        depot_choice_row(editor, ui, "remote.pick", names, depot->remote_count,
+                         depot->selected_remote, 12, y, width - 24, busy);
+    if (clicked != UINT32_MAX) {
+      depot->selected_remote = clicked;
+      depot->next_status = 0.0;
+    }
+  }
+  char text[DEPOT_TEXT];
+  const VkrDepotRemoteEntry *remote = depot_selected(depot);
+  string_format(text, sizeof(text), "%s  \xc2\xb7  %s  \xc2\xb7  %s",
+                remote->name, remote->address,
+                depot_remote_state(depot, depot->selected_remote));
+  VkrUiWidgetConfig state = depot_widget(12, *y, width - 24, 18);
+  state.style.font_size_pt = theme->font_caption;
+  state.style.text_color =
+      depot->remote_tried[depot->selected_remote] &&
+              depot->remote_connect[depot->selected_remote] !=
+                  VKR_DEPOT_CONNECT_OK
+          ? theme->warning
+          : theme->text_secondary;
+  vkr_ui_label(ui, string8_lit("remote.state"), depot_string(text), &state);
+  *y += 24;
+  char error[DEPOT_TEXT] = {0};
+  const float32_t button = Min(96.0f, (width - 48) / 4.0f);
+  if (depot_button(editor, ui, "sync.go", "Sync", 12, *y, button, true_v,
+                   busy) &&
+      !vkr_editor_depot_sync(depot, NULL, error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  if (depot_button(editor, ui, "sync.pull", "Pull", 20 + button, *y, button,
+                   false_v, busy) &&
+      !vkr_editor_depot_pull(depot, NULL, "fail", error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  if (depot_button(editor, ui, "sync.push", "Push", 28 + button * 2, *y, button,
+                   false_v, busy || !depot->ahead) &&
+      !vkr_editor_depot_push(depot, NULL, error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  if (depot_button(editor, ui, "sync.fetch", "Fetch", 36 + button * 3, *y,
+                   button, false_v, busy) &&
+      !vkr_editor_depot_fetch(depot, error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  *y += 38;
+}
+
+static void depot_window_conflicts(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                   VkrUiSystem *ui, float32_t *y,
+                                   float32_t width, bool8_t busy) {
+  if (!depot->conflict_count) {
+    return;
+  }
+  const VkrUiTheme *theme = vkr_ui_theme();
+  char text[DEPOT_TEXT];
+  string_format(text, sizeof(text), "%u file%s changed here and on the remote",
+                depot->conflict_count, depot->conflict_count == 1u ? "" : "s");
+  depot_label(ui, "conflict.title", text, 12, *y, width - 24, theme->warning);
+  *y += 24;
+  for (uint32_t i = 0u; i < Min(depot->conflict_count, 6u); ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    depot_caption(ui, "conflict", depot->conflicts[i].text, 24, *y, width - 36);
+    (void)vkr_ui_pop_id(ui);
+    *y += 18;
+  }
+  *y += 4;
+  *y += depot_paragraph(ui, "conflict.text",
+                        "A scene both sides changed is listed by its scene "
+                        "file and settled whole.",
                         12, *y, width - 24);
+  *y += 4;
+  char error[DEPOT_TEXT] = {0};
+  if (depot_button(editor, ui, "conflict.theirs", "Use theirs", 12, *y, 120,
+                   false_v, busy) &&
+      !vkr_editor_depot_pull(depot, NULL, "theirs", error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  if (depot_button(editor, ui, "conflict.mine", "Keep mine", 140, *y, 120,
+                   false_v, busy) &&
+      !vkr_editor_depot_pull(depot, NULL, "mine", error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  *y += 38;
+}
+
+static void depot_window_changes(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame, VkrUiSystem *ui,
+                                 float32_t *y, float32_t width, bool8_t busy) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  char text[DEPOT_TEXT];
+  char error[DEPOT_TEXT] = {0};
+  if (!depot->status_known && depot_busy(depot)) {
+    depot_caption(ui, "changes.reading", "Looking for changes...", 12, *y,
+                  width - 24);
+    *y += 26;
+    return;
+  }
+  if (!depot->change_count) {
+    depot_label(ui, "changes.none", "No changes to commit", 12, *y, width - 24,
+                theme->text_secondary);
+    *y += 30;
+    return;
+  }
+  string_format(text, sizeof(text), "%u change%s", depot->change_count,
+                depot->change_count == 1u ? "" : "s");
+  depot_heading(editor, ui, "changes.title", text, VKR_UI_ICON_PLUS_CIRCLE, 12,
+                *y, width - 24);
+  *y += 28;
+  const uint32_t rows = Min(depot->change_count, 8u);
+  for (uint32_t i = 0u; i < rows; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    depot_caption(ui, "change", depot->changes[i].text, 24, *y, width - 36);
+    (void)vkr_ui_pop_id(ui);
+    *y += 18;
+  }
+  if (depot->change_count > rows) {
+    string_format(text, sizeof(text), "and %u more",
+                  depot->change_count - rows);
+    depot_caption(ui, "changes.more", text, 24, *y, width - 36);
+    *y += 18;
+  }
   *y += 8;
+  depot_field(ui, "message", depot->message, sizeof(depot->message), 12, *y,
+              width - 24);
+  if (!depot->message[0]) {
+    VkrUiWidgetConfig hint = depot_widget(18, *y + 3, width - 40, 20);
+    hint.style.text_color = theme->text_disabled;
+    hint.style.font_size_pt = theme->font_caption;
+    vkr_ui_label(ui, string8_lit("message.hint"),
+                 string8_lit("Describe your changes"), &hint);
+  }
+  *y += 36;
+  const bool8_t unsaved = !depot_journals_saved(frame);
+  if (depot_button(editor, ui, "commit", "Commit", 12, *y, 120, true_v,
+                   busy || unsaved) &&
+      !vkr_editor_depot_commit(depot, depot->message, false_v, error,
+                               sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  if (depot->remote_count &&
+      depot_button(editor, ui, "commit.sync", "Commit & Sync", 140, *y, 140,
+                   false_v, busy || unsaved) &&
+      !vkr_editor_depot_commit(depot, depot->message, true_v, error,
+                               sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  if (unsaved) {
+    depot_caption(ui, "commit.unsaved", "Save the scene to commit its edits",
+                  12, *y + 30, width - 24);
+    *y += 20;
+  }
+  *y += 40;
+}
+
+static void depot_commit_rows(VkrUiSystem *ui, const char *id,
+                              const char *title, const DepotHistory *rows,
+                              uint32_t count, uint32_t total, float32_t *y,
+                              float32_t width) {
+  if (!total) {
+    return;
+  }
+  char text[DEPOT_TEXT];
+  string_format(text, sizeof(text), "%s (%u)", title, total);
+  (void)vkr_ui_push_id_u64(ui, (uint64_t)(uintptr_t)id);
+  depot_caption(ui, "title", text, 12, *y, width - 24);
+  *y += 22;
+  const uint64_t now_us = depot_unix_us();
+  for (uint32_t i = 0u; i < count; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    depot_label(ui, "row",
+                rows[i].message[0] ? rows[i].message : "(no message)", 24, *y,
+                width - 140, vkr_ui_theme()->text);
+    char when[32];
+    depot_format_age(now_us, rows[i].time_us, when, sizeof(when));
+    VkrUiWidgetConfig age = depot_widget(width - 112, *y, 100, 22);
+    age.style.font_size_pt = vkr_ui_theme()->font_caption;
+    age.style.text_color = vkr_ui_theme()->text_secondary;
+    vkr_ui_label(ui, string8_lit("age"), depot_string(when), &age);
+    (void)vkr_ui_pop_id(ui);
+    *y += 22;
+  }
+  (void)vkr_ui_pop_id(ui);
+  *y += 8;
+}
+
+static void depot_window_remotes(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                 VkrUiSystem *ui, float32_t *y, float32_t width,
+                                 bool8_t busy) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  char error[DEPOT_TEXT] = {0};
+  depot_caption(ui, "remotes.title", "Remotes", 12, *y, width - 160);
+  if (depot_button(editor, ui, "remotes.add", "Add remote", width - 136, *y - 4,
+                   124, !depot->remote_count, false_v)) {
+    depot->remote_form_open = !depot->remote_form_open;
+  }
+  *y += 28;
+  for (uint32_t i = 0u; i < depot->remote_count; ++i) {
+    const VkrDepotRemoteEntry *remote = &depot->remotes[i];
+    (void)vkr_ui_push_id_u64(ui, i);
+    char text[DEPOT_TEXT];
+    char print[16];
+    depot_fingerprint(remote->key, print);
+    string_format(text, sizeof(text), "%s  \xc2\xb7  %s  \xc2\xb7  key %s",
+                  remote->name, remote->address, print);
+    depot_label(ui, "row", text, 24, *y, width - 150, theme->text);
+    if (depot_button(editor, ui, "remove", "Remove", width - 112, *y - 2, 100,
+                     false_v, busy) &&
+        !vkr_editor_depot_remote(depot, remote->name, NULL, NULL, error,
+                                 sizeof(error))) {
+      string_format(depot->error, sizeof(depot->error), "%s", error);
+    }
+    (void)vkr_ui_pop_id(ui);
+    *y += 28;
+  }
+  if (!depot->remote_count && !depot->remote_form_open) {
+    *y += depot_paragraph(
+        ui, "remotes.none",
+        "A remote is another computer's repository of this project. Add "
+        "one to push to it and pull from it.",
+        12, *y, width - 24);
+    *y += 6;
+  }
+  if (!depot->remote_form_open) {
+    return;
+  }
+  depot->browse_wanted = true_v;
+  /* Services found on the network fill the form with one click; their key
+     comes from an answer anyone could send, so the owner checks its first
+     digits on the other computer. */
+  for (uint32_t i = 0u; depot->browser_open && i < depot->browser.found_count;
+       ++i) {
+    const VkrDepotDiscovered *found = &depot->browser.found[i];
+    if (depot_found_is_self(depot, found)) {
+      continue;
+    }
+    (void)vkr_ui_push_id_u64(ui, 100u + i);
+    char address[VKR_NET_ADDRESS_TEXT];
+    char print[16];
+    char text[DEPOT_TEXT];
+    vkr_net_address_format(&found->address, address, sizeof(address));
+    depot_fingerprint(found->server_key, print);
+    string_format(text, sizeof(text), "%s on %s  \xc2\xb7  key %s", found->name,
+                  found->host, print);
+    depot_caption(ui, "found", text, 24, *y + 4, width - 150);
+    if (depot_button(editor, ui, "use", "Use", width - 112, *y, 100, false_v,
+                     false_v)) {
+      string_format(depot->remote_address, sizeof(depot->remote_address), "%s",
+                    address);
+      depot_key_hex(found->server_key, depot->remote_key);
+      if (!depot->remote_name[0]) {
+        string_format(depot->remote_name, sizeof(depot->remote_name), "%s",
+                      depot->remote_count ? "peer" : VKR_DEPOT_ORIGIN);
+      }
+    }
+    (void)vkr_ui_pop_id(ui);
+    *y += 30;
+  }
+  if (!depot->remote_name[0]) {
+    string_format(depot->remote_name, sizeof(depot->remote_name), "%s",
+                  depot->remote_count ? "peer" : VKR_DEPOT_ORIGIN);
+  }
+  static const char *const labels[] = {"Name", "Address", "Key"};
+  char *fields[] = {depot->remote_name, depot->remote_address,
+                    depot->remote_key};
+  const uint32_t sizes[] = {sizeof(depot->remote_name),
+                            sizeof(depot->remote_address),
+                            sizeof(depot->remote_key)};
+  static const char *const ids[] = {"remote.name", "remote.address",
+                                    "remote.key"};
+  for (uint32_t i = 0u; i < ArrayCount(labels); ++i) {
+    depot_caption(ui, labels[i], labels[i], 12, *y + 4, 70);
+    depot_field(ui, ids[i], fields[i], sizes[i], 84, *y, width - 96);
+    *y += 32;
+  }
+  if (depot_button(editor, ui, "remote.save", "Add", 12, *y, 100, true_v,
+                   !depot->remote_address[0] || !depot->remote_key[0])) {
+    if (vkr_editor_depot_remote(depot, depot->remote_name,
+                                depot->remote_address, depot->remote_key, error,
+                                sizeof(error))) {
+      depot->remote_form_open = false_v;
+      depot->remote_name[0] = '\0';
+      depot->remote_address[0] = '\0';
+      depot->remote_key[0] = '\0';
+    } else {
+      string_format(depot->error, sizeof(depot->error), "%s", error);
+    }
+  }
+  if (depot_button(editor, ui, "remote.cancel", "Cancel", 120, *y, 100, false_v,
+                   false_v)) {
+    depot->remote_form_open = false_v;
+  }
+  *y += 40;
 }
 
 static void depot_window_server(VkrEditorDepot *depot, VkrEditorUi *editor,
                                 VkrUiSystem *ui, float32_t *y,
                                 float32_t width) {
-  const VkrUiTheme *theme = vkr_ui_theme();
   char text[DEPOT_TEXT];
-  if (depot->role == DEPOT_ROLE_SHARER) {
-    if (depot->service) {
-      depot_heading(editor, ui, "server.state", depot->project_name,
-                    VKR_UI_ICON_CLOUD, 12, *y, width - 24);
-      *y += 26;
-      char host[VKR_DEPOT_DISCOVERY_TEXT];
-      vkr_depot_host_name(host, sizeof(host));
-      string_format(text, sizeof(text),
-                    "Shared from this computer (%s)  \xc2\xb7  %u connected",
-                    host, depot->service_info.peers);
-      depot_caption(ui, "server.peers", text, 12, *y, width - 24);
-      *y += 22;
-      if (!depot->service_info.discoverable) {
-        string_format(
-            text, sizeof(text),
-            "Not listed on the network: another server uses its port. "
-            "Others enter %s to find it.",
-            host);
-        *y += depot_paragraph(ui, "server.hidden", text, 12, *y, width - 24);
-      }
-      *y += 4;
-    } else {
-      depot_heading(editor, ui, "server.state", "Not shared right now",
-                    VKR_UI_ICON_WARNING_FILL, 12, *y, width - 24);
-      *y += 26;
-      depot_caption(ui, "server.error",
-                    depot->service_error[0] ? depot->service_error
-                                            : "The server is not running",
-                    12, *y, width - 160);
-      if (depot_button(editor, ui, "server.retry", "Share again", width - 136,
-                       *y - 4, 124, false_v, false_v)) {
-        (void)depot_service_start(depot);
-      }
-      *y += 28;
+  bool8_t serve = depot->serving;
+  VkrUiWidgetConfig toggle = depot_widget(12, *y, width - 24, 22);
+  toggle.tooltip = string8_lit(
+      "Other computers on your network can clone this repository and push "
+      "to it while this editor runs");
+  (void)vkr_ui_checkbox(ui, string8_lit("serve"),
+                        string8_lit("Let others fetch and push"), &serve,
+                        &toggle);
+  if (serve != depot->serving) {
+    char error[DEPOT_TEXT] = {0};
+    if (!vkr_editor_depot_serve(depot, serve, error, sizeof(error))) {
+      string_format(depot->error, sizeof(depot->error), "%s", error);
     }
+  }
+  *y += 28;
+  if (!depot->serving) {
     return;
   }
-  const char *server = depot->remote;
-  for (uint32_t i = 0u; i < depot->known_count; ++i) {
-    if (MemCompare(depot->known[i].key, depot->server_key, 32u) == 0 &&
-        depot->known[i].host[0]) {
-      server = depot->known[i].host;
-      break;
+  char host[VKR_DEPOT_DISCOVERY_TEXT];
+  vkr_depot_host_name(host, sizeof(host));
+  if (depot->service) {
+    char print[16];
+    depot_fingerprint(depot->service_info.server_key, print);
+    string_format(text, sizeof(text),
+                  "Served by this editor on %s, UDP %u  \xc2\xb7  key %s  "
+                  "\xc2\xb7  %u connected",
+                  host, (uint32_t)depot->service_info.address.port, print,
+                  depot->service_info.peers);
+    depot_caption(ui, "server.peers", text, 24, *y, width - 36);
+    *y += 22;
+    if (!depot->service_info.discoverable) {
+      string_format(text, sizeof(text),
+                    "Not listed on the network: another server uses its "
+                    "port. Others enter %s to find it.",
+                    host);
+      *y += depot_paragraph(ui, "server.hidden", text, 24, *y, width - 36);
     }
+  } else {
+    depot_label(ui, "server.error",
+                depot->service_error[0] ? depot->service_error
+                                        : "The server is not running",
+                24, *y, width - 160, vkr_ui_theme()->warning);
+    if (depot_button(editor, ui, "server.retry", "Start", width - 112, *y - 4,
+                     100, false_v, false_v)) {
+      (void)depot_service_start(depot);
+    }
+    *y += 28;
   }
-  depot_heading(editor, ui, "server.state", depot->project_name,
-                VKR_UI_ICON_CLOUD, 12, *y, width - 24);
-  *y += 26;
-  const char *state =
-      depot->waiting_kind != DEPOT_JOB_NONE
-          ? "waiting for that computer to allow this one"
-      : !depot->status_known ? "checking..."
-      : depot->connected     ? "connected"
-      : depot->connect == VKR_DEPOT_CONNECT_UNREACHABLE
-          ? "not answering: its editor may be closed, or a firewall blocks it"
-          : "not connected";
-  string_format(text, sizeof(text), "Shared by %s  \xc2\xb7  %s", server,
-                state);
-  VkrUiWidgetConfig c = depot_widget(12, *y, width - 24, 18);
-  c.style.font_size_pt = theme->font_caption;
-  c.style.text_color = depot->waiting_kind != DEPOT_JOB_NONE
-                           ? theme->warning
-                           : theme->text_secondary;
-  vkr_ui_label(ui, string8_lit("server.connection"), depot_string(text), &c);
-  *y += 24;
+  *y += 4;
 }
 
 static void depot_window_requests(VkrEditorDepot *depot, VkrEditorUi *editor,
@@ -2709,7 +3588,7 @@ static void depot_window_requests(VkrEditorDepot *depot, VkrEditorUi *editor,
     char who[VKR_DEPOT_DISPLAY_NAME + 16];
     depot_person_text(depot, request->key, request->name, who, sizeof(who));
     char text[160];
-    string_format(text, sizeof(text), "%s asks to work on this project", who);
+    string_format(text, sizeof(text), "%s asks to fetch and push", who);
     depot_label(ui, "request", text, 12, *y, width - 24, theme->warning);
     *y += 22;
     char print[16];
@@ -2727,7 +3606,7 @@ static void depot_window_requests(VkrEditorDepot *depot, VkrEditorUi *editor,
                      false_v)) {
       (void)vkr_editor_depot_allow(depot, key, "write", error, sizeof(error));
     }
-    if (depot_button(editor, ui, "read", "View only", 116, *y, 96, false_v,
+    if (depot_button(editor, ui, "read", "Fetch only", 116, *y, 96, false_v,
                      false_v)) {
       (void)vkr_editor_depot_allow(depot, key, "read", error, sizeof(error));
     }
@@ -2783,131 +3662,10 @@ static void depot_window_access(VkrEditorDepot *depot, VkrEditorUi *editor,
   *y += 6;
 }
 
-static void depot_window_changes(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                 const VkrSampleUiFrame *frame, VkrUiSystem *ui,
-                                 float32_t *y, float32_t width) {
-  const VkrUiTheme *theme = vkr_ui_theme();
-  char text[DEPOT_TEXT];
-  char error[DEPOT_TEXT] = {0};
-  const bool8_t busy =
-      depot_busy(depot) && depot->job->kind != DEPOT_JOB_STATUS;
-
-  /* Incoming first: submitting takes the newest commit anyway. */
-  if (depot_incoming(depot)) {
-    depot_heading(editor, ui, "incoming.title", "New changes from others",
-                  VKR_UI_ICON_ARROW_DOWN, 12, *y, width - 160);
-    if (depot_button(editor, ui, "incoming.get", "Get latest", width - 136, *y,
-                     124, true_v, busy) &&
-        !vkr_editor_depot_get_latest(depot, "fail", error, sizeof(error))) {
-      string_format(depot->error, sizeof(depot->error), "%s", error);
-    }
-    *y += 36;
-  }
-
-  if (depot->conflict_count) {
-    string_format(
-        text, sizeof(text), "%u file%s changed here and by someone else",
-        depot->conflict_count, depot->conflict_count == 1u ? "" : "s");
-    depot_label(ui, "conflict.title", text, 12, *y, width - 24, theme->warning);
-    *y += 24;
-    for (uint32_t i = 0u; i < Min(depot->conflict_count, 6u); ++i) {
-      (void)vkr_ui_push_id_u64(ui, i);
-      depot_caption(ui, "conflict", depot->conflicts[i].text, 24, *y,
-                    width - 36);
-      (void)vkr_ui_pop_id(ui);
-      *y += 18;
-    }
-    *y += 6;
-    if (depot_button(editor, ui, "conflict.theirs", "Use theirs", 12, *y, 120,
-                     false_v, busy) &&
-        !vkr_editor_depot_get_latest(depot, "theirs", error, sizeof(error))) {
-      string_format(depot->error, sizeof(depot->error), "%s", error);
-    }
-    if (depot_button(editor, ui, "conflict.mine", "Keep mine", 140, *y, 120,
-                     false_v, busy) &&
-        !vkr_editor_depot_get_latest(depot, "mine", error, sizeof(error))) {
-      string_format(depot->error, sizeof(depot->error), "%s", error);
-    }
-    *y += 38;
-  }
-
-  if (!depot->status_known && depot_busy(depot)) {
-    depot_caption(ui, "changes.reading", "Looking for changes...", 12, *y,
-                  width - 24);
-    *y += 26;
-    return;
-  }
-  if (!depot->change_count) {
-    depot_label(ui, "changes.none",
-                depot_incoming(depot) ? "No changes of yours to submit"
-                                      : "Up to date. No changes to submit.",
-                12, *y, width - 24, theme->text_secondary);
-    *y += 30;
-    return;
-  }
-  string_format(text, sizeof(text), "%u change%s to submit",
-                depot->change_count, depot->change_count == 1u ? "" : "s");
-  depot_heading(editor, ui, "changes.title", text, VKR_UI_ICON_ARROW_UP, 12, *y,
-                width - 24);
-  *y += 28;
-  const uint32_t rows = Min(depot->change_count, 8u);
-  for (uint32_t i = 0u; i < rows; ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    depot_caption(ui, "change", depot->changes[i].text, 24, *y, width - 36);
-    (void)vkr_ui_pop_id(ui);
-    *y += 18;
-  }
-  if (depot->change_count > rows) {
-    string_format(text, sizeof(text), "and %u more",
-                  depot->change_count - rows);
-    depot_caption(ui, "changes.more", text, 24, *y, width - 36);
-    *y += 18;
-  }
-  *y += 8;
-  depot_field(ui, "message", depot->message, sizeof(depot->message), 12, *y,
-              width - 24);
-  if (!depot->message[0]) {
-    VkrUiWidgetConfig hint = depot_widget(18, *y + 3, width - 40, 20);
-    hint.style.text_color = theme->text_disabled;
-    hint.style.font_size_pt = theme->font_caption;
-    vkr_ui_label(ui, string8_lit("message.hint"),
-                 string8_lit("Describe your changes"), &hint);
-  }
-  *y += 36;
-  const bool8_t unsaved = !depot_journals_saved(frame);
-  if (depot_button(editor, ui, "submit", "Submit", 12, *y, 140, true_v,
-                   busy || unsaved || depot->role == DEPOT_ROLE_NONE) &&
-      !vkr_editor_depot_submit(depot, depot->message, error, sizeof(error))) {
-    string_format(depot->error, sizeof(depot->error), "%s", error);
-  }
-  if (unsaved) {
-    depot_caption(ui, "submit.unsaved", "Save the scene to submit its edits",
-                  164, *y + 4, width - 176);
-  }
-  *y += 40;
-}
-
 static void depot_window_history(VkrEditorDepot *depot, VkrUiSystem *ui,
                                  float32_t *y, float32_t width) {
-  if (!depot->history_count) {
-    return;
-  }
-  depot_caption(ui, "history.title", "History", 12, *y, width - 24);
-  *y += 22;
-  const uint64_t now_us = depot_unix_us();
-  for (uint32_t i = 0u; i < depot->history_count; ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    depot_label(ui, "row", depot->history[i].message, 24, *y, width - 140,
-                vkr_ui_theme()->text);
-    char when[32];
-    depot_format_age(now_us, depot->history[i].time_us, when, sizeof(when));
-    VkrUiWidgetConfig age = depot_widget(width - 112, *y, 100, 22);
-    age.style.font_size_pt = vkr_ui_theme()->font_caption;
-    age.style.text_color = vkr_ui_theme()->text_secondary;
-    vkr_ui_label(ui, string8_lit("age"), depot_string(when), &age);
-    (void)vkr_ui_pop_id(ui);
-    *y += 22;
-  }
+  depot_commit_rows(ui, "history", "History", depot->history,
+                    depot->history_count, depot->history_count, y, width);
 }
 
 void vkr_editor_depot_window_build(VkrEditorUi *editor,
@@ -2921,7 +3679,8 @@ void vkr_editor_depot_window_build(VkrEditorUi *editor,
   if (!depot || width < 260) {
     return;
   }
-  depot->browse_wanted = depot->role == DEPOT_ROLE_MEMBER;
+  /* Discovery follows a remote that moved to another address. */
+  depot->browse_wanted = depot->browse_wanted || depot->remote_count > 0u;
   if (ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
       ui->mouse_y >= bounds.y && ui->mouse_y < bounds.y + bounds.height &&
       !ui->mouse_captured) {
@@ -2940,19 +3699,27 @@ void vkr_editor_depot_window_build(VkrEditorUi *editor,
   }
   (void)vkr_ui_scroll_area_offset(ui, &depot->window_scroll);
   float32_t y = 10;
+  const bool8_t busy =
+      depot_busy(depot) && depot->job->kind != DEPOT_JOB_STATUS;
   if (!depot->project_id[0]) {
-    depot_label(ui, "none", "Open a project to share it.", 12, y, width - 24,
-                theme->text_secondary);
+    depot_label(ui, "none", "Open a project to use source control.", 12, y,
+                width - 24, theme->text_secondary);
     y += 30;
-  } else if (depot->role == DEPOT_ROLE_NONE && !depot_busy(depot)) {
-    depot_window_not_shared(depot, editor, frame, ui, &y, width);
-  } else {
+  } else if (!depot->repository && !depot_busy(depot)) {
+    depot_window_not_repository(depot, editor, frame, ui, &y, width);
+  } else if (depot->repository) {
+    depot_window_branch(depot, editor, ui, &y, width, busy);
+    depot_window_sync(depot, editor, ui, &y, width, busy);
+    depot_window_conflicts(depot, editor, ui, &y, width, busy);
+    depot_window_changes(depot, editor, frame, ui, &y, width, busy);
+    depot_commit_rows(ui, "outgoing", "To push", depot->outgoing,
+                      depot->outgoing_count, depot->ahead, &y, width);
+    depot_commit_rows(ui, "incoming", "To pull", depot->incoming,
+                      depot->incoming_count, depot->behind, &y, width);
+    depot_window_remotes(depot, editor, ui, &y, width, busy);
     depot_window_server(depot, editor, ui, &y, width);
     depot_window_requests(depot, editor, ui, &y, width);
-    if (depot->role != DEPOT_ROLE_NONE) {
-      depot_window_changes(depot, editor, frame, ui, &y, width);
-    }
-    if (depot->role == DEPOT_ROLE_SHARER) {
+    if (depot->serving) {
       depot_window_access(depot, editor, ui, &y, width);
     }
     if (vkr_editor_scripts_held(editor->scripts)) {
@@ -2966,7 +3733,7 @@ void vkr_editor_depot_window_build(VkrEditorUi *editor,
     }
     depot_window_history(depot, ui, &y, width);
   }
-  if (depot_busy(depot) && depot->job->kind != DEPOT_JOB_STATUS) {
+  if (busy) {
     char text[DEPOT_TEXT];
     const float32_t fraction = depot_job_text(depot, text, sizeof(text));
     depot_label(ui, "job.text", text, 12, y, width - 120, theme->text);
@@ -3033,7 +3800,8 @@ static void depot_overlay_request(VkrEditorDepot *depot, VkrEditorUi *editor,
   char text[200];
   char print[16];
   depot_fingerprint(request->key, print);
-  string_format(text, sizeof(text), "asks to work on %s  \xc2\xb7  key %s",
+  string_format(text, sizeof(text),
+                "asks to fetch and push %s  \xc2\xb7  key %s",
                 depot->project_name, print);
   depot_caption(ui, "text", text, 34, 34, width - 46);
   char key[VKR_DEPOT_ID_HEX];
@@ -3043,7 +3811,7 @@ static void depot_overlay_request(VkrEditorDepot *depot, VkrEditorUi *editor,
                    false_v)) {
     (void)vkr_editor_depot_allow(depot, key, "write", error, sizeof(error));
   }
-  if (depot_button(editor, ui, "read", "View only", 120, 64, 100, false_v,
+  if (depot_button(editor, ui, "read", "Fetch only", 120, 64, 100, false_v,
                    false_v)) {
     (void)vkr_editor_depot_allow(depot, key, "read", error, sizeof(error));
   }
@@ -3123,12 +3891,6 @@ void vkr_editor_depot_overlay_build(VkrEditorDepot *depot, VkrEditorUi *editor,
 // Project hub
 // =============================================================================
 
-static bool8_t depot_found_is_self(const VkrEditorDepot *depot,
-                                   const VkrDepotDiscovered *found) {
-  return depot->service && MemCompare(found->server_key,
-                                      depot->service_info.server_key, 32u) == 0;
-}
-
 /* A raised rounded panel behind one row of the hub, as project cards
    are drawn. */
 static void depot_card(VkrUiSystem *ui, const char *id, float32_t x,
@@ -3179,8 +3941,8 @@ static float32_t depot_hub_dialog(VkrEditorDepot *depot, VkrEditorUi *editor,
     y += 28;
     char key[VKR_DEPOT_ID_HEX];
     depot_key_hex(depot->dialog_key, key);
-    if (depot_button(editor, ui, "get.go", "Get project", x + 12, y, 140,
-                     true_v, depot_busy(depot)) &&
+    if (depot_button(editor, ui, "get.go", "Clone", x + 12, y, 140, true_v,
+                     depot_busy(depot)) &&
         !vkr_editor_depot_clone(depot, depot->dialog_address, key,
                                 depot->dialog_name, depot->dialog_destination,
                                 depot->dialog_sparse, error, sizeof(error))) {
@@ -3249,13 +4011,13 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
   const float32_t top = y;
   char text[DEPOT_TEXT];
 
-  /* Shared workspaces on this computer, other than the open one. */
+  /* Repositories on this computer, other than the open one. */
   uint32_t local = 0u;
   for (uint32_t i = 0u; i < depot->project_count; ++i) {
     local += !string_equals(depot->projects[i].path, depot->workspace);
   }
   if (local) {
-    depot_heading(editor, ui, "hub.local", "Shared projects on this computer",
+    depot_heading(editor, ui, "hub.local", "Repositories on this computer",
                   VKR_UI_ICON_HARD_DRIVES, x, y, width);
     y += 30;
     for (uint32_t i = 0u; i < depot->project_count; ++i) {
@@ -3281,9 +4043,9 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
     y += 8;
   }
 
-  /* Projects other editors share. */
-  depot_heading(editor, ui, "hub.network", "On your network", VKR_UI_ICON_CLOUD,
-                x, y, width);
+  /* Repositories other computers serve, to clone. */
+  depot_heading(editor, ui, "hub.network", "Clone from your network",
+                VKR_UI_ICON_CLOUD, x, y, width);
   y += 30;
   uint32_t shown = 0u;
   for (uint32_t i = 0u; depot->browser_open && i < depot->browser.found_count;
@@ -3302,7 +4064,7 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
     char print[16];
     depot_fingerprint(found->server_key, print);
     string_format(
-        text, sizeof(text), "Shared by %s  \xc2\xb7  %s  \xc2\xb7  key %s%s",
+        text, sizeof(text), "Served by %s  \xc2\xb7  %s  \xc2\xb7  key %s%s",
         found->host, address, print,
         depot_key_known(depot, found->server_key) ? "  \xc2\xb7  used before"
                                                   : "");
@@ -3317,8 +4079,8 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
         warning.style.font_size_pt = theme->font_caption;
         warning.style.text_color = theme->warning;
         vkr_ui_label(ui, string8_lit("impostor"),
-                     string8_lit("Not the computer you got this project from "
-                                 "before"),
+                     string8_lit("Not the computer you cloned this project "
+                                 "from before"),
                      &warning);
         y += 16;
         break;
@@ -3327,7 +4089,7 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
     const bool8_t chosen =
         depot->dialog_open &&
         MemCompare(depot->dialog_key, found->server_key, 32u) == 0;
-    if (!chosen && depot_button(editor, ui, "get", "Get", x + width - 112,
+    if (!chosen && depot_button(editor, ui, "get", "Clone", x + width - 112,
                                 y + 13, 100, true_v, depot_busy(depot))) {
       depot->dialog_open = true_v;
       depot->error[0] = '\0';
@@ -3347,7 +4109,7 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
     }
     (void)vkr_ui_pop_id(ui);
   }
-  /* A Get started by address, whose server discovery has not heard. */
+  /* A Clone started by address, whose server discovery has not heard. */
   bool8_t dialog_listed = false_v;
   for (uint32_t i = 0u; depot->browser_open && i < depot->browser.found_count;
        ++i) {
@@ -3360,15 +4122,15 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
     depot_card(ui, "dialog.card", x, y, width, 52);
     depot_row_title(ui, depot->dialog_name, VKR_UI_ICON_CLOUD, x + 12, y + 6,
                     width - 150);
-    string_format(text, sizeof(text), "Shared at %s", depot->dialog_address);
+    string_format(text, sizeof(text), "Served at %s", depot->dialog_address);
     depot_caption(ui, "dialog.host", text, x + 36, y + 28, width - 170);
     y += 60;
     y += depot_hub_dialog(depot, editor, ui, x + 24, y, width - 24) + 8;
   }
   if (!shown) {
     depot_caption(ui, "hub.empty",
-                  "Looking for projects shared on this network...", x + 12, y,
-                  width - 24);
+                  "Looking for repositories served on this network...", x + 12,
+                  y, width - 24);
     y += 26;
   }
   /* A server whose answers a broadcast does not bring back: endpoint
@@ -3617,12 +4379,44 @@ VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
 
 VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
                                             Arena *arena) {
-  static const char *const roles[] = {"none", "sharer", "member"};
   static const char *const connects[] = {"ok",     "invalid", "unreachable",
                                          "denied", "refused", "canceled"};
   VkrBakeryJson *result = vkr_bakery_json_object(arena);
-  vkr_bakery_json_set(arena, result, "role",
-                      vkr_bakery_json_cstr(arena, roles[depot->role]));
+  vkr_bakery_json_set(arena, result, "repository",
+                      vkr_bakery_json_bool(arena, depot->repository));
+  vkr_bakery_json_set(arena, result, "serving",
+                      vkr_bakery_json_bool(arena, depot->serving));
+  vkr_bakery_json_set(arena, result, "branch",
+                      vkr_bakery_json_cstr(arena, depot->branch));
+  vkr_bakery_json_set(arena, result, "ahead",
+                      vkr_bakery_json_int(arena, depot->ahead));
+  vkr_bakery_json_set(arena, result, "behind",
+                      vkr_bakery_json_int(arena, depot->behind));
+  VkrBakeryJson *branches = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < depot->branch_count; ++i) {
+    vkr_bakery_json_append(
+        branches, vkr_bakery_json_cstr(arena, depot->branches[i].name));
+  }
+  vkr_bakery_json_set(arena, result, "branches", branches);
+  VkrBakeryJson *remotes = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < depot->remote_count; ++i) {
+    VkrBakeryJson *row = vkr_bakery_json_object(arena);
+    char key[VKR_DEPOT_ID_HEX];
+    depot_key_hex(depot->remotes[i].key, key);
+    vkr_bakery_json_set(arena, row, "name",
+                        vkr_bakery_json_cstr(arena, depot->remotes[i].name));
+    vkr_bakery_json_set(arena, row, "address",
+                        vkr_bakery_json_cstr(arena, depot->remotes[i].address));
+    vkr_bakery_json_set(arena, row, "key", vkr_bakery_json_cstr(arena, key));
+    vkr_bakery_json_set(
+        arena, row, "selected",
+        vkr_bakery_json_bool(arena, i == depot->selected_remote));
+    vkr_bakery_json_set(
+        arena, row, "state",
+        vkr_bakery_json_cstr(arena, depot_remote_state(depot, i)));
+    vkr_bakery_json_append(remotes, row);
+  }
+  vkr_bakery_json_set(arena, result, "remotes", remotes);
   vkr_bakery_json_set(arena, result, "workspace",
                       vkr_bakery_json_cstr(arena, depot->workspace));
   vkr_bakery_json_set(arena, result, "project",
