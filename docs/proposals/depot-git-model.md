@@ -15,9 +15,8 @@ merge and the editor's Source Control are implemented and recorded in
 [ADR-110](../adr/110-project-sharing-in-the-editor.md), and the editor
 shares repositories through the per-machine service
 ([ADR-134](../adr/134-per-machine-depot-service.md)). This proposal keeps
-the work that remains: a remote's outbound-only state, the Mac's mirror
-giving way to the service, the state file cleanup and the evidence between
-the two machines.
+the work that remains: a remote's outbound-only state, the state file
+cleanup and the evidence between the two machines.
 
 ## Owner decisions, 2026-10-24
 
@@ -67,10 +66,10 @@ night. Each failure points at a part of the model:
 
 ### The rest of the service and editor (D3)
 
-- The Mac's served store has the remote `windows` with a 30 s interval
-  (`remote add ... --interval`); the launchd `com.vkr.depot.mirror` job
-  gives way once the owner allows VKR Depot under Local Network and the
-  service's sync reaches windows-d.
+- Done 2026-10-24: the Mac's served store syncs with the remote `windows`
+  every 30 s (`remote add ... --interval`) once the owner allowed VKR Depot
+  under Local Network, and the launchd `com.vkr.depot.mirror` and
+  `com.vkr.depot.serve` jobs are retired.
 - A remote's state shows "reachable only when it connects" for a peer the
   service recorded as outbound only.
 - The working copy's state drops the server it syncs with once nothing
@@ -91,8 +90,8 @@ Implemented (ADR-133). Left: the evidence below between the two machines.
 
 ## Phases
 
-1. **D3, the rest:** the mirror's retirement on the Mac, the outbound-only
-   state of a remote, the state file cleanup.
+1. **D3, the rest:** the outbound-only state of a remote, the state file
+   cleanup.
 2. **D4, the rest of self-contained projects.** Projects move outside the git
    repository under a configurable root, Testbed becomes a template,
    untracked dependencies show in status, the asset fallback ends for

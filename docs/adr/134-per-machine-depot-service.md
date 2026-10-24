@@ -213,8 +213,10 @@ alike.
   user's identity the store's admin and that a refused key's request comes
   back through `service.status`; each check fails with its code removed.
 - The editor on the service: see ADR-110's evidence.
-- Not run: interval sync from the Mac's bundled service before the Local
-  Network approval.
+- Mac M1, after the owner allowed VKR Depot under Local Network: the
+  service logged "sync mac-m1 with windows works again", `main`,
+  `main.cooked.astc` and `main.cooked.bc` equal windows-d's, and the
+  launchd mirror and serve jobs were retired.
 
 ## Revisit when
 
