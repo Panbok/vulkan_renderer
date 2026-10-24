@@ -191,6 +191,43 @@ static const VkrWireField depot_locks_fields[] = {
      .offset = offsetof(VkrDepotLocksWire, more)},
 };
 
+static const VkrWireField depot_hello_fields[] = {
+    {.name = "request",
+     .kind = VKR_WIRE_VARUINT,
+     .offset = offsetof(VkrDepotHelloWire, request)},
+    {.name = "repository",
+     .kind = VKR_WIRE_BYTES,
+     .capacity = VKR_DEPOT_REPOSITORY_ID_SIZE,
+     .offset = offsetof(VkrDepotHelloWire, repository),
+     .count_offset = offsetof(VkrDepotHelloWire, repository_size)},
+    {.name = "flags",
+     .kind = VKR_WIRE_VARUINT,
+     .offset = offsetof(VkrDepotHelloWire, flags)},
+};
+
+static const VkrWireField depot_hello_reply_fields[] = {
+    {.name = "request",
+     .kind = VKR_WIRE_VARUINT,
+     .offset = offsetof(VkrDepotHelloReplyWire, request)},
+    {.name = "status",
+     .kind = VKR_WIRE_ENUM,
+     .enum_count = VKR_DEPOT_HELLO_STATUS_COUNT,
+     .offset = offsetof(VkrDepotHelloReplyWire, status)},
+    {.name = "repository",
+     .kind = VKR_WIRE_BYTES,
+     .capacity = VKR_DEPOT_REPOSITORY_ID_SIZE,
+     .offset = offsetof(VkrDepotHelloReplyWire, repository),
+     .count_offset = offsetof(VkrDepotHelloReplyWire, repository_size)},
+    {.name = "name",
+     .kind = VKR_WIRE_UTF8,
+     .capacity = VKR_DEPOT_BRANCH_NAME,
+     .offset = offsetof(VkrDepotHelloReplyWire, name)},
+    {.name = "default_branch",
+     .kind = VKR_WIRE_UTF8,
+     .capacity = VKR_DEPOT_BRANCH_NAME,
+     .offset = offsetof(VkrDepotHelloReplyWire, default_branch)},
+};
+
 #define DEPOT_MESSAGE(identifier, label, type, field_table)                    \
   static const VkrWireMessage depot_##label = {                                \
       .name = #label,                                                          \
@@ -223,6 +260,10 @@ DEPOT_MESSAGE(VKR_DEPOT_MSG_LOCKS_REQUEST, locks_request,
               VkrDepotLocksRequestWire, depot_locks_request_fields);
 DEPOT_MESSAGE(VKR_DEPOT_MSG_LOCKS, locks, VkrDepotLocksWire,
               depot_locks_fields);
+DEPOT_MESSAGE(VKR_DEPOT_MSG_HELLO, hello, VkrDepotHelloWire,
+              depot_hello_fields);
+DEPOT_MESSAGE(VKR_DEPOT_MSG_HELLO_REPLY, hello_reply, VkrDepotHelloReplyWire,
+              depot_hello_reply_fields);
 
 static const VkrWireMessage *const depot_messages[] = {
     &depot_refs_request,  &depot_refs,
@@ -232,6 +273,16 @@ static const VkrWireMessage *const depot_messages[] = {
     &depot_update_ref,    &depot_update_ref_reply,
     &depot_lock,          &depot_lock_reply,
     &depot_locks_request, &depot_locks,
+    &depot_hello,         &depot_hello_reply,
+};
+
+/* Version 1 is the first 14 messages; its hash must stay what version 1
+   builds compute, so this schema never changes. */
+static const VkrWireSchema depot_schema_1 = {
+    .name = "vkr.depot",
+    .version = VKR_DEPOT_SERVICE_VERSION_1,
+    .messages = depot_messages,
+    .message_count = VKR_DEPOT_MSG_LOCKS,
 };
 
 static const VkrWireSchema depot_schema = {
@@ -255,10 +306,13 @@ const VkrWireMessage *vkr_depot_message(VkrDepotMessageId id) {
 VkrNetService vkr_depot_service_template(void) {
   VkrNetService service = {
       .id = VKR_NET_SERVICE_DEPOT,
-      .version_count = 1u,
+      .version_count = 2u,
       .channel_count = 2u,
   };
   service.versions[0] = (VkrNetServiceVersion){
+      .version = VKR_DEPOT_SERVICE_VERSION_1,
+      .schema_hash = vkr_wire_schema_hash(&depot_schema_1)};
+  service.versions[1] = (VkrNetServiceVersion){
       .version = VKR_DEPOT_SERVICE_VERSION,
       .schema_hash = vkr_wire_schema_hash(&depot_schema)};
   /* Requests and replies: reliable, ordered, ahead of bulk bytes. */

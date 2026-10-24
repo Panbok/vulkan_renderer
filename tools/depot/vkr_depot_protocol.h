@@ -10,15 +10,32 @@
  * stored object representations as raw messages whose tag is
  * `(request << 8) | index`, naming the request and the ID's position in it.
  * Every request carries a client-chosen `request` number that its reply
- * echoes. */
+ * echoes.
+ *
+ * Version 2 adds HELLO: a version 2 client sends it first on a connection
+ * to select one of the repositories a service serves and to say whether it
+ * is outbound only, and waits for HELLO_REPLY before any other request. A
+ * version 1 client sends none and gets the service's only repository; a
+ * service that serves several closes it with
+ * VKR_DEPOT_CLOSE_SELECT_REPOSITORY. Both versions stay offered, each with
+ * its own schema hash, so a version 1 build still connects. */
 
-#define VKR_DEPOT_SERVICE_VERSION 1u
+#define VKR_DEPOT_SERVICE_VERSION 2u
+/* The version before repositories, which a service still accepts. */
+#define VKR_DEPOT_SERVICE_VERSION_1 1u
 #define VKR_DEPOT_BATCH 256u
 #define VKR_DEPOT_REFS_MAX 64u
 #define VKR_DEPOT_LOCKS_PAGE 32u
 #define VKR_DEPOT_LOCK_PATH_MAX 512u
 #define VKR_DEPOT_CONTROL_CHANNEL 0u
 #define VKR_DEPOT_DATA_CHANNEL 1u
+/* A repository's ID, as `<store>/repository` holds it. */
+#define VKR_DEPOT_REPOSITORY_ID_SIZE 16u
+/* HELLO flags. */
+#define VKR_DEPOT_HELLO_OUTBOUND_ONLY 1u
+/* Closes a connection that sends a request without selecting a repository,
+   as a version 1 client does, to a service that serves several. */
+#define VKR_DEPOT_CLOSE_SELECT_REPOSITORY (VKR_NET_CLOSE_SERVICE_BASE + 1u)
 
 typedef enum VkrDepotMessageId {
   VKR_DEPOT_MSG_REFS_REQUEST = 1,
@@ -35,7 +52,21 @@ typedef enum VkrDepotMessageId {
   VKR_DEPOT_MSG_LOCK_REPLY = 12,
   VKR_DEPOT_MSG_LOCKS_REQUEST = 13,
   VKR_DEPOT_MSG_LOCKS = 14,
+  /* Version 2. */
+  VKR_DEPOT_MSG_HELLO = 15,
+  VKR_DEPOT_MSG_HELLO_REPLY = 16,
 } VkrDepotMessageId;
+
+typedef enum VkrDepotHelloStatus {
+  VKR_DEPOT_HELLO_OK = 0,
+  /* The service serves no repository with that ID. */
+  VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY,
+  /* The key has no role on that repository. */
+  VKR_DEPOT_HELLO_NO_ROLE,
+  /* No repository named, and the service serves several. */
+  VKR_DEPOT_HELLO_SELECT_REQUIRED,
+  VKR_DEPOT_HELLO_STATUS_COUNT
+} VkrDepotHelloStatus;
 
 typedef enum VkrDepotRefStatus {
   VKR_DEPOT_REF_OK = 0,
@@ -147,6 +178,24 @@ typedef struct VkrDepotLocksWire {
   bool8_t more;
 } VkrDepotLocksWire;
 
+typedef struct VkrDepotHelloWire {
+  uint64_t request;
+  /* All zero, or a size of zero, for the service's default repository. */
+  uint8_t repository[VKR_DEPOT_REPOSITORY_ID_SIZE];
+  uint32_t repository_size;
+  uint64_t flags; /**< VKR_DEPOT_HELLO_* bits. */
+} VkrDepotHelloWire;
+
+typedef struct VkrDepotHelloReplyWire {
+  uint64_t request;
+  uint32_t status; /**< VkrDepotHelloStatus. */
+  /* The selected repository; empty for a store without an ID yet. */
+  uint8_t repository[VKR_DEPOT_REPOSITORY_ID_SIZE];
+  uint32_t repository_size;
+  char name[VKR_DEPOT_BRANCH_NAME];
+  char default_branch[VKR_DEPOT_BRANCH_NAME];
+} VkrDepotHelloReplyWire;
+
 typedef union VkrDepotMessage {
   VkrDepotRequestWire request;
   VkrDepotRefsWire refs;
@@ -158,8 +207,11 @@ typedef union VkrDepotMessage {
   VkrDepotLockReplyWire lock_reply;
   VkrDepotLocksRequestWire locks_request;
   VkrDepotLocksWire locks;
+  VkrDepotHelloWire hello;
+  VkrDepotHelloReplyWire hello_reply;
 } VkrDepotMessage;
 
+/* The newest schema, which decodes every version's messages. */
 const VkrWireSchema *vkr_depot_schema(void);
 const VkrWireMessage *vkr_depot_message(VkrDepotMessageId id);
 

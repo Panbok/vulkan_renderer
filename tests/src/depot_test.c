@@ -3028,6 +3028,152 @@ static void test_depot_checkout_safety(void) {
   printf("  test_depot_checkout_safety PASSED\n");
 }
 
+/* The depot service opened by hand on a test world's connection, so a test
+   can send messages the client library does not. */
+typedef struct DepotRawService {
+  bool8_t opened;
+  uint16_t version;
+  uint32_t replies;
+  uint16_t last_id;
+  VkrDepotMessage last;
+} DepotRawService;
+
+static void depot_raw_opened(void *context, VkrNetConnectionId connection,
+                             uint16_t version) {
+  (void)connection;
+  DepotRawService *raw = context;
+  raw->opened = true_v;
+  raw->version = version;
+}
+
+static void depot_raw_event(void *context, VkrNetConnectionId connection,
+                            uint8_t channel, const VkrNetEvent *event,
+                            uint64_t now_us) {
+  (void)connection;
+  (void)now_us;
+  DepotRawService *raw = context;
+  const VkrWireMessage *descriptor = NULL;
+  if (event->type != VKR_NET_EVENT_MESSAGE ||
+      channel != VKR_DEPOT_CONTROL_CHANNEL ||
+      vkr_wire_decode(vkr_depot_schema(), event->data, event->size, &raw->last,
+                      sizeof(raw->last), &descriptor) != VKR_WIRE_OK) {
+    return;
+  }
+  raw->last_id = descriptor->id;
+  raw->replies += 1u;
+}
+
+/* Opens the service offering version 1 only, or every version. */
+static void depot_raw_open(DepotWorld *world, DepotRawService *raw,
+                           bool8_t version_1_only) {
+  for (uint32_t i = 0u; i < 20000u && !world->connected; ++i) {
+    (void)depot_world_pump(world, 10);
+  }
+  assert(world->connected);
+  VkrNetService service = vkr_depot_service_template();
+  if (version_1_only) {
+    service.version_count = 1u;
+  }
+  service.context = raw;
+  service.opened = depot_raw_opened;
+  service.event = depot_raw_event;
+  assert(vkr_net_session_register(world->client_session, &service));
+  assert(vkr_net_session_open(world->client_session, world->connection,
+                              VKR_NET_SERVICE_DEPOT, world->now));
+  for (uint32_t i = 0u; i < 20000u && !raw->opened && !world->closed; ++i) {
+    (void)depot_world_pump(world, 10);
+  }
+  assert(raw->opened);
+}
+
+/* Sends `message` and pumps until a reply or the connection's end. */
+static void depot_raw_ask(DepotWorld *world, DepotRawService *raw,
+                          VkrDepotMessageId id, const void *message) {
+  const uint32_t before = raw->replies;
+  assert(vkr_depot_send(world->client_session, world->connection, id, message,
+                        world->now));
+  for (uint32_t i = 0u; i < 20000u && raw->replies == before && !world->closed;
+       ++i) {
+    (void)depot_world_pump(world, 10);
+  }
+}
+
+static bool8_t depot_test_count_branch(void *context, const char *branch) {
+  (void)branch;
+  *(uint32_t *)context += 1u;
+  return true_v;
+}
+
+/* Fails when a version 2 connection cannot select the served store with a
+   HELLO that names no repository, when the reply lacks the store's name or
+   its `main` branch, when a HELLO naming an unknown repository selects
+   anything, when a second HELLO after a selection is not refused, or when
+   a version 1 connection (an older build) cannot work without a HELLO or
+   may send one. */
+static void test_depot_hello(void) {
+  printf("  Running test_depot_hello...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("hello", store_root, sizeof(store_root));
+  VkrNetKeyPair keys;
+  vkr_net_keypair_generate(&keys);
+  assert(
+      vkr_depot_access_set(store_root, keys.public_key, VKR_DEPOT_ROLE_WRITE));
+  const VkrDepotId zero = {0};
+  VkrDepotId commit;
+  MemSet(commit.bytes, 0x42, sizeof(commit.bytes));
+  assert(vkr_depot_ref_swap(store_root, "dev", &zero, &commit, NULL) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  assert(vkr_depot_ref_swap(store_root, "main", &zero, &commit, NULL) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  uint32_t branches = 0u;
+  assert(vkr_depot_ref_list(store_root, depot_test_count_branch, &branches) &&
+         branches == 2u);
+  const VkrNetSimLink link = {.latency_us = 2000u,
+                              .bandwidth = 100u * 1000u * 1000u};
+
+  DepotWorld world;
+  depot_world_init(&world, store_root, &link, &keys);
+  DepotRawService raw = {0};
+  depot_raw_open(&world, &raw, false_v);
+  assert(raw.version == VKR_DEPOT_SERVICE_VERSION);
+  VkrDepotHelloWire hello = {.request = 1u,
+                             .repository_size = VKR_DEPOT_REPOSITORY_ID_SIZE};
+  MemSet(hello.repository, 0x77, sizeof(hello.repository));
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last_id == VKR_DEPOT_MSG_HELLO_REPLY &&
+         raw.last.hello_reply.request == 1u &&
+         raw.last.hello_reply.status == VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY);
+  hello = (VkrDepotHelloWire){.request = 2u,
+                              .flags = VKR_DEPOT_HELLO_OUTBOUND_ONLY};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last_id == VKR_DEPOT_MSG_HELLO_REPLY &&
+         raw.last.hello_reply.status == VKR_DEPOT_HELLO_OK &&
+         strcmp(raw.last.hello_reply.name, vkr_bakery_path_name(store_root)) ==
+             0 &&
+         strcmp(raw.last.hello_reply.default_branch, "main") == 0);
+  const VkrDepotRequestWire refs = {.request = 3u};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs);
+  assert(raw.last_id == VKR_DEPOT_MSG_REFS && raw.last.refs.ref_count == 2u);
+  hello.request = 4u;
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(world.closed && world.close_code == VKR_NET_CLOSE_PROTOCOL_VIOLATION);
+  depot_world_destroy(&world);
+
+  /* A version 1 connection works without a HELLO and may not send one. */
+  depot_world_init(&world, store_root, &link, &keys);
+  raw = (DepotRawService){0};
+  depot_raw_open(&world, &raw, true_v);
+  assert(raw.version == VKR_DEPOT_SERVICE_VERSION_1);
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs);
+  assert(raw.last_id == VKR_DEPOT_MSG_REFS && raw.last.refs.ref_count == 2u);
+  hello.request = 5u;
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(world.closed && world.close_code == VKR_NET_CLOSE_PROTOCOL_VIOLATION);
+  depot_world_destroy(&world);
+  assert(vkr_bakery_remove_tree(store_root));
+  printf("  test_depot_hello PASSED\n");
+}
+
 /* Fails when the server moves a branch to a commit whose tree names the
    depot's state folder, which every working copy that pulls it would let
    overwrite its access list, or when a page of locks with long paths does
@@ -3192,6 +3338,7 @@ bool32_t run_depot_tests(void) {
   test_depot_tree_limits();
   test_depot_checkout_safety();
   test_depot_server_refusals();
+  test_depot_hello();
   test_depot_access_requests();
   printf("--- Asset depot tests completed ---\n");
   return true;

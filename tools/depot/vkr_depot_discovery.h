@@ -1,6 +1,7 @@
 #pragma once
 
 #include "platform/vkr_udp_socket.h"
+#include "vkr_depot_protocol.h"
 
 /* LAN discovery of depot servers (ADR-105). A server answers probes on
  * UDP port VKR_DEPOT_DISCOVERY_PORT unless it names another, as a second
@@ -39,7 +40,6 @@
 /* The largest probe or answer: a version 2 answer with every text at its
    longest fits one Ethernet frame. */
 #define VKR_DEPOT_DISCOVERY_DATAGRAM_MAX 1400u
-#define VKR_DEPOT_REPOSITORY_ID_SIZE 16u
 
 #define VKR_DEPOT_BROWSE_TARGETS 16u
 #define VKR_DEPOT_BROWSE_MAX 32u

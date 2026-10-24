@@ -100,6 +100,12 @@ typedef struct ServerPeer {
   VkrNetConnectionId connection;
   uint8_t key[32];
   uint32_t role;
+  /* The depot service version the connection opened with. */
+  uint16_t version;
+  /* A HELLO selected the repository; another one closes the connection. */
+  bool8_t selected;
+  /* The client's HELLO said it accepts no connection from outside. */
+  bool8_t outbound_only;
   ServerSendItem *queue;
   uint32_t queue_head;
   uint32_t queue_count;
@@ -1183,6 +1189,48 @@ static void server_on_refs(VkrDepotServer *server, ServerPeer *peer,
                        reply, now);
 }
 
+static bool8_t server_default_branch_visit(void *context, const char *branch) {
+  char *out = context;
+  if (!out[0] || strcmp(branch, "main") == 0) {
+    snprintf(out, VKR_DEPOT_BRANCH_NAME, "%s", branch);
+  }
+  return true_v;
+}
+
+/* Selects the repository a version 2 connection works on. The server
+   serves one store, the default: a HELLO that names none selects it. A
+   store gets its ID with the repository file (proposal "Repository
+   layout"); until then a HELLO that names an ID finds nothing. A failed
+   HELLO may be retried; one after a selection breaks the protocol. */
+static void server_on_hello(VkrDepotServer *server, ServerPeer *peer,
+                            const VkrDepotHelloWire *hello, uint64_t now) {
+  if (peer->selected) {
+    vkr_net_core_close(server->core, peer->connection,
+                       VKR_NET_CLOSE_PROTOCOL_VIOLATION, now);
+    return;
+  }
+  VkrDepotHelloReplyWire *reply = &server->reply.hello_reply;
+  MemZero(reply, sizeof(*reply));
+  reply->request = hello->request;
+  bool8_t named = false_v;
+  for (uint32_t i = 0u; i < hello->repository_size; ++i) {
+    named = named || hello->repository[i] != 0u;
+  }
+  peer->outbound_only = (hello->flags & VKR_DEPOT_HELLO_OUTBOUND_ONLY) != 0u;
+  if (named) {
+    reply->status = VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY;
+  } else {
+    reply->status = VKR_DEPOT_HELLO_OK;
+    peer->selected = true_v;
+    snprintf(reply->name, sizeof(reply->name), "%s",
+             vkr_bakery_path_name(server->store.root));
+    (void)vkr_depot_ref_list(server->store.root, server_default_branch_visit,
+                             reply->default_branch);
+  }
+  (void)vkr_depot_send(server->session, peer->connection,
+                       VKR_DEPOT_MSG_HELLO_REPLY, reply, now);
+}
+
 static void server_on_have(VkrDepotServer *server, ServerPeer *peer,
                            const VkrDepotIdsWire *have, uint64_t now) {
   VkrDepotBitsWire *reply = &server->reply.bits;
@@ -1554,6 +1602,14 @@ static void server_service_event(void *context, VkrNetConnectionId connection,
   case VKR_DEPOT_MSG_LOCKS_REQUEST:
     server_on_locks(server, peer, &message->locks_request, now);
     break;
+  case VKR_DEPOT_MSG_HELLO:
+    if (peer->version < VKR_DEPOT_SERVICE_VERSION) {
+      vkr_net_core_close(server->core, connection,
+                         VKR_NET_CLOSE_PROTOCOL_VIOLATION, now);
+      break;
+    }
+    server_on_hello(server, peer, &message->hello, now);
+    break;
   default:
     /* A reply sent to the server breaks the protocol. */
     vkr_net_core_close(server->core, connection,
@@ -1565,12 +1621,13 @@ static void server_service_event(void *context, VkrNetConnectionId connection,
 static uint16_t server_service_accept(void *context,
                                       VkrNetConnectionId connection,
                                       uint16_t version) {
-  (void)version;
   VkrDepotServer *server = context;
-  const ServerPeer *peer = server_peer(server, connection);
-  return peer && peer->role >= VKR_DEPOT_ROLE_READ
-             ? 0u
-             : (uint16_t)VKR_NET_CLOSE_ACCESS_DENIED;
+  ServerPeer *peer = server_peer(server, connection);
+  if (!peer || peer->role < VKR_DEPOT_ROLE_READ) {
+    return (uint16_t)VKR_NET_CLOSE_ACCESS_DENIED;
+  }
+  peer->version = version;
+  return 0u;
 }
 
 // =============================================================================
