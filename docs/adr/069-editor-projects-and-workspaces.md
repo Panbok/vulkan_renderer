@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-24
 authority: adr
 ---
 
@@ -31,6 +31,25 @@ The normal [editor application](../../editor/src/editor_application.c) starts
 with a Projects chooser and no world scene. The user selects a workspace directory;
 its `.vkreditor` child owns managed data. A machine-local locator remembers the
 chosen directory. Explicit `--scene` remains the legacy scene entry point.
+
+Projects live in their own folders, outside the git repository (owner
+decision of 2026-10-24, depot proposal D4):
+
+- The locator also holds the **projects folder**, `projects_root`. When it
+  has none, the folder is `<home>/VKR Projects`. Saving the workspace keeps
+  the projects folder, and saving the projects folder keeps the workspace
+  ([editor_project_store.h](../../editor/src/editor_project_store.h),
+  `vkr_editor_projects_root`).
+- **New project** makes `<projects folder>/<name>` (with characters a file
+  name cannot hold replaced, and numbered when the folder exists) as the
+  project's own workspace, switches to it, and creates the project there.
+  It needs no open workspace. Clone and Make repository default to the same
+  folder.
+- The chooser lists the open workspace's projects, then the projects of
+  every folder under the projects folder. Opening one of those switches to
+  its folder. Delete works only on a project of the open workspace.
+- The chooser shows the projects folder with **Change**. **Open folder**
+  (formerly Change workspace) opens any workspace folder.
 The project creation form offers Blank, FPS Arena and RPG Grounds starter scenes,
 with Blank selected initially, plus No starter scene. They form a gallery of
 cards showing each template's preview from `assets/templates/previews`, beside
@@ -559,6 +578,21 @@ write lease, then exited 0. SHA-256 snapshots of all 3,293 workspace files befor
 and after were identical; `.scratch/projects-readonly-evidence.json` records zero
 changed files. Runtime projections and logs stayed in the OS-local jobs directory.
 The navigation marks this state `[RO]`; Content disables asset-writing actions.
+
+Projects folder, Windows desktop, Release, 2026-10-24:
+
+- `vulkan_renderer_tester --suite editor_project_store` passes. It checks
+  the default `VKR Projects` folder, the locator keeping each field when
+  the other is saved, and a new project's folder under a Cyrillic folder
+  name, cleaned and then numbered.
+- With the projects folder at the default
+  `C:\Users\Пользователь\VKR Projects`, a headless editor's
+  `depot.init` made `Testbed` there. It opened with Bakery's prepare job.
+  A `vkr_depot clone` of it into `Testbed clone` in the same folder opened
+  too, with no error.
+- A windowed launch showed the projects folder `D:/VKR Projects` and the
+  moved Testbed (three scenes) listed from it, beside the open
+  workspace's project.
 
 ## Consequences
 

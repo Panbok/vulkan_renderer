@@ -140,6 +140,9 @@ typedef struct ProjectCard {
   char name[VKR_EDITOR_PROJECT_NAME_CAPACITY];
   char error[128];
   uint32_t scenes;
+  /* The project's own folder under the projects root (ADR-110); empty for
+     a project of the open workspace. */
+  char workspace[VKR_EDITOR_PROJECT_PATH_CAPACITY];
 } ProjectCard;
 
 /* Summary of an `inspect_scene` job. */
@@ -262,6 +265,8 @@ struct VkrEditorProjects {
   uint32_t card_count;
   uint32_t scan_index;
   char workspace_directory[1024];
+  /* Where new projects, clones and repositories go. */
+  char projects_root[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   char locator_path[1024];
   char initial_project[1024];
   char initial_scene[37];
@@ -676,6 +681,51 @@ static bool8_t project_add_card(const char *id, void *context) {
   return true_v;
 }
 
+static bool8_t project_workspace_clone(const char *directory);
+
+typedef struct ProjectRootScan {
+  VkrEditorProjects *projects;
+  const char *workspace;
+} ProjectRootScan;
+
+static bool8_t project_add_root_card(const char *id, void *context) {
+  ProjectRootScan *scan = context;
+  if (!project_add_card(id, scan->projects)) {
+    return false_v;
+  }
+  ProjectCard *card = &scan->projects->cards[scan->projects->card_count - 1u];
+  string_format(card->workspace, sizeof(card->workspace), "%s",
+                scan->workspace);
+  return true_v;
+}
+
+/* Each folder under the projects root that holds projects is a project's
+   own workspace; the open one lists its projects first. */
+static bool8_t project_root_visit(void *context, const char *name,
+                                  bool8_t is_directory) {
+  VkrEditorProjects *projects = context;
+  if (!is_directory || name[0] == '.') {
+    return true_v;
+  }
+  char folder[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  const int32_t length = string_format(folder, sizeof(folder), "%s/%s",
+                                       projects->projects_root, name);
+  if (length <= 0 || (uint32_t)length >= sizeof(folder)) {
+    return true_v;
+  }
+  VkrEditorWorkspace workspace = {0};
+  VkrEditorProjectError error = {0};
+  if (!vkr_editor_workspace_open(folder, project_workspace_clone(folder),
+                                 &workspace, &error) ||
+      string_equals(workspace.root, projects->workspace.root)) {
+    return true_v;
+  }
+  ProjectRootScan scan = {.projects = projects, .workspace = folder};
+  (void)vkr_editor_workspace_visit(&workspace, project_add_root_card, &scan,
+                                   &error);
+  return projects->card_count < PROJECT_CARD_COUNT;
+}
+
 static void project_refresh(VkrEditorProjects *projects) {
   projects->card_count = 0;
   projects->scan_index = 0;
@@ -683,6 +733,11 @@ static void project_refresh(VkrEditorProjects *projects) {
   if (!vkr_editor_workspace_visit(&projects->workspace, project_add_card,
                                   projects, &error)) {
     project_error(projects, &error);
+  }
+  if (projects->projects_root[0]) {
+    const FilePath root = {.path = project_string(projects->projects_root),
+                           .type = FILE_PATH_TYPE_ABSOLUTE};
+    (void)file_list_directory(&root, project_root_visit, projects);
   }
 }
 
@@ -3213,15 +3268,52 @@ static void project_overlay_workspace(const char *directory) {
   }
 }
 
+static bool8_t project_switch_workspace(VkrEditorProjects *projects,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        const char *selected);
+
+/* A new project gets its own folder under the projects root (ADR-110),
+   `<root>/<name>`, numbered when taken, as its workspace. */
+static bool8_t project_enter_new_folder(VkrEditorProjects *projects,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame) {
+  VkrEditorProjectError error = {0};
+  char folder[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  VkrEditorWorkspace workspace = {0};
+  if (!vkr_editor_project_name_valid(projects->project_name, &error) ||
+      !vkr_editor_projects_new_folder(NULL, projects->project_name, folder,
+                                      &error)) {
+    project_error(projects, &error);
+    return false_v;
+  }
+  const FilePath path = {.path = project_string(folder),
+                         .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (!file_create_directories(&path) ||
+      !vkr_editor_workspace_open(folder, true_v, &workspace, &error)) {
+    if (!error.message[0]) {
+      string_format(error.message, sizeof(error.message),
+                    "Cannot create the project folder %s", folder);
+    }
+    project_error(projects, &error);
+    return false_v;
+  }
+  return project_switch_workspace(projects, editor, frame, folder);
+}
+
 static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame) {
   VkrEditorProjectError error = {0};
-  if (projects->read_only) {
+  /* A new project goes to a folder of its own, so the open workspace needs
+     to be neither writable nor open. */
+  const bool8_t new_project =
+      projects->view == PROJECT_VIEW_CREATE && !projects->creating_project;
+  if (projects->read_only && !new_project) {
     string_format(projects->message, sizeof(projects->message),
                   "Workspace is read-only while another editor owns it.");
     return;
   }
-  if (!projects->workspace.initialized) {
+  if (!projects->workspace.initialized && !new_project) {
     vkr_editor_depot_workspace_sparse(projects->workspace_directory);
     if (!vkr_editor_workspace_open(projects->workspace_directory, true_v,
                                    &projects->workspace, &error) ||
@@ -3275,6 +3367,9 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
       !projects->source_scene[0]) {
     string_format(projects->message, sizeof(projects->message),
                   "Choose a scene JSON file first.");
+    return;
+  }
+  if (new_project && !project_enter_new_folder(projects, editor, frame)) {
     return;
   }
   if (projects->view == PROJECT_VIEW_CREATE && !projects->creating_project) {
@@ -4068,6 +4163,24 @@ bool8_t vkr_editor_projects_open_workspace(VkrEditorProjects *projects,
   return true_v;
 }
 
+/* Picks the folder new projects go to and lists its projects. */
+static void project_choose_projects_root(VkrEditorProjects *projects,
+                                         const VkrSampleUiFrame *frame) {
+  char selected[VKR_EDITOR_PROJECT_PATH_CAPACITY] = {0};
+  project_browse(projects, frame, "Choose the projects folder", NULL, 0, true_v,
+                 selected, sizeof(selected));
+  if (!selected[0]) {
+    return;
+  }
+  VkrEditorProjectError error = {0};
+  if (!vkr_editor_projects_root_save(NULL, selected, &error) ||
+      !vkr_editor_projects_root(NULL, projects->projects_root, &error)) {
+    project_error(projects, &error);
+    return;
+  }
+  project_refresh(projects);
+}
+
 static void project_choose_workspace(VkrEditorProjects *projects,
                                      VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame) {
@@ -4151,6 +4264,15 @@ VkrEditorProjects *vkr_editor_projects_create(VkrAllocator *allocator, int argc,
                                            &error)) {
       project_error(projects, &error);
     }
+  }
+  {
+    VkrEditorProjectError error = {0};
+    if (!vkr_editor_projects_root(NULL, projects->projects_root, &error)) {
+      project_error(projects, &error);
+    }
+  }
+  if (!projects->workspace_directory[0]) {
+    project_refresh(projects);
   }
   if (projects->workspace_directory[0]) {
     VkrEditorProjectError error = {0};
@@ -5015,8 +5137,13 @@ static void project_scan_next_card(VkrEditorProjects *projects,
       vkr_allocator_alloc(frame->ui->frame_allocator, sizeof(*project),
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   VkrEditorProjectError error = {0};
-  if (project &&
-      vkr_editor_project_load(&projects->workspace, card->id,
+  VkrEditorWorkspace own = {0};
+  const bool8_t elsewhere = card->workspace[0] != '\0';
+  const bool8_t opened =
+      !elsewhere ||
+      vkr_editor_workspace_open(card->workspace, false_v, &own, &error);
+  if (project && opened &&
+      vkr_editor_project_load(elsewhere ? &own : &projects->workspace, card->id,
                               frame->ui->frame_allocator, project, &error)) {
     string_format(card->name, sizeof(card->name), "%s", project->name);
     card->scenes = project->scene_count;
@@ -5406,7 +5533,7 @@ static void project_build_chooser(VkrEditorProjects *projects,
                                   float32_t width) {
   const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = frame->ui;
-  if (!projects->workspace_directory[0]) {
+  if (!projects->workspace_directory[0] && !projects->card_count) {
     /* First run: one clear step instead of a toolbar of disabled actions. */
     VkrUiWidgetConfig mark = project_widget(width * 0.5f - 32, 40, 64, 64);
     mark.style.background_color = vkr_ui_color_alpha(theme->accent, 0.16f);
@@ -5425,11 +5552,17 @@ static void project_build_chooser(VkrEditorProjects *projects,
     VkrUiWidgetConfig subtitle = project_widget(0, 156, width, 24);
     subtitle.center = true_v;
     subtitle.style.text_color = theme->text_secondary;
-    vkr_ui_label(ui, project_string("welcome.subtitle"),
-                 project_string("Choose a workspace folder for your projects."),
-                 &subtitle);
-    if (project_button(ui, "workspace.choose", "Choose workspace",
-                       width * 0.5f - 90, 200, 180, false_v))
+    vkr_ui_label(
+        ui, project_string("welcome.subtitle"),
+        project_string("Create a project, or open a folder that holds one."),
+        &subtitle);
+    if (project_button(ui, "welcome.new", "New project", width * 0.5f - 184,
+                       200, 180, !projects->projects_root[0])) {
+      project_begin_create(projects);
+      return;
+    }
+    if (project_button(ui, "workspace.choose", "Open folder", width * 0.5f + 4,
+                       200, 180, false_v))
       project_choose_workspace(projects, editor, frame);
     /* Or get a project another computer shares: it brings its own
        workspace. */
@@ -5446,19 +5579,20 @@ static void project_build_chooser(VkrEditorProjects *projects,
   const float32_t change_x = new_x - 8.0f - change_width;
   const float32_t refresh_x = change_x - 6.0f - 30.0f;
   if (project_button(ui, "project.new", "New project", new_x, toolbar_y,
-                     new_width, !projects->workspace.root[0])) {
+                     new_width, !projects->projects_root[0])) {
     project_begin_create(projects);
     return;
   }
-  if (project_button(ui, "workspace.change", "Change workspace", change_x,
-                     toolbar_y, change_width, false_v)) {
+  if (project_button(ui, "workspace.change", "Open folder", change_x, toolbar_y,
+                     change_width, false_v)) {
     project_choose_workspace(projects, editor, frame);
     return;
   }
   VkrUiWidgetConfig refresh = vkr_editor_icon_button_config(
-      0, 0, VKR_UI_ICON_REFRESH, string8_lit("Rescan the workspace"));
+      0, 0, VKR_UI_ICON_REFRESH, string8_lit("Rescan the projects"));
   refresh.placement = project_widget(refresh_x, toolbar_y, 30, 30).placement;
-  refresh.disabled = !projects->workspace.root[0];
+  refresh.disabled =
+      !projects->workspace.root[0] && !projects->projects_root[0];
   if (vkr_ui_button(ui, project_string("projects.refresh"), (String8){0},
                     &refresh))
     project_refresh(projects);
@@ -5486,7 +5620,23 @@ static void project_build_chooser(VkrEditorProjects *projects,
   path.tooltip = string8_lit("Workspace folder");
   vkr_ui_label(ui, project_string("workspace"),
                project_string(projects->workspace_directory), &path);
-  float32_t y = 80;
+  /* Where new projects go, each in its own folder (ADR-110). */
+  char root_caption[VKR_EDITOR_PROJECT_PATH_CAPACITY + 32];
+  string_format(root_caption, sizeof(root_caption), "Projects folder: %s",
+                projects->projects_root[0] ? projects->projects_root : "-");
+  VkrUiWidgetConfig root = project_widget(12, 66, width - 120, 22);
+  root.style.font_size_pt = theme->font_caption;
+  root.style.padding_pt = (VkrUiEdges){2, 2, 2, 2};
+  root.style.text_color = theme->text_secondary;
+  root.tooltip = string8_lit("New projects, clones and repositories go here");
+  vkr_ui_label(ui, project_string("projects.root"),
+               project_string(root_caption), &root);
+  if (project_button(ui, "projects.root.change", "Change", width - 100, 62, 88,
+                     false_v)) {
+    project_choose_projects_root(projects, frame);
+    return;
+  }
+  float32_t y = 100;
   if (!projects->card_count) {
     /* An empty workspace offers the one next step, centered. */
     VkrUiWidgetConfig mark = project_widget(12, y + 48, width - 24, 40);
@@ -5509,7 +5659,7 @@ static void project_build_chooser(VkrEditorProjects *projects,
                  &caption);
     if (project_button(ui, "project.new.first", "Create project",
                        width * 0.5f - 80.0f, y + 164, 160,
-                       !projects->workspace.root[0])) {
+                       !projects->projects_root[0])) {
       project_begin_create(projects);
       return;
     }
@@ -5530,7 +5680,10 @@ static void project_build_chooser(VkrEditorProjects *projects,
     row.disabled = unavailable;
     row.tooltip = project_string(card->name);
     if (vkr_ui_button(ui, project_string("project.open"), (String8){0}, &row)) {
-      if (project_any_dirty(frame)) {
+      if (card->workspace[0]) {
+        (void)vkr_editor_projects_open_workspace(projects, editor, frame,
+                                                 card->workspace, card->id);
+      } else if (project_any_dirty(frame)) {
         string_format(projects->initial_project,
                       sizeof(projects->initial_project), "%s", card->id);
         projects->resume_view = PROJECT_VIEW_CHOOSER;
@@ -5567,9 +5720,10 @@ static void project_build_chooser(VkrEditorProjects *projects,
     remove.placement = project_widget(width - 52, y + 13, 26, 26).placement;
     remove.style.hover_background_color =
         vkr_ui_color_alpha(theme->error, 0.35f);
-    remove.disabled = projects->read_only || projects->job_id ||
-                      projects->waiting_activation || frame->scene_loading ||
-                      projects->delete_project_job ||
+    /* A project of another folder is deleted from its own workspace. */
+    remove.disabled = card->workspace[0] || projects->read_only ||
+                      projects->job_id || projects->waiting_activation ||
+                      frame->scene_loading || projects->delete_project_job ||
                       vkr_editor_bakery_busy(editor->bakery);
     if (vkr_ui_button(ui, project_string("project.delete"), (String8){0},
                       &remove)) {

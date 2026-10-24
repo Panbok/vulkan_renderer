@@ -352,42 +352,17 @@ static bool8_t depot_key_zero(const uint8_t key[32]) {
   return true_v;
 }
 
-/* Copies `text` keeping only characters a file name holds on every
-   platform. */
-static void depot_folder_name(const char *text, char *out, uint32_t capacity) {
-  uint32_t length = 0u;
-  for (const char *c = text; *c && length + 1u < capacity; ++c) {
-    const char ch = *c;
-    const bool8_t bad = ch == '/' || ch == '\\' || ch == ':' || ch == '*' ||
-                        ch == '?' || ch == '"' || ch == '<' || ch == '>' ||
-                        ch == '|' || (unsigned char)ch < 32u;
-    out[length++] = bad ? '_' : ch;
-  }
-  while (length && (out[length - 1u] == ' ' || out[length - 1u] == '.')) {
-    --length;
-  }
-  out[length] = '\0';
-  if (!length) {
-    string_format(out, capacity, "Project");
-  }
-}
-
-/* `<home>/VKR Projects/<name>`, made unique with a number when taken. */
+/* `<projects root>/<name>` (ADR-110), made unique with a number when
+   taken; `.` when the projects folder is unknown. */
 static void depot_default_destination(const char *name, char *out,
                                       uint32_t capacity) {
-  char folder[96];
-  depot_folder_name(name, folder, sizeof(folder));
-  char home[DEPOT_PATH];
-  if (!vkr_platform_user_directory(VKR_PLATFORM_USER_HOME, home,
-                                   sizeof(home))) {
-    string_format(home, sizeof(home), ".");
+  char folder[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  VkrEditorProjectError error = {0};
+  if (!vkr_editor_projects_new_folder(NULL, name, folder, &error)) {
+    log_warn("Source control: %s", error.message);
+    string_format(folder, sizeof(folder), ".");
   }
-  char base[DEPOT_PATH];
-  string_format(base, sizeof(base), "%s/VKR Projects/%s", home, folder);
-  string_format(out, capacity, "%s", base);
-  for (uint32_t i = 2u; vkr_bakery_is_directory(out); ++i) {
-    string_format(out, capacity, "%s %u", base, i);
-  }
+  string_format(out, capacity, "%s", folder);
 }
 
 /* Unix microseconds now, as commits record their time. */

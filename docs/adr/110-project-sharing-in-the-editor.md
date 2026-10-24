@@ -92,7 +92,8 @@ thread reads finished results and progress counters only.
   every server used before, since some endpoint security drops answers to
   broadcasts but not to direct probes. A field takes a computer name or
   address for a server discovery misses.
-- Clone copies into `~/VKR Projects/<name>` with the server as `origin`,
+- Clone copies into `<projects folder>/<name>` (ADR-069, by default
+  `~/VKR Projects`) with the server as `origin`,
   waits for approval if needed, cooks every texture source without a cooked
   file for this computer, re-cooks the build textures of each scene the copy
   holds (a project may list a scene it does not share) and the project's

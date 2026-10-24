@@ -21021,7 +21021,7 @@ static const OpsDef s_ops[] = {
      OPS_NO_SCENE},
     {"depot.init",
      "Makes the open project a repository: copies it and every file it uses "
-     "into 'destination' (default ~/VKR Projects/<name>), commits it there "
+     "into 'destination' (default <projects folder>/<name>), commits it there "
      "and opens it; 'serve' lets others fetch and push from the start.",
      "{\"type\":\"object\",\"properties\":{\"destination\":{\"type\":"
      "\"string\"},\"serve\":{\"type\":\"boolean\"}}}",
@@ -21084,7 +21084,7 @@ static const OpsDef s_ops[] = {
      ops_run_depot_serve, NULL, OPS_NO_SCENE},
     {"depot.clone",
      "Clones the repository another computer serves at 'address' with "
-     "service 'key' into 'destination' (default ~/VKR Projects/<name>) and "
+     "service 'key' into 'destination' (default <projects folder>/<name>) and "
      "opens it; 'sparse' fetches each file when something first reads it.",
      "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
      "\"string\"},\"key\":{\"type\":\"string\"},\"name\":{\"type\":"

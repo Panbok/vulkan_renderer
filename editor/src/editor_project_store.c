@@ -1507,17 +1507,13 @@ static bool8_t project_locator_path(const char *override,
   return true_v;
 }
 
-bool8_t vkr_editor_workspace_locator_load(
-    const char *locator_path, char directory[VKR_EDITOR_PROJECT_PATH_CAPACITY],
-    VkrEditorProjectError *error) {
-  if (!directory) {
-    return project_error(error, "Workspace locator needs output storage");
-  }
+/* The locator's last workspace and projects root as written, either one
+   empty when the file lacks it; a missing file gives both empty. */
+static bool8_t project_locator_read(
+    const char *path, char directory[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+    char root[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error) {
   directory[0] = '\0';
-  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  if (!project_locator_path(locator_path, path, error)) {
-    return false_v;
-  }
+  root[0] = '\0';
   FilePath file = project_path(path);
   FileHandle input = {0};
   FileError result = file_open(
@@ -1541,43 +1537,29 @@ bool8_t vkr_editor_workspace_locator_load(
         project_error(error, "Malformed local workspace locator: %s", path));
   }
   uint32_t version = project_json_field(&json, 0, "version");
-  char selected[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (version == UINT32_MAX ||
       json.tokens[version].end - json.tokens[version].start != 1 ||
       bytes[json.tokens[version].start] != '1' ||
-      !project_json_text(&json, 0, "directory", selected, sizeof(selected))) {
+      !project_json_text(&json, 0, "directory", directory,
+                         VKR_EDITOR_PROJECT_PATH_CAPACITY)) {
+    directory[0] = '\0';
     return project_json_finish(
         &json,
         project_error(error,
                       "Unsupported local workspace locator version or path"));
   }
-  FilePath chosen = project_path(selected);
-  if (file_path_resolve(&chosen, directory, VKR_EDITOR_PROJECT_PATH_CAPACITY) !=
-      FILE_ERROR_NONE) {
-    directory[0] = '\0';
-    return project_json_finish(
-        &json,
-        project_error(error, "Previous workspace folder is unavailable: %s",
-                      selected));
+  if (project_json_field(&json, 0, "projects_root") != UINT32_MAX &&
+      !project_json_text(&json, 0, "projects_root", root,
+                         VKR_EDITOR_PROJECT_PATH_CAPACITY)) {
+    root[0] = '\0';
   }
   return project_json_finish(&json, true_v);
 }
 
-bool8_t vkr_editor_workspace_locator_save(const char *locator_path,
-                                          const char *directory,
-                                          VkrEditorProjectError *error) {
-  if (!directory || !directory[0]) {
-    return project_error(error,
-                         "Select a workspace folder before saving its locator");
-  }
-  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  char selected[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  FilePath chosen = project_path(directory);
-  if (!project_locator_path(locator_path, path, error) ||
-      file_path_resolve(&chosen, selected, sizeof(selected)) !=
-          FILE_ERROR_NONE) {
-    return project_error(error, "Cannot resolve workspace locator paths");
-  }
+/* Publishes the locator with both fields; an empty root is left out. */
+static bool8_t project_locator_write(const char *path, const char *directory,
+                                     const char *root,
+                                     VkrEditorProjectError *error) {
   char parent[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (!vkr_string_copy_bounded(parent, sizeof(parent), path)) {
     return project_error(error, "Workspace locator path exceeds capacity");
@@ -1633,9 +1615,13 @@ bool8_t vkr_editor_workspace_locator_save(const char *locator_path,
   }
   bool8_t written =
       project_write_text(&output, "{\"version\":1,\"directory\":") &&
-      project_write_quote(&output, selected) &&
-      project_write_text(&output, "}\n") &&
-      file_sync(&output) == FILE_ERROR_NONE;
+      project_write_quote(&output, directory);
+  if (written && root[0]) {
+    written = project_write_text(&output, ",\"projects_root\":") &&
+              project_write_quote(&output, root);
+  }
+  written = written && project_write_text(&output, "}\n") &&
+            file_sync(&output) == FILE_ERROR_NONE;
   file_close(&output);
   if (!written ||
       file_rename(&staged, &destination, true_v) != FILE_ERROR_NONE) {
@@ -1643,6 +1629,153 @@ bool8_t vkr_editor_workspace_locator_save(const char *locator_path,
     return project_error(error, "Cannot publish local workspace locator");
   }
   return true_v;
+}
+
+bool8_t vkr_editor_workspace_locator_load(
+    const char *locator_path, char directory[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+    VkrEditorProjectError *error) {
+  if (!directory) {
+    return project_error(error, "Workspace locator needs output storage");
+  }
+  directory[0] = '\0';
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char selected[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char root[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!project_locator_path(locator_path, path, error) ||
+      !project_locator_read(path, selected, root, error)) {
+    return false_v;
+  }
+  /* A locator that holds only the projects root names no workspace. */
+  if (!selected[0]) {
+    return true_v;
+  }
+  FilePath chosen = project_path(selected);
+  if (file_path_resolve(&chosen, directory, VKR_EDITOR_PROJECT_PATH_CAPACITY) !=
+      FILE_ERROR_NONE) {
+    directory[0] = '\0';
+    return project_error(error, "Previous workspace folder is unavailable: %s",
+                         selected);
+  }
+  return true_v;
+}
+
+bool8_t vkr_editor_workspace_locator_save(const char *locator_path,
+                                          const char *directory,
+                                          VkrEditorProjectError *error) {
+  if (!directory || !directory[0]) {
+    return project_error(error,
+                         "Select a workspace folder before saving its locator");
+  }
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char selected[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  FilePath chosen = project_path(directory);
+  if (!project_locator_path(locator_path, path, error) ||
+      file_path_resolve(&chosen, selected, sizeof(selected)) !=
+          FILE_ERROR_NONE) {
+    return project_error(error, "Cannot resolve workspace locator paths");
+  }
+  /* The projects root stays as it was; an unreadable locator loses it. */
+  char previous[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char root[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  VkrEditorProjectError ignored = {0};
+  if (!project_locator_read(path, previous, root, &ignored)) {
+    root[0] = '\0';
+  }
+  return project_locator_write(path, selected, root, error);
+}
+
+bool8_t vkr_editor_projects_root(const char *locator_path,
+                                 char out[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+                                 VkrEditorProjectError *error) {
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char directory[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  out[0] = '\0';
+  /* An unreadable locator falls back to the default, as a missing one. */
+  VkrEditorProjectError ignored = {0};
+  if (project_locator_path(locator_path, path, &ignored) &&
+      project_locator_read(path, directory, out, &ignored) && out[0]) {
+    return true_v;
+  }
+  out[0] = '\0';
+  char home[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!vkr_platform_user_directory(VKR_PLATFORM_USER_HOME, home,
+                                   sizeof(home))) {
+    return project_error(error, "The home folder is unavailable for the "
+                                "projects folder");
+  }
+  const int32_t length = string_format(out, VKR_EDITOR_PROJECT_PATH_CAPACITY,
+                                       "%s/VKR Projects", home);
+  if (length <= 0 || (uint32_t)length >= VKR_EDITOR_PROJECT_PATH_CAPACITY) {
+    out[0] = '\0';
+    return project_error(error, "The projects folder path is too long");
+  }
+  return true_v;
+}
+
+void vkr_editor_project_folder_name(const char *text, char *out,
+                                    uint32_t capacity) {
+  uint32_t length = 0u;
+  for (const char *c = text; *c && length + 1u < capacity; ++c) {
+    const char ch = *c;
+    const bool8_t bad = ch == '/' || ch == '\\' || ch == ':' || ch == '*' ||
+                        ch == '?' || ch == '"' || ch == '<' || ch == '>' ||
+                        ch == '|' || (unsigned char)ch < 32u;
+    out[length++] = bad ? '_' : ch;
+  }
+  while (length && (out[length - 1u] == ' ' || out[length - 1u] == '.')) {
+    --length;
+  }
+  out[length] = '\0';
+  if (!length) {
+    string_format(out, capacity, "Project");
+  }
+}
+
+bool8_t
+vkr_editor_projects_new_folder(const char *locator_path, const char *name,
+                               char out[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+                               VkrEditorProjectError *error) {
+  char root[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char folder[96];
+  if (!vkr_editor_projects_root(locator_path, root, error)) {
+    return false_v;
+  }
+  vkr_editor_project_folder_name(name ? name : "", folder, sizeof(folder));
+  char base[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  const int32_t length =
+      string_format(base, sizeof(base), "%s/%s", root, folder);
+  if (length <= 0 || (uint32_t)length + 12u >= sizeof(base)) {
+    return project_error(error, "The project folder path is too long");
+  }
+  string_format(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%s", base);
+  for (uint32_t i = 2u;; ++i) {
+    const FilePath taken = project_path(out);
+    if (!file_exists(&taken)) {
+      return true_v;
+    }
+    string_format(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%s %u", base, i);
+  }
+}
+
+bool8_t vkr_editor_projects_root_save(const char *locator_path,
+                                      const char *root,
+                                      VkrEditorProjectError *error) {
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char resolved[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  FilePath chosen = project_path(root ? root : "");
+  if (!root || !root[0] || !project_locator_path(locator_path, path, error) ||
+      file_path_resolve(&chosen, resolved, sizeof(resolved)) !=
+          FILE_ERROR_NONE) {
+    return project_error(error, "Choose an existing folder for projects");
+  }
+  /* The last workspace stays as it was. */
+  char directory[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char previous[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  VkrEditorProjectError ignored = {0};
+  if (!project_locator_read(path, directory, previous, &ignored)) {
+    directory[0] = '\0';
+  }
+  return project_locator_write(path, directory, resolved, error);
 }
 
 typedef struct s_ProjectMemorySink {

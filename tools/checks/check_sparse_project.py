@@ -88,17 +88,17 @@ echo capture-done
 SPARSE_POLL = "wait 2\nop stream.status\nstats.pending_textures"
 
 
-def bistro_project():
-    """(id, project folder, Bistro scene id) of the repository workspace's
-    project that holds a scene named Bistro."""
-    for manifest in sorted((ROOT / ".vkreditor" / "projects").glob(
+def bistro_project(workspace: pathlib.Path):
+    """(id, project folder, Bistro scene id) of the workspace's project that
+    holds a scene named Bistro."""
+    for manifest in sorted((workspace / ".vkreditor" / "projects").glob(
             "*/project.json")):
         data = json.loads(manifest.read_text(encoding="utf-8"))
         for scene in data.get("scenes", []):
             if scene.get("name") == "Bistro":
                 scene_id = pathlib.PurePosixPath(scene["path"]).parts[1]
                 return manifest.parent.name, manifest.parent, scene_id
-    raise RuntimeError("no project of the repository workspace has a scene "
+    raise RuntimeError(f"no project of the workspace {workspace} has a scene "
                        "named Bistro")
 
 
@@ -168,6 +168,11 @@ def main() -> int:
     # Outside the repository: a share refuses a destination inside it.
     parser.add_argument("--work", default=str(
         pathlib.Path(tempfile.gettempdir()) / "vkr-sparse-project"))
+    # Projects live in their own folders (ADR-110): the workspace that
+    # holds the Bistro project, such as `~/VKR Projects/Testbed`.
+    parser.add_argument("--workspace", default=str(ROOT),
+                        help="workspace folder whose project has a Bistro "
+                        "scene (default: the repository's own)")
     parser.add_argument("--timeout", type=float, default=1200.0)
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
@@ -186,7 +191,8 @@ def main() -> int:
     env["VKR_DEPOT_IDENTITY"] = str(work / "identity.key")
     try:
         # 1. A workspace whose project holds Bistro alone, then its share.
-        project_id, project_dir, scene_id = bistro_project()
+        project_id, project_dir, scene_id = bistro_project(
+            pathlib.Path(args.workspace).resolve())
         source = work / "source"
         projects = source / ".vkreditor" / "projects"
         projects.mkdir(parents=True)

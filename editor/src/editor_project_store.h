@@ -172,6 +172,25 @@ bool8_t vkr_editor_workspace_locator_load(
 bool8_t vkr_editor_workspace_locator_save(const char *locator_path,
                                           const char *directory,
                                           VkrEditorProjectError *error);
+/* The folder new projects, clones and repositories go to (ADR-110): the
+   locator's `projects_root`, else `<home>/VKR Projects`. Saving it keeps
+   the locator's workspace, and saving the workspace keeps it. */
+bool8_t vkr_editor_projects_root(const char *locator_path,
+                                 char out[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+                                 VkrEditorProjectError *error);
+/* `text` with only the characters a file name holds on every platform;
+   "Project" when none is left. */
+void vkr_editor_project_folder_name(const char *text, char *out,
+                                    uint32_t capacity);
+/* `<projects root>/<name>` for a new project, clone or repository, numbered
+   (`<name> 2`) when a file or folder has the name. */
+bool8_t
+vkr_editor_projects_new_folder(const char *locator_path, const char *name,
+                               char out[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+                               VkrEditorProjectError *error);
+bool8_t vkr_editor_projects_root_save(const char *locator_path,
+                                      const char *root,
+                                      VkrEditorProjectError *error);
 
 // Returns an owned length+1 STRING allocation, preserving all other members.
 bool8_t vkr_editor_project_json_replace_member(VkrAllocator *allocator,

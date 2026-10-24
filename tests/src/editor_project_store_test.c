@@ -752,6 +752,38 @@ bool32_t run_editor_project_store_tests(void) {
   assert(file_path_resolve(&selected_directory, canonical_directory,
                            sizeof(canonical_directory)) == FILE_ERROR_NONE);
   assert(file_path_equals(located, canonical_directory));
+  /* Fails when the projects root has no default, when saving it loses
+     the last workspace, or when saving the workspace loses it. */
+  char root[1024];
+  assert(vkr_editor_projects_root(locator, root, &error) &&
+         string_find(root, "VKR Projects") != NULL);
+  assert(vkr_editor_projects_root_save(locator, directory, &error));
+  char saved_root[1024];
+  assert(vkr_editor_projects_root(locator, saved_root, &error) &&
+         file_path_equals(saved_root, canonical_directory));
+  assert(vkr_editor_workspace_locator_load(locator, located, &error) &&
+         file_path_equals(located, canonical_directory));
+  assert(vkr_editor_workspace_locator_save(locator, directory, &error));
+  assert(vkr_editor_projects_root(locator, saved_root, &error) &&
+         file_path_equals(saved_root, canonical_directory));
+  /* A new project's folder under a non-ASCII root: its name without the
+     characters a file name cannot hold, numbered once the folder exists. */
+  char unicode_root[1024];
+  snprintf(unicode_root, sizeof(unicode_root), "%s/проекты", directory);
+  FilePath unicode_root_path = project_test_path(unicode_root);
+  assert(file_create_directories(&unicode_root_path));
+  assert(vkr_editor_projects_root_save(locator, unicode_root, &error));
+  char folder[1024];
+  assert(vkr_editor_projects_new_folder(locator, "Arena: v2?", folder, &error));
+  assert(string_find(folder, "проекты/Arena_ v2_") != NULL &&
+         !string_find(folder, "Arena_ v2_ 2"));
+  FilePath taken = project_test_path(folder);
+  assert(file_create_directories(&taken));
+  char next[1024];
+  assert(vkr_editor_projects_new_folder(locator, "Arena: v2?", next, &error));
+  assert(string_find(next, "Arena_ v2_ 2") != NULL);
+  assert(file_remove_directory(&taken) == FILE_ERROR_NONE &&
+         file_remove_directory(&unicode_root_path) == FILE_ERROR_NONE);
   project_test_write(locator, "{\"version\":2,\"directory\":\"/\"}");
   assert(!vkr_editor_workspace_locator_load(locator, located, &error));
   FilePath locator_file = project_test_path(locator);
