@@ -2495,6 +2495,7 @@ static bool8_t cmd_run_quit(CmdContext *ctx, const CmdDef *def, String8 arg) {
 static bool8_t cmd_run_wait(CmdContext *ctx, const CmdDef *def, String8 arg) {
   if (def->value) {
     ctx->editor->cmd_wait_scene_seconds = CMD_SCENE_WAIT_LIMIT_SECONDS;
+    ctx->editor->cmd_wait_scene_held = 0.0;
     return true_v;
   }
   float64_t seconds = 0.0;
@@ -3020,10 +3021,18 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
       return;
     } else {
-      editor->cmd_wait_scene_seconds -= dt;
-      if (editor->cmd_wait_scene_seconds <= 0.0) {
+      /* A project job, such as the prepare that cooks a cloned scene's
+         textures, can outlast the scene limit: while one runs, the wait
+         counts against the job limit instead. */
+      editor->cmd_wait_scene_held += dt;
+      if (!vkr_editor_projects_busy(editor->projects, editor->bakery)) {
+        editor->cmd_wait_scene_seconds -= dt;
+      }
+      if (editor->cmd_wait_scene_seconds <= 0.0 ||
+          editor->cmd_wait_scene_held >= CMD_HOLD_LIMIT_SECONDS) {
         cmd_report(editor, false_v,
                    "wait.scene timed out; dropped the remaining commands");
+        editor->cmd_wait_scene_seconds = 0.0;
         editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
       }
       return;

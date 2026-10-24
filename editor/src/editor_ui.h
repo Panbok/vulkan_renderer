@@ -754,6 +754,8 @@ typedef struct VkrEditorUi {
   uint32_t cmd_queue_offset;
   float64_t cmd_wait_seconds;
   float64_t cmd_wait_scene_seconds;
+  /* How long wait.scene has waited, project jobs included. */
+  float64_t cmd_wait_scene_held;
   /* A job-starting command holds the queue until its work settles. */
   bool8_t cmd_holding;
   /* The hold is a build, whose result the queue reports when it settles. */

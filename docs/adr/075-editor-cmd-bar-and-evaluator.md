@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-23
+updated: 2026-10-25
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -178,7 +178,7 @@ dependable channel for scripts.
 | `help` | `[command]` | List commands or describe one |
 | `echo` | `<text>` | Print text |
 | `wait` | `<seconds>` | Pause the queue (at most 600 s) |
-| `wait.scene` | | Pause the queue until a scene is loaded and its brushes, terrain and scatter copies are built (120 s limit; a timeout or a failed load drops the queue) |
+| `wait.scene` | | Pause the queue until a scene is loaded and its brushes, terrain and scatter copies are built (120 s limit, which a running project job such as the prepare that cooks a clone's textures does not use up, within 600 s; a timeout or a failed load drops the queue) |
 | `quit` | `[discard]` | Close the editor; refuses while scene edits are unsaved unless `discard` |
 
 Shared commands reuse the menu table's enabled checks, so an unavailable action
