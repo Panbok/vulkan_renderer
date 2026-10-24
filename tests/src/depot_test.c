@@ -810,8 +810,9 @@ static void depot_test_commit(VkrDepotWorkspace *workspace, const char *text,
   free(bytes);
 }
 
-/* Fails when an ignore pattern matches the wrong paths, or a snapshot keeps
-   a file `.vkrdepotignore` names or drops one it does not. */
+/* Fails when an ignore pattern matches the wrong paths, a snapshot keeps
+   a file `.vkrdepotignore` names or drops one it does not, or a `!` rule
+   does not take back an earlier rule while a later rule still wins. */
 static void test_depot_ignore(void) {
   printf("  Running test_depot_ignore...\n");
   assert(vkr_depot_ignore_match("*.log", "a/b/run.log", false_v));
@@ -829,21 +830,27 @@ static void test_depot_ignore(void) {
 
   char root[VKR_DEPOT_PATH_CAPACITY];
   depot_test_dir("ignore", root, sizeof(root));
-  const char *rules =
-      "# editor state\n.vkreditor/jobs/\n*.log\r\n\n  cache/ \n";
+  const char *rules = "# editor state\n.vkreditor/jobs/\n*.log\r\n\n  cache/ "
+                      "\n*.vkt\n!probe.vkt\n!keep.log\nlogs/keep.log\n";
   depot_test_write(root, ".vkrdepotignore", rules, (uint64_t)strlen(rules));
   depot_test_write(root, "scene.json", "{}", 2u);
   depot_test_write(root, ".vkreditor/jobs/1/result.json", "{}", 2u);
   depot_test_write(root, ".vkreditor/projects/p/project.json", "{}", 2u);
   depot_test_write(root, "logs/run.log", "x", 1u);
   depot_test_write(root, "a/cache/blob.bin", "x", 1u);
+  depot_test_write(root, "builds/r/textures/a.vkt", "x", 1u);
+  depot_test_write(root, "builds/r/probe.vkt", "x", 1u);
+  depot_test_write(root, "logs/keep.log", "x", 1u);
+  depot_test_write(root, "keep.log", "x", 1u);
   VkrDepotWorkspace workspace;
   assert(vkr_depot_workspace_create(&workspace, root, NULL,
                                     vkr_depot_zstd_codec()));
   VkrDepotId tree;
   VkrDepotFileList files;
   assert(vkr_depot_workspace_snapshot(&workspace, &tree, &files));
-  assert(files.count == 3u);
+  assert(files.count == 5u);
+  assert(vkr_depot_file_list_find(&files, "builds/r/probe.vkt"));
+  assert(vkr_depot_file_list_find(&files, "keep.log"));
   assert(vkr_depot_file_list_find(&files, ".vkrdepotignore"));
   assert(vkr_depot_file_list_find(&files, "scene.json"));
   assert(

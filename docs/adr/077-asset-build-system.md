@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-24
 authority: adr
 ---
 
@@ -318,7 +318,9 @@ from it.
   sources) and the transitive closure of the assets they name, resolved
   through the workspace overlay, then the content root, then
   `.vkreditor/` for terrain, into an empty destination by clone or copy,
-  never by hard link. It writes `.vkrdepotignore`, assembles in a hidden
+  never by hard link. It writes `.vkrdepotignore` (cooked textures stay
+  out, baked probes travel;
+  [ADR-105](105-network-transport-and-asset-depot.md)), assembles in a hidden
   sibling folder and renames it into place, and reports `needs_rebuild`,
   missing references and textures with no source. The editor's Share uses
   it ([ADR-110](110-project-sharing-in-the-editor.md)).

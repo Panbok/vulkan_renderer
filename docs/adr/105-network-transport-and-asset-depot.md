@@ -283,7 +283,12 @@ its close frame is sent rather than 200 ms.
   endpoint security drops answers to a broadcast but not to a direct probe.
 - **Ignore rules**: `.vkrdepotignore` at a working copy's root keeps paths
   out of snapshots, so an editor workspace commits its project and assets
-  but not each machine's jobs, logs, caches and `workspace.json`. A working
+  but not each machine's jobs, logs, caches and `workspace.json`. As in
+  git, the last rule that matches decides, and `!pattern` takes back a path
+  an earlier rule ignored; a path inside an ignored folder stays ignored.
+  `share_project` writes `*.vkt` then `!probe.vkt`: cooked textures are per
+  platform, but a baked probe cube is RGBA16F everywhere and needs the GPU
+  to bake, so it travels with its scene. A working
   copy beside the server shares its store with `clone --store`. Lightmap
   sets (`.vklm`) travel: each machine bakes and commits the set of its own
   pipeline class, and the scene names both

@@ -626,14 +626,21 @@ static void ignore_free(DepotIgnore *ignore) {
   MemZero(ignore, sizeof(*ignore));
 }
 
+/* The last rule that matches decides, as in git: `!pattern` takes back what
+   an earlier rule ignored, so `*.vkt` then `!probe.vkt` keeps the baked
+   probes, which no machine can cook from a recipe. */
 static bool8_t ignore_matches(const DepotIgnore *ignore, const char *relative,
                               bool8_t is_directory) {
+  bool8_t ignored = false_v;
   for (uint32_t i = 0u; i < ignore->count; ++i) {
-    if (vkr_depot_ignore_match(ignore->patterns[i], relative, is_directory)) {
-      return true_v;
+    const char *pattern = ignore->patterns[i];
+    const bool8_t keep = pattern[0] == '!';
+    if (keep == ignored && vkr_depot_ignore_match(keep ? pattern + 1 : pattern,
+                                                  relative, is_directory)) {
+      ignored = !keep;
     }
   }
-  return false_v;
+  return ignored;
 }
 
 /* Whether the rules match the file `path` or one of its folders. */

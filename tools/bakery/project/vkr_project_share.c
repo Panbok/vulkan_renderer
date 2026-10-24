@@ -117,6 +117,10 @@ vkr_internal const char vkr_share_ignore[] =
     "x86-64);\n"
     "# each machine cooks its own from the source images.\n"
     "*.vkt\n"
+    "# A baked probe cube is RGBA16F on every platform and needs the GPU to "
+    "bake;\n"
+    "# it travels with its scene.\n"
+    "!probe.vkt\n"
     "# Process locks: project-<id>.lock, scene-<id>.lock,\n"
     "# workspace-<id>.lock and VkrEditorBakery.lock.\n"
     "*.lock\n";
