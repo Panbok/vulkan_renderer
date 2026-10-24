@@ -104,6 +104,17 @@ FILE *file_fopen(const char *utf8_path, const char *mode) {
   return _wfopen(native, native_mode);
 }
 
+bool8_t file_reopen_standard_output(const char *utf8_path) {
+  if (!utf8_path) {
+    return false_v;
+  }
+  const FilePath path = {
+      .path = {.str = (uint8_t *)utf8_path, .length = strlen(utf8_path)}};
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  return file_windows_native_path(&path, native) &&
+         _wfreopen(native, L"a", stdout) && _wfreopen(native, L"a", stderr);
+}
+
 static FileError fs_windows_error(DWORD error) {
   switch (error) {
   case ERROR_FILE_NOT_FOUND:

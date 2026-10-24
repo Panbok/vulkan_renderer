@@ -50,6 +50,7 @@ typedef struct VkrPlatformProcessConfig {
    * short name. Otherwise launch fails with ERROR_FILENAME_EXCED_RANGE; long
    * executable and log paths remain supported independently. */
   const char *working_directory;
+  /* `NUL` on Windows and `/dev/null` on POSIX discard the stream. */
   const char *stdout_path;
   const char *stderr_path;
   /** Appends to redirected output files instead of truncating them, so one

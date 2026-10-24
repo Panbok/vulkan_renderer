@@ -2,6 +2,7 @@
 
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
@@ -263,8 +264,11 @@ static bool8_t service_registered(void) {
 }
 
 /* The Defender rule for the installed binary: one UAC prompt, since only an
-   administrator may add one. False, with the command printed, when the
-   user declines or the rule could not be added. */
+   administrator may add one. The elevated step first removes every inbound
+   rule for the binary: a Block rule, which Defender adds when its "allow
+   access" dialog is dismissed, wins over any Allow rule. False, with the
+   commands printed, when the user declines or the rule could not be
+   added. */
 static bool8_t service_firewall(const VkrDepotServicePaths *paths) {
   char rule[64];
   snprintf(rule, sizeof(rule), "name=%s", SERVICE_RULE_NAME);
@@ -272,12 +276,26 @@ static bool8_t service_firewall(const VkrDepotServicePaths *paths) {
   if (service_exec("netsh.exe", show, ArrayCount(show), NULL)) {
     return true_v;
   }
-  char parameters[VKR_DEPOT_PATH_CAPACITY + 256u];
-  snprintf(parameters, sizeof(parameters),
+  /* Defender matches the program by its path in Windows form. */
+  char program[VKR_DEPOT_PATH_CAPACITY];
+  snprintf(program, sizeof(program), "%s", paths->binary);
+  for (char *c = program; *c; ++c) {
+    *c = *c == '/' ? '\\' : *c;
+  }
+  char remove[VKR_DEPOT_PATH_CAPACITY + 128u];
+  char add[VKR_DEPOT_PATH_CAPACITY + 256u];
+  snprintf(remove, sizeof(remove),
+           "advfirewall firewall delete rule name=all dir=in program=\"%s\"",
+           program);
+  snprintf(add, sizeof(add),
            "advfirewall firewall add rule name=\"%s\" dir=in action=allow "
            "protocol=UDP program=\"%s\" enable=yes profile=any",
-           SERVICE_RULE_NAME, paths->binary);
-  wchar_t wide_parameters[VKR_DEPOT_PATH_CAPACITY + 256u];
+           SERVICE_RULE_NAME, program);
+  /* The delete fails when there is nothing to delete; the add decides. */
+  char parameters[2u * VKR_DEPOT_PATH_CAPACITY + 512u];
+  snprintf(parameters, sizeof(parameters), "/c netsh %s & netsh %s", remove,
+           add);
+  wchar_t wide_parameters[ArrayCount(parameters)];
   if (!MultiByteToWideChar(CP_UTF8, 0, parameters, -1, wide_parameters,
                            (int)ArrayCount(wide_parameters))) {
     return false_v;
@@ -286,20 +304,25 @@ static bool8_t service_firewall(const VkrDepotServicePaths *paths) {
       .cbSize = sizeof(info),
       .fMask = SEE_MASK_NOCLOSEPROCESS,
       .lpVerb = L"runas",
-      .lpFile = L"netsh.exe",
+      .lpFile = L"cmd.exe",
       .lpParameters = wide_parameters,
       .nShow = SW_HIDE,
   };
   DWORD exit_code = 1u;
-  if (ShellExecuteExW(&info) && info.hProcess) {
+  const bool8_t started = ShellExecuteExW(&info) && info.hProcess;
+  const DWORD start_error = started ? 0u : GetLastError();
+  if (started) {
     WaitForSingleObject(info.hProcess, 60000u);
     GetExitCodeProcess(info.hProcess, &exit_code);
     CloseHandle(info.hProcess);
   }
   if (exit_code != 0u) {
-    printf("the firewall rule was not added; as an administrator, run:\n"
-           "  netsh %s\n",
-           parameters);
+    printf("the firewall rule was not added (%s); as an administrator, "
+           "run:\n  netsh %s\n  netsh %s\n",
+           start_error == ERROR_CANCELLED ? "the UAC prompt was declined"
+           : started                      ? "netsh failed"
+                                          : "the UAC prompt did not start",
+           remove, add);
     return false_v;
   }
   return true_v;
@@ -610,7 +633,8 @@ static void service_sync_stop(ServiceSync *sync) {
 
 static int service_run(const VkrDepotServicePaths *paths,
                        VkrDepotServiceSettings *settings, const char *log) {
-  if (log && (!freopen(log, "a", stdout) || !freopen(log, "a", stderr))) {
+  /* The log path is UTF-8, as under a non-ASCII profile. */
+  if (log && !file_reopen_standard_output(log)) {
     return 1;
   }
   const char *roots[VKR_DEPOT_SERVER_REPOSITORIES_MAX];

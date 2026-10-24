@@ -361,6 +361,12 @@ bool8_t file_exists(const FilePath *path);
  * @return `true` when both the flush and the store succeed.
  */
 bool8_t file_flush_durable(FILE *file);
+
+/**
+ * @brief Appends this process's stdout and stderr to the file at a UTF-8
+ * path, creating it, as a service started without a console logs.
+ */
+bool8_t file_reopen_standard_output(const char *utf8_path);
 #endif
 
 /**

@@ -1082,8 +1082,14 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
     if (paths[i]) {
       wchar_t wide_path[32768];
+      /* The null device: GetFullPathNameW names it `\\.\NUL`, which the
+         extended form of vkr_platform_native_path cannot open. */
+      const bool8_t null_device = _stricmp(paths[i], "NUL") == 0;
+      if (null_device) {
+        MemCopy(wide_path, L"NUL", sizeof(L"NUL"));
+      }
       output[i] =
-          vkr_platform_native_path(paths[i], wide_path)
+          null_device || vkr_platform_native_path(paths[i], wide_path)
               ? CreateFileW(
                     wide_path,
                     config->append_output ? FILE_APPEND_DATA : GENERIC_WRITE,

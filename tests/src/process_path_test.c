@@ -90,6 +90,21 @@ static void process_stream_test(void) {
   assert(vkr_platform_process_run(&config, &exit_code, &timed_out));
   assert(!timed_out && exit_code != 7 && read.calls == 1u && read.ordered);
 
+  /* The null device discards both streams; on Windows `NUL` is a device
+     the extended path form cannot name. */
+#if defined(PLATFORM_WINDOWS)
+  const char *null_device = "NUL";
+#else
+  const char *null_device = "/dev/null";
+#endif
+  VkrPlatformProcessConfig discard = config;
+  discard.on_stdout = NULL;
+  discard.stdout_context = NULL;
+  discard.stdout_path = null_device;
+  discard.stderr_path = null_device;
+  assert(vkr_platform_process_run(&discard, &exit_code, &timed_out));
+  assert(!timed_out && exit_code == 7);
+
   config.stdout_path = "unused.txt";
   assert(!vkr_platform_process_run(&config, &exit_code, &timed_out));
   printf("  process_stream_test PASSED\n");

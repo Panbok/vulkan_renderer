@@ -17,8 +17,7 @@ outbound only. The service follows its settings file while it runs,
 publishes its state for other processes, and syncs each served store with
 each of its remotes that has an interval. The editor still hosts its own
 server for Let others fetch and push; moving it onto the service is D3 of
-[the proposal](../proposals/depot-git-model.md). The Windows desktop runs
-the service by hand (not installed at logon) on 2026-10-24.
+[the proposal](../proposals/depot-git-model.md).
 
 ## Context
 
@@ -176,8 +175,24 @@ alike.
   agent; `service status` shows outbound only and the mac-m1 repository; the
   version 1 launchd mirror still syncs through it, and the CLI's fetch from
   origin and from windows works with HELLO (reported by the Mac session).
-- Not run: `service install` on Windows (the UAC prompt and the logon
-  task), and the editor on the service.
+- Windows desktop, 2026-10-24, `service install --name windows-d`: the
+  logon task registers, starts the installed copy below the non-ASCII
+  profile (`C:\Users\Пользователь\AppData\Local\VKR\depot\bin`), and
+  `service status` shows it registered and running. Three defects fixed on
+  the way:
+  - `vkr_platform_process_run` could not open `NUL` for output, so every
+    `schtasks` and `netsh` call failed;
+  - `run --log` reopened stdout with the CRT's ANSI `freopen`, which
+    cannot open a path below that profile (now
+    `file_reopen_standard_output`);
+  - Defender had added Block rules for the installed binary when its
+    "allow access" dialog was dismissed. A Block rule wins over the Allow
+    rule, so the elevated step now removes every inbound rule for the
+    binary before it adds its own.
+- On the same machine the UAC prompt came back declined, and the firewall
+  rule is added by hand with the two commands `install` prints.
+- Not run: the editor on the service; the macOS build of
+  `file_reopen_standard_output`.
 
 ## Revisit when
 

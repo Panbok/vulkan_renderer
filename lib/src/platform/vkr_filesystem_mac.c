@@ -37,6 +37,11 @@ FILE *file_fopen(const char *utf8_path, const char *mode) {
   return fopen(utf8_path, mode);
 }
 
+bool8_t file_reopen_standard_output(const char *utf8_path) {
+  return utf8_path && freopen(utf8_path, "a", stdout) &&
+         freopen(utf8_path, "a", stderr);
+}
+
 vkr_internal int fs_file_descriptor(const FileHandle *handle) {
   return (int)(intptr_t)handle->handle - 1;
 }
