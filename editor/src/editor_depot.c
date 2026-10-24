@@ -482,6 +482,18 @@ static bool8_t depot_json_text(const VkrBakeryJson *object, const char *key,
   return true_v;
 }
 
+/* A message from Bakery, cut to `capacity`; empty when absent. */
+static void depot_json_message(const VkrBakeryJson *object, const char *key,
+                               char *out, uint32_t capacity) {
+  String8 value = {0};
+  out[0] = '\0';
+  if (object && vkr_bakery_json_get_string(object, key, &value)) {
+    const uint64_t length = Min(value.length, (uint64_t)capacity - 1u);
+    MemCopy(out, value.str, length);
+    out[length] = '\0';
+  }
+}
+
 static bool8_t depot_registry_path(char *out, uint32_t capacity) {
   char directory[DEPOT_PATH];
   return vkr_bakery_user_data_directory(directory, sizeof(directory)) &&
@@ -1646,8 +1658,7 @@ static void depot_job_recook(DepotJob *job, const char *folder,
         char reason[DEPOT_TEXT] = {0};
         (void)depot_json_text(report, "scene_id", scene_id, sizeof(scene_id));
         if (present && !opens) {
-          (void)depot_json_text(report, "prepare_error", reason,
-                                sizeof(reason));
+          depot_json_message(report, "prepare_error", reason, sizeof(reason));
           log_warn("Source control: scene %s does not open after the pull: "
                    "%s",
                    scene_id, reason);
