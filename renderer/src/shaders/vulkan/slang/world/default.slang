@@ -921,9 +921,13 @@ float3 packet_local_shadow_transmission(VkrVulkanPacketFrameRoot *frame,
                                         float2 uv, uint encoded_layer,
                                         float receiver_depth)
 {
-    if (frame.local_shadow_transmission == nullptr || encoded_layer == 0u)
+    if (encoded_layer == 0u)
         return 1.0f;
+    // The host names a record every frame; a frame without transmission
+    // layers gives it extent zero.
     VkrVulkanLocalShadowTransmission maps = frame.local_shadow_transmission[0];
+    if (maps.extent == 0u)
+        return 1.0f;
     uint2 pixel = min(uint2(saturate(uv) * float(maps.extent)), maps.extent - 1u);
     int4 address = int4(pixel, encoded_layer - 1u, 0u);
     // Crossings are peeled in order from the light, so a receiver in front of

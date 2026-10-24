@@ -3247,6 +3247,8 @@ typedef struct VkrVulkanFrameSlot {
   uint32_t decal_count;
   uint64_t shadow_cascades;
   uint64_t local_shadow_views;
+  /** This frame's VkrVulkanLocalShadowTransmission, never zero once the graph
+      is prepared: extent zero without transmission layers. */
   uint64_t local_shadow_transmission;
   uint32_t shadow_cascade_count;
   /** Culling view of local render slot zero, after the directional ones. */

@@ -756,8 +756,26 @@ vkr_vk_prepare_local_shadow_transmission_sampling(VkrVulkanRenderer *renderer) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   slot->local_shadow_transmission = 0u;
-  if (renderer->prepared_frame.local_shadow_transmission_layer_count == 0u)
+  /* Every frame names a record, so no shader reads through a null address:
+     Adrenalin 26.10.1 moves Froxel.Inject's loads of it above its tests,
+     which faulted at 0x0 in frames without layers. Such a frame's record
+     has extent zero and the sentinel maps, which receivers skip. */
+  if (renderer->prepared_frame.local_shadow_transmission_layer_count == 0u) {
+    VkrVulkanLocalShadowTransmission *maps = vkr_vk_frame_upload_allocate(
+        slot, sizeof(*maps), _Alignof(VkrVulkanLocalShadowTransmission),
+        &slot->local_shadow_transmission, NULL);
+    if (!maps)
+      return false_v;
+    *maps = (VkrVulkanLocalShadowTransmission){
+        .depth0_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+        .color0_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+        .depth1_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+        .color1_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+        .overflow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+        .extent = 0u,
+    };
     return true_v;
+  }
   const uint32_t extent =
       renderer->prepared_frame.local_shadow_transmission_map_size;
   uint32_t indices[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];

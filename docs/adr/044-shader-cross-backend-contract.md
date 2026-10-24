@@ -861,6 +861,15 @@ root. Local cull views exist only for faces drawn this submission, one per
 render slot, so the cull root carries no reused-face mask; bytes 192 to 207
 are reserved. Native assertions and reflection pin these layouts.
 
+The sampling pointer always names a record once the graph is prepared; a
+frame without transmission layers gets one with extent zero and the
+sentinel maps, which receivers skip. Adrenalin 26.10.1 on the RX 6700 XT
+moved Froxel.Inject's loads of the record above its null test (the SPIR-V
+loads it only after the test), so frames without layers faulted at VA 0x0
+1.8k to 5.8k frames after the Level Design Test scene loaded (RGD,
+2026-10-24). With the record always present, the same scene ran 58,177
+frames in the Release editor without a fault.
+
 The removed Metal desktop implementation passed all 18 independent receiver
 ratios of the transmission fixture on 2026-09-12 (maximum RGB ratio error
 0.000405 against tolerance 0.006): ordered prefixes, before/after overflow,
