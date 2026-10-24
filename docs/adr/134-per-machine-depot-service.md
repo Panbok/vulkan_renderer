@@ -101,8 +101,11 @@ a connection. The editor uses these instead of running the command.
 what only the command does:
 
 - `install` copies the binary into `bin/` and registers it at logon: on
-  Windows a Task Scheduler task in the user's session that restarts a
-  minute after any exit, plus one UAC prompt for a Defender rule bound to
+  Windows a Task Scheduler task in the user's session, with no console
+  window (`run --log` detaches from it, since closing that window ended the
+  service), restarted only when a start fails: a service that exits runs
+  again at the next logon or `schtasks /Run /TN "VKR Depot"`. Install also
+  asks once (UAC) for a Defender rule bound to
   the installed binary (skipped with `--outbound-only`); on macOS a launchd
   agent `com.vkr.depot.service` kept alive, whose binary sits in an app
   bundle with an Info.plist that carries `NSLocalNetworkUsageDescription`,

@@ -32,10 +32,10 @@
  *
  * `install` copies the binary into the folder's `bin/` (an app bundle on
  * macOS, which Local Network privacy needs) and registers it to
- * start at logon: a Task Scheduler task that restarts on failure on
- * Windows, which also asks once (UAC) for a Defender rule bound to the
- * installed binary, and a launchd agent kept alive on macOS. The task and
- * the agent run in the user's session, so the store's process lock
+ * start at logon: a Task Scheduler task on Windows, which also asks once (UAC)
+ * for a Defender rule bound to the installed binary, and a launchd agent kept
+ * alive on macOS. The task and the agent run in the user's session, so the
+ * store's process lock
  * (`Local\` on Windows) excludes the service and the user's own commits
  * alike. `run` is what they start: it serves the stores `service.conf`
  * lists, follows changes to it, publishes `service.status`, and syncs each
@@ -248,8 +248,9 @@ static bool8_t service_register(const VkrDepotServicePaths *paths) {
   if (!xml) {
     return false_v;
   }
-  /* At this user's logon, in this user's session, restarted a minute after
-     any exit, without a time limit, on battery too. */
+  /* At this user's logon, in this user's session, without a time limit, on
+     battery too. Restart on failure covers a start that fails, not an
+     exit. */
   snprintf(
       xml, (size_t)capacity,
       "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n"
@@ -687,6 +688,14 @@ static int service_run(const VkrDepotServicePaths *paths,
   if (log && !file_reopen_standard_output(log)) {
     return 1;
   }
+#if defined(_WIN32)
+  /* Started by the logon task, the service has a console window in the
+     user's session, and closing it ended the service; with its output in
+     the log it needs no console. */
+  if (log) {
+    (void)FreeConsole();
+  }
+#endif
   const char *roots[VKR_DEPOT_SERVER_REPOSITORIES_MAX];
   const char *names[VKR_DEPOT_SERVER_REPOSITORIES_MAX];
   for (uint32_t i = 0u; i < settings->store_count; ++i) {
