@@ -24,6 +24,11 @@ base colour the project texture packer packs. The check asserts that:
 - a build without recipes is reported for a rebuild, and the rebuild
   records recipes and retires the old revision's texture records, whose
   folder a cleanup with `grace_seconds: 0` then removes;
+- a reimport from a source with one material fewer retires that material's
+  record, so no record of the import names the old build;
+- a build whose mesh source snapshot is gone is reported in
+  `missing_source` with its mesh-cook textures uncooked, while the scene's
+  image textures still cook;
 - a share of the project reports no rebuild and no texture without a
   recipe, and the shared copy, stripped of its `.vkt` files as a depot clone
   is, gets them back from `recook_textures`.
@@ -322,6 +327,56 @@ def main():
         assert run(dict(recook, scene_id=again['scene_id'], scene_path=again['scene_path']),
                    'recook-collected')['current'] == len(textures)
         run({'operation': 'collect_garbage', 'grace_seconds': -1}, 'collect-refused', code=1)
+
+        # A reimport from a source without the plain material retires that
+        # material's record, as the rebuild retires texture records: no
+        # record of the import is left naming the old build, whose mesh
+        # source a recook would need.
+        fewer = create('fewer')
+        fewer_path = Path(fewer['scene_path'])
+        fewer_mesh = next(asset for asset in jobs.read_managed_scene(fewer_path)['assets']
+                          if asset['kind'] == 'mesh')
+        model = json.loads((sources / 'model.gltf').read_text())
+        del model['materials'][2]
+        model['meshes'][0]['primitives'].pop()
+        (sources / 'fewer.gltf').write_text(json.dumps(model))
+        fewer_recook = dict(recook, scene_id=fewer['scene_id'], scene_path=fewer['scene_path'])
+        run({'operation': 'reimport_asset', 'scene_id': fewer['scene_id'],
+             'scene_path': fewer['scene_path'], 'asset_id': fewer_mesh['id'],
+             'source': str(sources / 'fewer.gltf')}, 'reimport-fewer')
+        fewer_build = build_textures(fewer_path)[0]
+        imported = [asset for asset in jobs.read_managed_scene(fewer_path)['assets']
+                    if asset['kind'] in ('material', 'texture') and
+                    asset.get('import_id') == fewer_mesh['import_id']]
+        assert sorted(asset['name'] for asset in imported if asset['kind'] == 'material') == \
+            ['masked', 'specgloss'], imported
+        assert all(asset['artifacts'][0]['path'].startswith(f'builds/{fewer_build.name}/')
+                   for asset in imported), imported
+        assert run(fewer_recook, 'recook-fewer')['missing_source'] == []
+
+        # A build whose mesh source snapshot is gone keeps its mesh-cook
+        # textures uncooked and is reported, and the scene's image textures
+        # still cook.
+        orphan = create('orphan')
+        orphan_path = Path(orphan['scene_path'])
+        orphan_build, _, orphan_textures, orphan_recipes = build_textures(orphan_path)
+        orphan_mesh = next(asset for asset in jobs.read_managed_scene(orphan_path)['assets']
+                           if asset['kind'] == 'mesh')
+        for name in orphan_textures:
+            (orphan_build / 'textures' / name).unlink()
+        (orphan_path.parent / orphan_mesh['source']).unlink()
+        mesh_names = [name for name in orphan_textures if 'source' not in orphan_recipes[name]]
+        skipped = run(dict(recook, scene_id=orphan['scene_id'], scene_path=orphan['scene_path']),
+                      'recook-orphan')
+        assert skipped['skipped'] == len(mesh_names) and \
+            skipped['recooked'] == len(orphan_textures) - len(mesh_names), skipped
+        assert skipped['missing_source'] == [{'asset_id': orphan_mesh['id'],
+                                              'name': orphan_mesh['name'],
+                                              'build': orphan_build.name,
+                                              'textures': len(mesh_names)}], skipped
+        assert any('source snapshot is missing' in warning for warning in skipped['warnings'])
+        assert all((orphan_build / 'textures' / name).is_file() != (name in mesh_names)
+                   for name in orphan_textures)
 
         # A share needs no rebuild; its copy without .vkt files cooks them.
         document = json.loads(manifest.read_text())

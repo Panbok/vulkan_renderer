@@ -1283,8 +1283,18 @@ static void depot_job_recook(DepotJob *job, const char *folder) {
       if (depot_project_job(job, folder, arena, request, "Preparing textures",
                             &result)) {
         int64_t recooked = 0;
+        int64_t skipped = 0;
         (void)vkr_bakery_json_get_int(result, "recooked", &recooked);
+        (void)vkr_bakery_json_get_int(result, "skipped", &skipped);
         job->textures_cooked += (uint32_t)recooked;
+        /* Textures of a build whose mesh source snapshot is gone stay
+           uncooked; the scene's other textures are ready. */
+        if (skipped > 0) {
+          job->textures_failed += (uint32_t)skipped;
+          log_warn("Project sharing: scene %s: %lld textures did not cook; "
+                   "their mesh source snapshot is missing",
+                   scene_id, (long long)skipped);
+        }
       } else {
         job->textures_failed++;
         log_warn("Project sharing: %s", job->error);

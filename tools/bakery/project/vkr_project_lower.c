@@ -1894,16 +1894,17 @@ vkr_internal void vkr_project_collect_strings(VkrProjectJob *job,
   }
 }
 
-/* After a mesh rebuild, drops the texture records of the mesh's import that
-   its new revision no longer holds, as when the rebuild names textures by
-   recipe instead of by bytes (vkr_mesh_cook_source.c). Their old revision
-   stops being live and workspace cleanup collects it. A record the scene,
-   its edit overlay or another record names stays, as delete_asset keeps
-   it. */
-vkr_internal bool8_t vkr_project_retire_textures(VkrProjectJob *job,
-                                                 const VkrBakeryJson *scene,
-                                                 const char *scene_root,
-                                                 const VkrBakeryJson *mesh) {
+/* After a mesh rebuild, drops the material and texture records of the mesh's
+   import that its new revision no longer holds: textures the rebuild names by
+   recipe instead of by bytes (vkr_mesh_cook_source.c), and materials the new
+   source no longer has. Their old revision stops being live and workspace
+   cleanup collects it; a recook could not cook their recipe textures once
+   the old mesh source snapshot is gone. A record the scene, its edit overlay
+   or another record names stays, as delete_asset keeps it. */
+vkr_internal bool8_t vkr_project_retire_records(VkrProjectJob *job,
+                                                const VkrBakeryJson *scene,
+                                                const char *scene_root,
+                                                const VkrBakeryJson *mesh) {
   Arena *arena = job->arena;
   const char *import_id = vkr_project_json_text(mesh, "import_id");
   const char *revision = vkr_project_json_text(mesh, "import_revision");
@@ -1921,9 +1922,10 @@ vkr_internal bool8_t vkr_project_retire_textures(VkrProjectJob *job,
     const char *path =
         artifacts ? vkr_project_json_text(artifacts->first, "path") : NULL;
     const char *id = vkr_project_json_text(item, "id");
+    const VkrBakeryJson *kind = vkr_bakery_json_get(item, "kind");
     if (id && path && strncmp(path, prefix, strlen(prefix)) != 0 &&
-        vkr_bakery_json_is_string(vkr_bakery_json_get(item, "kind"),
-                                  "texture") &&
+        (vkr_bakery_json_is_string(kind, "texture") ||
+         vkr_bakery_json_is_string(kind, "material")) &&
         vkr_bakery_json_is_string(vkr_bakery_json_get(item, "import_id"),
                                   import_id)) {
       ok = ok && vkr_project_set_add(&stale, id, NULL);
@@ -1975,8 +1977,7 @@ vkr_internal bool8_t vkr_project_retire_textures(VkrProjectJob *job,
     job->assets->count = kept->count;
   }
   if (retired) {
-    printf("Rebuild: retired %u texture records of the previous revision\n",
-           retired);
+    printf("Rebuild: retired %u records of the previous revision\n", retired);
     fflush(stdout);
   }
   vkr_project_set_free(&stale);
@@ -2716,8 +2717,8 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
     for (uint32_t i = 0u; i < finalized.count; ++i) {
       if (!vkr_project_rebuild_asset(job, "rebuild_asset", finalized.items[i],
                                      scene_root) ||
-          !vkr_project_retire_textures(job, scene, scene_root,
-                                       finalized.items[i])) {
+          !vkr_project_retire_records(job, scene, scene_root,
+                                      finalized.items[i])) {
         return NULL;
       }
     }
@@ -2755,7 +2756,7 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
     if (!vkr_project_snapshot_artifacts(job, job->assets, scene_root,
                                         &before) ||
         !vkr_project_rebuild_asset(job, operation, record, scene_root) ||
-        !vkr_project_retire_textures(job, scene, scene_root, record)) {
+        !vkr_project_retire_records(job, scene, scene_root, record)) {
       return NULL;
     }
     report_changes = true_v;

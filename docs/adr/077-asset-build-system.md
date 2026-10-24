@@ -304,7 +304,13 @@ from it.
   other GPU family, under the same name, through a staging mesh cook from
   the source snapshot; it makes no revision and writes no inventory. A
   build cooked before recipes existed is reported in `needs_rebuild` and
-  takes one `rebuild_asset` where it is shared.
+  takes one `rebuild_asset` where it is shared. A build with no mesh record
+  or no snapshot left keeps its mesh-cook textures uncooked and is reported
+  in `missing_source` with a `skipped` count; the run goes on. A mesh
+  rebuild or reimport retires the import's material and texture records
+  that the new revision no longer holds, unless the scene, its overlay or
+  another record names them, so no live record keeps naming a build whose
+  snapshot is gone.
 - **Sharing a project.** `share_project`
   ([vkr_project_share.c](../../tools/bakery/project/vkr_project_share.c))
   copies one project's live files (documents, each scene's current overlay,
