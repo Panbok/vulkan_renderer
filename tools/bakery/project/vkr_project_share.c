@@ -20,7 +20,8 @@
  * overlay and inventory, and the artifacts, closures, sources and import
  * manifests of that inventory's records (project.json's records likewise).
  * Their closure follows the bundle walker in its source mode
- * (vkr_bakery_bundle.h), resolving `assets/...` as the editor's workspace
+ * (vkr_bakery_bundle.h), through surface themes to the materials they bind,
+ * resolving `assets/...` as the editor's workspace
  * overlay does (ADR-077): the source workspace's `assets/`, then the content
  * root, then the workspace's `.vkreditor/assets/`, where terrain
  * heightfields live. Cooked `.vkt` textures are per platform, so a texture

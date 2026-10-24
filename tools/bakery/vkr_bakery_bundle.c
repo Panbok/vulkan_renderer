@@ -21,6 +21,7 @@
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
+#include "level/vkr_surface.h"
 #include "vkr_bakery_json.h"
 #include "vkr_bakery_os.h"
 
@@ -486,8 +487,11 @@ vkr_internal void vkr_bundle_expand(VkrBundle *bundle, const char *identity) {
     vkr_bundle_walk_mesh(bundle, identity, path);
     return;
   }
+  /* A surface theme is JSON naming the materials its tags and rules bind;
+     the runtime loads them through it. */
   const bool8_t json =
       vkr_bundle_has_extension(identity, ".json") ||
+      vkr_bundle_has_extension(identity, VKR_SURFACE_THEME_EXTENSION) ||
       (bundle->sources && (vkr_bundle_has_extension(identity, ".gltf") ||
                            vkr_bundle_has_extension(identity, ".mtg")));
   const bool8_t pairs = vkr_bundle_has_extension(identity, ".mt") ||

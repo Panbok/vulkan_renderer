@@ -329,7 +329,8 @@ from it.
   each identity's SHA-256). A recipe
   ([Bistro](../../assets/bundles/bistro.bundle.json)) names a scene and
   runtime resources; the closure follows the loaders: scene documents name
-  meshes, materials and cubemap faces, a mesh names its materials, a material
+  meshes, materials and cubemap faces, a mesh names its materials, a surface
+  theme (`.surfaces`) names the materials its tags and rules bind, a material
   or font configuration names textures and atlases, and a texture reference
   resolves to its `.vkt` sibling while cubemap faces keep their images. The
   archive (version 1, little-endian) holds a 128-byte header with the catalog

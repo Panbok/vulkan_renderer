@@ -8,7 +8,8 @@ names a texture relative to itself and a cooked texture with no source. Its
 overlay names a workspace material that shadows the content root's, a terrain
 heightfield under `.vkreditor/assets/terrain/`, and a missing model. Scene B
 names a material only the content root holds, whose texture has a cooked
-`.vkt` sibling. The check asserts that the destination holds exactly the live
+`.vkt` sibling, and a surface theme whose tag and rule materials, and their
+textures, travel with it. The check asserts that the destination holds exactly the live
 files and their closure at the workspace paths the editor reads, that stale
 overlays, inventories and builds, cooked siblings, locks, job folders and
 Scripts build output stay behind, that the overlay copy wins over the content
@@ -175,9 +176,18 @@ def main():
                                  'inventory': live_inventory})
         write(a / f'scene-{scene_a}.lock', b'')
 
-        # Scene B names a material only the content root holds.
+        # Scene B names a material only the content root holds, and a
+        # surface theme whose tag and rule materials only it names.
+        write(source / 'assets/surfaces/lab.surfaces', {
+            'version': 2, 'materials': {'plaster': 'assets/materials/lab_wall.mt'},
+            'rules': [{'tags': ['#lab'], 'faces': 'floor', 'material': 'assets/materials/lab_floor.mt'}]})
+        write(source / 'assets/materials/lab_wall.mt',
+              'name=lab wall\nbase_color_texture=assets/textures/lab_wall.png\n')
+        write(source / 'assets/textures/lab_wall.png', PNG)
+        write(source / 'assets/materials/lab_floor.mt', 'name=lab floor\n')
         b_overlay = f'edits/{uuid.uuid4()}.json'
-        write(b / b_overlay, {'version': 5, 'overrides': [{'material': 'assets/materials/stone.mt'}]})
+        write(b / b_overlay, {'version': 5, 'overrides': [{'material': 'assets/materials/stone.mt'}],
+                              'theme': 'assets/surfaces/lab.surfaces'})
         write(b / 'scene.json', {'version': 5, 'id': scene_b, 'entities': [], 'reflection_probes': [],
                                  'default_font': None, 'edit_overlay': b_overlay})
 
@@ -225,6 +235,8 @@ def main():
             f'.vkreditor/assets/terrain/{terrain}.vkrhf',
             'assets/materials/overlay.mt', 'assets/textures/overlay.png',
             'assets/materials/stone.mt', 'assets/textures/stone.png',
+            'assets/surfaces/lab.surfaces', 'assets/materials/lab_wall.mt',
+            'assets/textures/lab_wall.png', 'assets/materials/lab_floor.mt',
         } | mesh_materials
         shared = tree(destination)
         assert shared == expected, (sorted(shared - expected), sorted(expected - shared))
