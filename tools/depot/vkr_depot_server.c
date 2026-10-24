@@ -95,17 +95,22 @@ typedef struct ServerOrphan {
   uint32_t size;
 } ServerOrphan;
 
+/* No repository selected yet: a server of several waits for HELLO. */
+#define SERVER_NO_REPOSITORY UINT32_MAX
+
 typedef struct ServerPeer {
   bool8_t live;
   VkrNetConnectionId connection;
   uint8_t key[32];
+  /* The key's role on its repository; before a selection, its best role on
+     any, which only lets HELLO in. */
   uint32_t role;
+  /* Index into the server's repositories, or SERVER_NO_REPOSITORY. */
+  uint32_t repository;
   /* The depot service version the connection opened with. */
   uint16_t version;
   /* A HELLO selected the repository; another one closes the connection. */
   bool8_t selected;
-  /* The client's HELLO said it accepts no connection from outside. */
-  bool8_t outbound_only;
   ServerSendItem *queue;
   uint32_t queue_head;
   uint32_t queue_count;
@@ -137,15 +142,12 @@ typedef struct RefNames {
   uint32_t count;
 } RefNames;
 
-struct VkrDepotServer {
-  VkrAllocator *allocator;
-  VkrNetCore *core;
-  VkrNetSession *session;
+/* One served store with its own access list and locks. */
+typedef struct ServerRepository {
   VkrDepotStore store;
+  char name[VKR_DEPOT_BRANCH_NAME];
   /* NULL reads each object on the host thread as it is sent. */
   ServerLoader *loader;
-  bool8_t open_access;
-  ServerPeer peers[SERVER_PEER_MAX];
   ServerLock *locks;
   uint32_t lock_count;
   uint32_t lock_capacity;
@@ -155,6 +157,27 @@ struct VkrDepotServer {
   bool8_t access_exists;
   int64_t access_mtime_ns;
   uint64_t access_size;
+} ServerRepository;
+
+/* A key seen at a handshake: what the service's peer list shows. */
+typedef struct ServerKnown {
+  bool8_t live;
+  uint8_t key[32];
+  char name[VKR_DEPOT_DISPLAY_NAME];
+  bool8_t outbound_only;
+  int32_t repository;
+  uint64_t last_seen_us;
+} ServerKnown;
+
+struct VkrDepotServer {
+  VkrAllocator *allocator;
+  VkrNetCore *core;
+  VkrNetSession *session;
+  ServerRepository repositories[VKR_DEPOT_SERVER_REPOSITORIES_MAX];
+  uint32_t repository_count;
+  bool8_t open_access;
+  ServerPeer peers[SERVER_PEER_MAX];
+  ServerKnown known[VKR_DEPOT_SERVER_PEERS_MAX];
   uint64_t access_checked_us;
   ServerRequest requests[VKR_DEPOT_REQUESTS_MAX];
   uint8_t denied[SERVER_DENIED_MAX][32];
@@ -211,28 +234,29 @@ bool8_t vkr_depot_server_key(const char *store_root, VkrNetKeyPair *out_keys) {
 }
 
 /* The access file's existence, time and size, as the poll compares them. */
-static void server_access_stat(const VkrDepotServer *server,
+static void server_access_stat(const ServerRepository *repository,
                                bool8_t *out_exists, int64_t *out_mtime_ns,
                                uint64_t *out_size) {
   char path[VKR_DEPOT_PATH_CAPACITY];
   VkrBakeryStat stat = {0};
-  *out_exists = server_file(server->store.root, "access", path, sizeof(path)) &&
-                vkr_bakery_stat(path, &stat) && stat.exists;
+  *out_exists =
+      server_file(repository->store.root, "access", path, sizeof(path)) &&
+      vkr_bakery_stat(path, &stat) && stat.exists;
   *out_mtime_ns = *out_exists ? stat.mtime_ns : 0;
   *out_size = *out_exists ? stat.size : 0u;
 }
 
 /* Reads the access file; a file that fails to read leaves the list as it
    was, so a passing failure locks nobody out. */
-static bool8_t server_access_load(VkrDepotServer *server) {
+static bool8_t server_access_load(ServerRepository *repository) {
   char path[VKR_DEPOT_PATH_CAPACITY];
-  if (!server_file(server->store.root, "access", path, sizeof(path))) {
+  if (!server_file(repository->store.root, "access", path, sizeof(path))) {
     return false_v;
   }
   bool8_t exists = false_v;
   int64_t mtime_ns = 0;
   uint64_t file_size = 0u;
-  server_access_stat(server, &exists, &mtime_ns, &file_size);
+  server_access_stat(repository, &exists, &mtime_ns, &file_size);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   if (exists &&
@@ -241,12 +265,12 @@ static bool8_t server_access_load(VkrDepotServer *server) {
     free(bytes);
     return false_v;
   }
-  server->access_exists = exists;
-  server->access_mtime_ns = mtime_ns;
-  server->access_size = file_size;
-  server->access_count = 0u;
+  repository->access_exists = exists;
+  repository->access_mtime_ns = mtime_ns;
+  repository->access_size = file_size;
+  repository->access_count = 0u;
   for (uint64_t offset = 0u; offset < size; offset += 33u) {
-    ServerAccess *entry = &server->access[server->access_count++];
+    ServerAccess *entry = &repository->access[repository->access_count++];
     memcpy(entry->key, bytes + offset, 32u);
     entry->role = bytes[offset + 32u];
   }
@@ -290,13 +314,36 @@ bool8_t vkr_depot_access_set(const char *store_root, const uint8_t key[32],
   return ok;
 }
 
-static uint32_t server_role(const VkrDepotServer *server, const uint8_t *key) {
-  for (uint32_t i = 0u; i < server->access_count; ++i) {
-    if (memcmp(server->access[i].key, key, 32u) == 0) {
-      return server->access[i].role;
+static uint32_t server_role(const VkrDepotServer *server,
+                            const ServerRepository *repository,
+                            const uint8_t *key) {
+  for (uint32_t i = 0u; i < repository->access_count; ++i) {
+    if (memcmp(repository->access[i].key, key, 32u) == 0) {
+      return repository->access[i].role;
     }
   }
   return server->open_access ? VKR_DEPOT_ROLE_WRITE : VKR_DEPOT_ROLE_NONE;
+}
+
+/* The key's best role on any repository: what lets it through the
+   handshake. */
+static uint32_t server_role_any(const VkrDepotServer *server,
+                                const uint8_t *key) {
+  uint32_t best = VKR_DEPOT_ROLE_NONE;
+  for (uint32_t i = 0u; i < server->repository_count; ++i) {
+    best = Max(best, server_role(server, &server->repositories[i], key));
+  }
+  return best;
+}
+
+/* The role a peer has now: on its repository, or before a selection its
+   best one. */
+static uint32_t server_peer_role(const VkrDepotServer *server,
+                                 const ServerPeer *peer) {
+  return peer->repository == SERVER_NO_REPOSITORY
+             ? server_role_any(server, peer->key)
+             : server_role(server, &server->repositories[peer->repository],
+                           peer->key);
 }
 
 /* Paths compare without ASCII case: on macOS and Windows `Scene.json` and
@@ -311,20 +358,20 @@ static int server_lock_compare(const void *lhs, const void *rhs) {
                              ((const ServerLock *)rhs)->path);
 }
 
-static bool8_t server_locks_save(const VkrDepotServer *server) {
+static bool8_t server_locks_save(const ServerRepository *repository) {
   uint64_t size = 4u;
-  for (uint32_t i = 0u; i < server->lock_count; ++i) {
-    size += 2u + strlen(server->locks[i].path) + 32u + 8u;
+  for (uint32_t i = 0u; i < repository->lock_count; ++i) {
+    size += 2u + strlen(repository->locks[i].path) + 32u + 8u;
   }
   uint8_t *bytes = malloc((size_t)size);
   if (!bytes) {
     return false_v;
   }
   uint8_t *cursor = bytes;
-  vkr_store_le_u32(cursor, server->lock_count);
+  vkr_store_le_u32(cursor, repository->lock_count);
   cursor += 4u;
-  for (uint32_t i = 0u; i < server->lock_count; ++i) {
-    const ServerLock *lock = &server->locks[i];
+  for (uint32_t i = 0u; i < repository->lock_count; ++i) {
+    const ServerLock *lock = &repository->locks[i];
     const uint16_t length = (uint16_t)strlen(lock->path);
     cursor[0] = (uint8_t)length;
     cursor[1] = (uint8_t)(length >> 8);
@@ -336,24 +383,24 @@ static bool8_t server_locks_save(const VkrDepotServer *server) {
   }
   char path[VKR_DEPOT_PATH_CAPACITY];
   const bool8_t ok =
-      server_file(server->store.root, "locks", path, sizeof(path)) &&
+      server_file(repository->store.root, "locks", path, sizeof(path)) &&
       vkr_bakery_write_file_atomic(path, bytes, size);
   free(bytes);
   return ok;
 }
 
-static bool8_t server_lock_add(VkrDepotServer *server, const char *path,
+static bool8_t server_lock_add(ServerRepository *repository, const char *path,
                                const uint8_t owner[32], uint64_t time_us) {
-  if (server->lock_count == server->lock_capacity) {
+  if (repository->lock_count == repository->lock_capacity) {
     const uint32_t capacity =
-        server->lock_capacity ? server->lock_capacity * 2u : 64u;
+        repository->lock_capacity ? repository->lock_capacity * 2u : 64u;
     ServerLock *locks =
-        realloc(server->locks, (size_t)capacity * sizeof(ServerLock));
+        realloc(repository->locks, (size_t)capacity * sizeof(ServerLock));
     if (!locks) {
       return false_v;
     }
-    server->locks = locks;
-    server->lock_capacity = capacity;
+    repository->locks = locks;
+    repository->lock_capacity = capacity;
   }
   const size_t length = strlen(path);
   char *copy = malloc(length + 1u);
@@ -361,24 +408,25 @@ static bool8_t server_lock_add(VkrDepotServer *server, const char *path,
     return false_v;
   }
   memcpy(copy, path, length + 1u);
-  ServerLock *lock = &server->locks[server->lock_count++];
+  ServerLock *lock = &repository->locks[repository->lock_count++];
   lock->path = copy;
   memcpy(lock->owner, owner, 32u);
   lock->time_us = time_us;
-  qsort(server->locks, server->lock_count, sizeof(ServerLock),
+  qsort(repository->locks, repository->lock_count, sizeof(ServerLock),
         server_lock_compare);
   return true_v;
 }
 
-static ServerLock *server_lock_find(VkrDepotServer *server, const char *path) {
+static ServerLock *server_lock_find(ServerRepository *repository,
+                                    const char *path) {
   const ServerLock key = {.path = (char *)path};
-  return bsearch(&key, server->locks, server->lock_count, sizeof(ServerLock),
-                 server_lock_compare);
+  return bsearch(&key, repository->locks, repository->lock_count,
+                 sizeof(ServerLock), server_lock_compare);
 }
 
-static bool8_t server_locks_load(VkrDepotServer *server) {
+static bool8_t server_locks_load(ServerRepository *repository) {
   char path[VKR_DEPOT_PATH_CAPACITY];
-  if (!server_file(server->store.root, "locks", path, sizeof(path))) {
+  if (!server_file(repository->store.root, "locks", path, sizeof(path))) {
     return false_v;
   }
   if (!vkr_bakery_is_file(path)) {
@@ -410,7 +458,7 @@ static bool8_t server_locks_load(VkrDepotServer *server) {
     memcpy(lock_path, cursor, length);
     lock_path[length] = '\0';
     cursor += length;
-    ok = server_lock_add(server, lock_path, cursor,
+    ok = server_lock_add(repository, lock_path, cursor,
                          vkr_load_le_u64(cursor + 32));
     cursor += 40u;
   }
@@ -803,10 +851,17 @@ static ServerLoader *server_loader_create(VkrAllocator *allocator,
   return loader;
 }
 
+/* The repository a peer works on, or NULL before it selects one. */
+static ServerRepository *server_peer_repository(VkrDepotServer *server,
+                                                const ServerPeer *peer) {
+  return peer->repository == SERVER_NO_REPOSITORY
+             ? NULL
+             : &server->repositories[peer->repository];
+}
+
 /* Gives the loaders the objects at the front of the peer's queue that none
    has taken yet. */
-static void server_load_ahead(VkrDepotServer *server, ServerPeer *peer) {
-  ServerLoader *loader = server->loader;
+static void server_load_ahead(ServerLoader *loader, ServerPeer *peer) {
   const uint32_t ahead = Min(peer->queue_count, SERVER_LOAD_AHEAD);
   bool8_t queued = false_v;
   for (uint32_t i = 0u; i < ahead; ++i) {
@@ -913,16 +968,40 @@ static bool8_t server_queue_push(ServerPeer *peer, ServerSendItem item) {
   return true_v;
 }
 
+/* The known entry of `key`: its own, else a free one or the one seen
+   longest ago. */
+static ServerKnown *server_known(VkrDepotServer *server,
+                                 const uint8_t key[32]) {
+  ServerKnown *free_slot = NULL;
+  ServerKnown *oldest = NULL;
+  for (uint32_t i = 0u; i < VKR_DEPOT_SERVER_PEERS_MAX; ++i) {
+    ServerKnown *slot = &server->known[i];
+    if (slot->live && MemCompare(slot->key, key, 32u) == 0) {
+      return slot;
+    }
+    if (!slot->live) {
+      free_slot = free_slot ? free_slot : slot;
+    } else if (!oldest || slot->last_seen_us < oldest->last_seen_us) {
+      oldest = slot;
+    }
+  }
+  ServerKnown *slot = free_slot ? free_slot : oldest;
+  MemZero(slot, sizeof(*slot));
+  slot->live = true_v;
+  slot->repository = -1;
+  MemCopy(slot->key, key, 32u);
+  return slot;
+}
+
 void vkr_depot_server_on_event(VkrDepotServer *server,
                                const VkrNetEvent *event) {
   if (event->type == VKR_NET_EVENT_CONNECTED) {
     for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
       ServerPeer *peer = &server->peers[i];
       if (!peer->live) {
-        /* The role as the access list stands now, which may have changed
+        /* The role as the access lists stand now, which may have changed
            since the handshake was accepted. */
-        const uint32_t role = server_role(server, event->peer_key);
-        if (role == VKR_DEPOT_ROLE_NONE) {
+        if (server_role_any(server, event->peer_key) == VKR_DEPOT_ROLE_NONE) {
           vkr_net_core_close(server->core, event->connection,
                              VKR_NET_CLOSE_ACCESS_DENIED, 0u);
           return;
@@ -930,7 +1009,16 @@ void vkr_depot_server_on_event(VkrDepotServer *server,
         peer->live = true_v;
         peer->connection = event->connection;
         memcpy(peer->key, event->peer_key, 32u);
-        peer->role = role;
+        /* A server of one store gives it to every connection, so version 1
+           clients, which send no HELLO, keep working. */
+        peer->repository =
+            server->repository_count == 1u ? 0u : SERVER_NO_REPOSITORY;
+        peer->role = server_peer_role(server, peer);
+        ServerKnown *known = server_known(server, peer->key);
+        known->repository = peer->repository == SERVER_NO_REPOSITORY
+                                ? -1
+                                : (int32_t)peer->repository;
+        known->last_seen_us = server_unix_us();
         return;
       }
     }
@@ -939,7 +1027,8 @@ void vkr_depot_server_on_event(VkrDepotServer *server,
   } else if (event->type == VKR_NET_EVENT_CLOSED) {
     ServerPeer *peer = server_peer(server, event->connection);
     if (peer) {
-      server_peer_release(server->loader, peer);
+      const ServerRepository *repository = server_peer_repository(server, peer);
+      server_peer_release(repository ? repository->loader : NULL, peer);
     }
   }
 }
@@ -1037,17 +1126,20 @@ void vkr_depot_server_accept(void *context, const VkrNetAddress *address,
                              uint32_t credential_size,
                              VkrNetAcceptResult *out_result) {
   VkrDepotServer *server = context;
-  const uint32_t role = server_role(server, peer_key);
+  char name[VKR_DEPOT_DISPLAY_NAME];
+  (void)vkr_depot_display_name_clean(credential, credential_size, name);
+  const uint32_t role = server_role_any(server, peer_key);
   if (role == VKR_DEPOT_ROLE_NONE) {
     /* A key its owner refused asks no more until the server restarts. */
     if (server_denied_find(server, peer_key) < 0) {
-      char name[VKR_DEPOT_DISPLAY_NAME];
-      (void)vkr_depot_display_name_clean(credential, credential_size, name);
       server_request_note(server, peer_key, name, address);
     }
     out_result->code = VKR_NET_CLOSE_ACCESS_DENIED;
     return;
   }
+  ServerKnown *known = server_known(server, peer_key);
+  snprintf(known->name, sizeof(known->name), "%s", name);
+  known->last_seen_us = server_unix_us();
   out_result->user = role;
 }
 
@@ -1072,14 +1164,24 @@ uint32_t vkr_depot_server_requests(const VkrDepotServer *server,
   return count;
 }
 
-uint32_t vkr_depot_server_access(const VkrDepotServer *server,
-                                 VkrDepotAccessEntry *out, uint32_t capacity) {
-  const uint32_t count = Min(server->access_count, capacity);
+uint32_t vkr_depot_server_access_in(const VkrDepotServer *server,
+                                    uint32_t index, VkrDepotAccessEntry *out,
+                                    uint32_t capacity) {
+  if (index >= server->repository_count) {
+    return 0u;
+  }
+  const ServerRepository *repository = &server->repositories[index];
+  const uint32_t count = Min(repository->access_count, capacity);
   for (uint32_t i = 0u; i < count; ++i) {
-    MemCopy(out[i].key, server->access[i].key, 32u);
-    out[i].role = (VkrDepotRole)server->access[i].role;
+    MemCopy(out[i].key, repository->access[i].key, 32u);
+    out[i].role = (VkrDepotRole)repository->access[i].role;
   }
   return count;
+}
+
+uint32_t vkr_depot_server_access(const VkrDepotServer *server,
+                                 VkrDepotAccessEntry *out, uint32_t capacity) {
+  return vkr_depot_server_access_in(server, 0u, out, capacity);
 }
 
 /* Gives every live connection its key's current role and closes the ones
@@ -1090,7 +1192,7 @@ static void server_apply_access(VkrDepotServer *server, uint64_t now_us) {
     if (!peer->live) {
       continue;
     }
-    const uint32_t role = server_role(server, peer->key);
+    const uint32_t role = server_peer_role(server, peer);
     if (role == VKR_DEPOT_ROLE_NONE && peer->role != VKR_DEPOT_ROLE_NONE) {
       vkr_net_core_close(server->core, peer->connection,
                          VKR_NET_CLOSE_ACCESS_DENIED, now_us);
@@ -1104,20 +1206,27 @@ static void server_apply_access(VkrDepotServer *server, uint64_t now_us) {
   for (uint32_t i = 0u; i < VKR_DEPOT_REQUESTS_MAX; ++i) {
     ServerRequest *slot = &server->requests[i];
     if (slot->live &&
-        server_role(server, slot->request.key) != VKR_DEPOT_ROLE_NONE) {
+        server_role_any(server, slot->request.key) != VKR_DEPOT_ROLE_NONE) {
       MemZero(slot, sizeof(*slot));
     }
   }
 }
 
-bool8_t vkr_depot_server_set_role(VkrDepotServer *server, const uint8_t key[32],
-                                  VkrDepotRole role, uint64_t now_us) {
-  if ((uint32_t)role > VKR_DEPOT_ROLE_ADMIN ||
-      !vkr_depot_access_set(server->store.root, key, role) ||
-      !server_access_load(server)) {
+bool8_t vkr_depot_server_set_role_in(VkrDepotServer *server, uint32_t index,
+                                     const uint8_t key[32], VkrDepotRole role,
+                                     uint64_t now_us) {
+  if (index >= server->repository_count ||
+      (uint32_t)role > VKR_DEPOT_ROLE_ADMIN) {
     return false_v;
   }
-  server_denied_set(server, key, role == VKR_DEPOT_ROLE_NONE);
+  ServerRepository *repository = &server->repositories[index];
+  if (!vkr_depot_access_set(repository->store.root, key, role) ||
+      !server_access_load(repository)) {
+    return false_v;
+  }
+  /* A key refused everywhere asks no more until the server restarts. */
+  server_denied_set(server, key,
+                    server_role_any(server, key) == VKR_DEPOT_ROLE_NONE);
   ServerRequest *slot = server_request_find(server, key);
   if (slot) {
     MemZero(slot, sizeof(*slot));
@@ -1126,13 +1235,19 @@ bool8_t vkr_depot_server_set_role(VkrDepotServer *server, const uint8_t key[32],
   return true_v;
 }
 
+bool8_t vkr_depot_server_set_role(VkrDepotServer *server, const uint8_t key[32],
+                                  VkrDepotRole role, uint64_t now_us) {
+  return vkr_depot_server_set_role_in(server, 0u, key, role, now_us);
+}
+
 bool8_t vkr_depot_server_reload_access(VkrDepotServer *server,
                                        uint64_t now_us) {
-  if (!server_access_load(server)) {
-    return false_v;
+  bool8_t ok = true_v;
+  for (uint32_t i = 0u; i < server->repository_count; ++i) {
+    ok = server_access_load(&server->repositories[i]) && ok;
   }
   server_apply_access(server, now_us);
-  return true_v;
+  return ok;
 }
 
 void vkr_depot_server_close_peers(VkrDepotServer *server, uint16_t code,
@@ -1154,6 +1269,69 @@ VkrDepotServerStats vkr_depot_server_stats(const VkrDepotServer *server) {
   return stats;
 }
 
+static bool8_t server_default_branch_visit(void *context, const char *branch) {
+  char *out = context;
+  if (!out[0] || strcmp(branch, "main") == 0) {
+    snprintf(out, VKR_DEPOT_BRANCH_NAME, "%s", branch);
+  }
+  return true_v;
+}
+
+uint32_t vkr_depot_server_repository_count(const VkrDepotServer *server) {
+  return server->repository_count;
+}
+
+bool8_t vkr_depot_server_repository(const VkrDepotServer *server,
+                                    uint32_t index,
+                                    VkrDepotServerRepository *out) {
+  MemZero(out, sizeof(*out));
+  if (index >= server->repository_count) {
+    return false_v;
+  }
+  const ServerRepository *repository = &server->repositories[index];
+  snprintf(out->store_root, sizeof(out->store_root), "%s",
+           repository->store.root);
+  snprintf(out->name, sizeof(out->name), "%s", repository->name);
+  out->has_id =
+      vkr_depot_repository_id(repository->store.root, out->id, false_v);
+  (void)vkr_depot_ref_list(repository->store.root, server_default_branch_visit,
+                           out->default_branch);
+  return true_v;
+}
+
+uint32_t vkr_depot_server_peers(const VkrDepotServer *server,
+                                VkrDepotServerPeer *out, uint32_t capacity) {
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < VKR_DEPOT_SERVER_PEERS_MAX && count < capacity;
+       ++i) {
+    const ServerKnown *known = &server->known[i];
+    if (!known->live) {
+      continue;
+    }
+    VkrDepotServerPeer peer = {
+        .outbound_only = known->outbound_only,
+        .repository = known->repository,
+        .last_seen_us = known->last_seen_us,
+    };
+    MemCopy(peer.key, known->key, 32u);
+    snprintf(peer.name, sizeof(peer.name), "%s", known->name);
+    for (uint32_t k = 0u; k < SERVER_PEER_MAX; ++k) {
+      const ServerPeer *live = &server->peers[k];
+      peer.connections +=
+          live->live && MemCompare(live->key, known->key, 32u) == 0 ? 1u : 0u;
+    }
+    /* Insertion by time, the latest first. */
+    uint32_t at = count;
+    while (at > 0u && out[at - 1u].last_seen_us < peer.last_seen_us) {
+      out[at] = out[at - 1u];
+      at -= 1u;
+    }
+    out[at] = peer;
+    count += 1u;
+  }
+  return count;
+}
+
 // =============================================================================
 // Requests
 // =============================================================================
@@ -1167,18 +1345,19 @@ static bool8_t server_ref_name_visit(void *context, const char *name) {
   return true_v;
 }
 
-static void server_on_refs(VkrDepotServer *server, ServerPeer *peer,
-                           uint64_t request, uint64_t now) {
+static void server_on_refs(VkrDepotServer *server, ServerRepository *repository,
+                           ServerPeer *peer, uint64_t request, uint64_t now) {
   VkrDepotRefsWire *reply = &server->reply.refs;
   MemZero(reply, sizeof(*reply));
   reply->request = request;
   RefNames *names = &server->ref_names;
   names->count = 0u;
   /* More than VKR_DEPOT_REFS_MAX branches: the first ones answer. */
-  (void)vkr_depot_ref_list(server->store.root, server_ref_name_visit, names);
+  (void)vkr_depot_ref_list(repository->store.root, server_ref_name_visit,
+                           names);
   for (uint32_t i = 0u; i < names->count; ++i) {
     VkrDepotId commit;
-    if (!vkr_depot_ref_read(server->store.root, names->names[i], &commit)) {
+    if (!vkr_depot_ref_read(repository->store.root, names->names[i], &commit)) {
       continue;
     }
     VkrDepotRefWire *ref = &reply->refs[reply->ref_count++];
@@ -1189,19 +1368,10 @@ static void server_on_refs(VkrDepotServer *server, ServerPeer *peer,
                        reply, now);
 }
 
-static bool8_t server_default_branch_visit(void *context, const char *branch) {
-  char *out = context;
-  if (!out[0] || strcmp(branch, "main") == 0) {
-    snprintf(out, VKR_DEPOT_BRANCH_NAME, "%s", branch);
-  }
-  return true_v;
-}
-
-/* Selects the repository a version 2 connection works on. The server
-   serves one store, the default: a HELLO that names none or the store's ID
-   (`<store>/repository`) selects it, and one that names another ID finds
-   nothing. A failed HELLO may be retried; one after a selection breaks the
-   protocol. */
+/* Selects the repository a version 2 connection works on: the one whose ID
+   (`<store>/repository`) the HELLO names, or, naming none, the only one a
+   server of one store has. A key without a role on it is refused, and a
+   failed HELLO may be retried; one after a selection breaks the protocol. */
 static void server_on_hello(VkrDepotServer *server, ServerPeer *peer,
                             const VkrDepotHelloWire *hello, uint64_t now) {
   if (peer->selected) {
@@ -1216,31 +1386,59 @@ static void server_on_hello(VkrDepotServer *server, ServerPeer *peer,
   for (uint32_t i = 0u; i < hello->repository_size; ++i) {
     named = named || hello->repository[i] != 0u;
   }
-  peer->outbound_only = (hello->flags & VKR_DEPOT_HELLO_OUTBOUND_ONLY) != 0u;
-  uint8_t id[VKR_DEPOT_REPOSITORY_ID_SIZE];
-  const bool8_t has_id =
-      vkr_depot_repository_id(server->store.root, id, false_v);
-  if (named && (!has_id || hello->repository_size != sizeof(id) ||
-                MemCompare(hello->repository, id, sizeof(id)) != 0)) {
-    reply->status = VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY;
+  ServerKnown *known = server_known(server, peer->key);
+  known->outbound_only = (hello->flags & VKR_DEPOT_HELLO_OUTBOUND_ONLY) != 0u;
+  known->last_seen_us = server_unix_us();
+  uint32_t index = SERVER_NO_REPOSITORY;
+  if (!named) {
+    index = server->repository_count == 1u ? 0u : SERVER_NO_REPOSITORY;
+    reply->status = index == SERVER_NO_REPOSITORY
+                        ? VKR_DEPOT_HELLO_SELECT_REQUIRED
+                        : VKR_DEPOT_HELLO_OK;
   } else {
-    reply->status = VKR_DEPOT_HELLO_OK;
-    peer->selected = true_v;
-    if (has_id) {
-      MemCopy(reply->repository, id, sizeof(id));
-      reply->repository_size = sizeof(id);
+    reply->status = VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY;
+    for (uint32_t i = 0u; i < server->repository_count; ++i) {
+      uint8_t id[VKR_DEPOT_REPOSITORY_ID_SIZE];
+      if (hello->repository_size == sizeof(id) &&
+          vkr_depot_repository_id(server->repositories[i].store.root, id,
+                                  false_v) &&
+          MemCompare(hello->repository, id, sizeof(id)) == 0) {
+        index = i;
+        reply->status = VKR_DEPOT_HELLO_OK;
+        break;
+      }
     }
-    snprintf(reply->name, sizeof(reply->name), "%s",
-             vkr_bakery_path_name(server->store.root));
-    (void)vkr_depot_ref_list(server->store.root, server_default_branch_visit,
-                             reply->default_branch);
+  }
+  if (reply->status == VKR_DEPOT_HELLO_OK &&
+      server_role(server, &server->repositories[index], peer->key) ==
+          VKR_DEPOT_ROLE_NONE) {
+    reply->status = VKR_DEPOT_HELLO_NO_ROLE;
+  }
+  if (reply->status == VKR_DEPOT_HELLO_OK) {
+    /* A peer of a server of several has no repository, so no queued
+       object or upload, before this; one of a single store keeps its
+       own. */
+    peer->repository = index;
+    peer->selected = true_v;
+    peer->role = server_peer_role(server, peer);
+    known->repository = (int32_t)index;
+    VkrDepotServerRepository info;
+    (void)vkr_depot_server_repository(server, index, &info);
+    if (info.has_id) {
+      MemCopy(reply->repository, info.id, sizeof(info.id));
+      reply->repository_size = sizeof(info.id);
+    }
+    snprintf(reply->name, sizeof(reply->name), "%s", info.name);
+    snprintf(reply->default_branch, sizeof(reply->default_branch), "%s",
+             info.default_branch);
   }
   (void)vkr_depot_send(server->session, peer->connection,
                        VKR_DEPOT_MSG_HELLO_REPLY, reply, now);
 }
 
-static void server_on_have(VkrDepotServer *server, ServerPeer *peer,
-                           const VkrDepotIdsWire *have, uint64_t now) {
+static void server_on_have(VkrDepotServer *server, ServerRepository *repository,
+                           ServerPeer *peer, const VkrDepotIdsWire *have,
+                           uint64_t now) {
   VkrDepotBitsWire *reply = &server->reply.bits;
   MemZero(reply, sizeof(*reply));
   reply->request = have->request;
@@ -1248,7 +1446,7 @@ static void server_on_have(VkrDepotServer *server, ServerPeer *peer,
   for (uint32_t i = 0u; i < have->id_count; ++i) {
     VkrDepotId id;
     memcpy(id.bytes, have->ids[i], VKR_DEPOT_ID_SIZE);
-    if (!vkr_depot_store_has(&server->store, &id)) {
+    if (!vkr_depot_store_has(&repository->store, &id)) {
       bits_set(reply->bits, i);
     }
   }
@@ -1256,8 +1454,9 @@ static void server_on_have(VkrDepotServer *server, ServerPeer *peer,
                        VKR_DEPOT_MSG_HAVE_REPLY, reply, now);
 }
 
-static void server_on_get(VkrDepotServer *server, ServerPeer *peer,
-                          const VkrDepotIdsWire *get, uint64_t now) {
+static void server_on_get(VkrDepotServer *server, ServerRepository *repository,
+                          ServerPeer *peer, const VkrDepotIdsWire *get,
+                          uint64_t now) {
   VkrDepotBitsWire *reply = &server->reply.bits;
   MemZero(reply, sizeof(*reply));
   reply->request = get->request;
@@ -1266,7 +1465,7 @@ static void server_on_get(VkrDepotServer *server, ServerPeer *peer,
     ServerSendItem item = {
         .request = get->request, .index = i, .zstd = get->zstd};
     memcpy(item.id.bytes, get->ids[i], VKR_DEPOT_ID_SIZE);
-    if (!vkr_depot_store_has(&server->store, &item.id) ||
+    if (!vkr_depot_store_has(&repository->store, &item.id) ||
         !server_queue_push(peer, item)) {
       bits_set(reply->bits, i);
     }
@@ -1288,7 +1487,8 @@ static void server_put_finish(VkrDepotServer *server, ServerPeer *peer,
 }
 
 /* Stores one uploaded representation for a live PUT. */
-static void server_put_bytes(VkrDepotServer *server, ServerPeer *peer,
+static void server_put_bytes(VkrDepotServer *server,
+                             ServerRepository *repository, ServerPeer *peer,
                              ServerPut *put, uint32_t index,
                              const uint8_t *bytes, uint32_t size,
                              uint64_t now) {
@@ -1296,8 +1496,8 @@ static void server_put_bytes(VkrDepotServer *server, ServerPeer *peer,
     return;
   }
   bits_set(put->received, index);
-  if (!vkr_depot_store_put_stored(&server->store, &put->ids[index], bytes, size,
-                                  NULL, NULL)) {
+  if (!vkr_depot_store_put_stored(&repository->store, &put->ids[index], bytes,
+                                  size, NULL, NULL)) {
     bits_set(put->bad, index);
   }
   put->remaining -= 1u;
@@ -1306,8 +1506,9 @@ static void server_put_bytes(VkrDepotServer *server, ServerPeer *peer,
   }
 }
 
-static void server_on_put(VkrDepotServer *server, ServerPeer *peer,
-                          const VkrDepotIdsWire *put_request, uint64_t now) {
+static void server_on_put(VkrDepotServer *server, ServerRepository *repository,
+                          ServerPeer *peer, const VkrDepotIdsWire *put_request,
+                          uint64_t now) {
   if (peer->role < VKR_DEPOT_ROLE_WRITE) {
     vkr_net_core_close(server->core, peer->connection,
                        VKR_NET_CLOSE_ACCESS_DENIED, now);
@@ -1338,8 +1539,9 @@ static void server_on_put(VkrDepotServer *server, ServerPeer *peer,
   for (uint32_t i = 0u; i < peer->orphan_count; ++i) {
     ServerOrphan *orphan = &peer->orphans[i];
     if ((orphan->tag >> 8) == put->request && put->live) {
-      server_put_bytes(server, peer, put, (uint32_t)(orphan->tag & 0xffu),
-                       orphan->bytes, orphan->size, now);
+      server_put_bytes(server, repository, peer, put,
+                       (uint32_t)(orphan->tag & 0xffu), orphan->bytes,
+                       orphan->size, now);
       peer->orphan_bytes -= orphan->size;
       free(orphan->bytes);
     } else {
@@ -1369,7 +1571,8 @@ static bool8_t server_lock_path_valid(const char *path) {
   }
 }
 
-static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
+static void server_on_update_ref(VkrDepotServer *server,
+                                 ServerRepository *repository, ServerPeer *peer,
                                  const VkrDepotUpdateRefWire *update,
                                  uint64_t now) {
   VkrDepotUpdateRefReplyWire *reply = &server->reply.update_ref_reply;
@@ -1377,7 +1580,7 @@ static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
   reply->request = update->request;
   VkrDepotId current = {0};
   const bool8_t exists =
-      vkr_depot_ref_read(server->store.root, update->name, &current);
+      vkr_depot_ref_read(repository->store.root, update->name, &current);
   memcpy(reply->current, current.bytes, VKR_DEPOT_ID_SIZE);
   VkrDepotId expected;
   VkrDepotId commit_id;
@@ -1399,17 +1602,17 @@ static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
     uint64_t previous_size = 0u;
     const bool8_t have_previous =
         exists &&
-        vkr_depot_store_get(&server->store, &current, &previous_bytes,
+        vkr_depot_store_get(&repository->store, &current, &previous_bytes,
                             &previous_size) &&
         vkr_depot_commit_parse(previous_bytes, previous_size, &previous);
-    if (!vkr_depot_store_get(&server->store, &commit_id, &bytes, &size) ||
+    if (!vkr_depot_store_get(&repository->store, &commit_id, &bytes, &size) ||
         !vkr_depot_commit_parse(bytes, size, &commit)) {
       reply->status = VKR_DEPOT_REF_INCOMPLETE;
     } else {
       /* On the heap: the check holds a path buffer. */
       ClosureCheck *check = calloc(1u, sizeof(ClosureCheck));
       if (check) {
-        check->store = &server->store;
+        check->store = &repository->store;
       }
       const bool8_t complete =
           check &&
@@ -1423,7 +1626,7 @@ static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
         reply->status = VKR_DEPOT_REF_OK;
         for (uint32_t i = 0u; i < check->changed.count; ++i) {
           const ServerLock *lock =
-              server_lock_find(server, check->changed.entries[i].path);
+              server_lock_find(repository, check->changed.entries[i].path);
           if (lock && memcmp(lock->owner, peer->key, 32u) != 0) {
             reply->status = VKR_DEPOT_REF_LOCKED;
             memcpy(reply->current, current.bytes, VKR_DEPOT_ID_SIZE);
@@ -1435,8 +1638,9 @@ static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
              branch since it was read: the swap checks again under the
              store's lock. */
           VkrDepotId after;
-          const VkrDepotRefSwap swap = vkr_depot_ref_swap(
-              server->store.root, update->name, &expected, &commit_id, &after);
+          const VkrDepotRefSwap swap =
+              vkr_depot_ref_swap(repository->store.root, update->name,
+                                 &expected, &commit_id, &after);
           memcpy(reply->current, after.bytes, VKR_DEPOT_ID_SIZE);
           if (swap == VKR_DEPOT_REF_SWAP_MOVED) {
             reply->status = VKR_DEPOT_REF_CONFLICT;
@@ -1457,12 +1661,13 @@ static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
                        VKR_DEPOT_MSG_UPDATE_REF_REPLY, reply, now);
 }
 
-static void server_on_lock(VkrDepotServer *server, ServerPeer *peer,
-                           const VkrDepotLockWire *lock, uint64_t now) {
+static void server_on_lock(VkrDepotServer *server, ServerRepository *repository,
+                           ServerPeer *peer, const VkrDepotLockWire *lock,
+                           uint64_t now) {
   VkrDepotLockReplyWire *reply = &server->reply.lock_reply;
   MemZero(reply, sizeof(*reply));
   reply->request = lock->request;
-  ServerLock *held = server_lock_find(server, lock->path);
+  ServerLock *held = server_lock_find(repository, lock->path);
   if (peer->role < VKR_DEPOT_ROLE_WRITE ||
       !server_lock_path_valid(lock->path)) {
     reply->status = VKR_DEPOT_LOCK_DENIED;
@@ -1474,13 +1679,14 @@ static void server_on_lock(VkrDepotServer *server, ServerPeer *peer,
       reply->status = VKR_DEPOT_LOCK_HELD;
       memcpy(reply->owner, held->owner, 32u);
     } else {
-      const uint32_t index = (uint32_t)(held - server->locks);
+      const uint32_t index = (uint32_t)(held - repository->locks);
       free(held->path);
-      MemCopy(&server->locks[index], &server->locks[index + 1u],
-              (uint64_t)(server->lock_count - index - 1u) * sizeof(ServerLock));
-      server->lock_count -= 1u;
-      reply->status =
-          server_locks_save(server) ? VKR_DEPOT_LOCK_OK : VKR_DEPOT_LOCK_DENIED;
+      MemCopy(&repository->locks[index], &repository->locks[index + 1u],
+              (uint64_t)(repository->lock_count - index - 1u) *
+                  sizeof(ServerLock));
+      repository->lock_count -= 1u;
+      reply->status = server_locks_save(repository) ? VKR_DEPOT_LOCK_OK
+                                                    : VKR_DEPOT_LOCK_DENIED;
     }
   } else if (held) {
     reply->status = memcmp(held->owner, peer->key, 32u) == 0
@@ -1489,8 +1695,8 @@ static void server_on_lock(VkrDepotServer *server, ServerPeer *peer,
     memcpy(reply->owner, held->owner, 32u);
   } else {
     reply->status =
-        server_lock_add(server, lock->path, peer->key, server_unix_us()) &&
-                server_locks_save(server)
+        server_lock_add(repository, lock->path, peer->key, server_unix_us()) &&
+                server_locks_save(repository)
             ? VKR_DEPOT_LOCK_OK
             : VKR_DEPOT_LOCK_DENIED;
     memcpy(reply->owner, peer->key, 32u);
@@ -1499,14 +1705,15 @@ static void server_on_lock(VkrDepotServer *server, ServerPeer *peer,
                        VKR_DEPOT_MSG_LOCK_REPLY, reply, now);
 }
 
-static void server_on_locks(VkrDepotServer *server, ServerPeer *peer,
+static void server_on_locks(VkrDepotServer *server,
+                            ServerRepository *repository, ServerPeer *peer,
                             const VkrDepotLocksRequestWire *request,
                             uint64_t now) {
   VkrDepotLocksWire *reply = &server->reply.locks;
   MemZero(reply, sizeof(*reply));
   reply->request = request->request;
-  for (uint32_t i = 0u; i < server->lock_count; ++i) {
-    const ServerLock *lock = &server->locks[i];
+  for (uint32_t i = 0u; i < repository->lock_count; ++i) {
+    const ServerLock *lock = &repository->locks[i];
     if (request->after[0] &&
         server_path_compare(lock->path, request->after) <= 0) {
       continue;
@@ -1524,8 +1731,9 @@ static void server_on_locks(VkrDepotServer *server, ServerPeer *peer,
                        reply, now);
 }
 
-static void server_on_data(VkrDepotServer *server, ServerPeer *peer,
-                           const VkrNetEvent *event, uint64_t now) {
+static void server_on_data(VkrDepotServer *server, ServerRepository *repository,
+                           ServerPeer *peer, const VkrNetEvent *event,
+                           uint64_t now) {
   if (!event->has_tag) {
     vkr_net_core_close(server->core, peer->connection,
                        VKR_NET_CLOSE_PROTOCOL_VIOLATION, now);
@@ -1536,7 +1744,8 @@ static void server_on_data(VkrDepotServer *server, ServerPeer *peer,
   for (uint32_t i = 0u; i < SERVER_PUT_SLOTS; ++i) {
     ServerPut *put = &peer->puts[i];
     if (put->live && put->request == request) {
-      server_put_bytes(server, peer, put, index, event->data, event->size, now);
+      server_put_bytes(server, repository, peer, put, index, event->data,
+                       event->size, now);
       return;
     }
   }
@@ -1574,9 +1783,18 @@ static void server_service_event(void *context, VkrNetConnectionId connection,
       event->type != VKR_NET_EVENT_MESSAGE) {
     return;
   }
+  server_known(server, peer->key)->last_seen_us = server_unix_us();
+  /* A server of several stores serves nothing before a HELLO selects
+     one, as a version 1 client never sends. */
+  ServerRepository *repository = server_peer_repository(server, peer);
   if (channel == VKR_DEPOT_DATA_CHANNEL) {
+    if (!repository) {
+      vkr_net_core_close(server->core, connection,
+                         VKR_DEPOT_CLOSE_SELECT_REPOSITORY, now);
+      return;
+    }
     server->stats.bytes_in += event->size;
-    server_on_data(server, peer, event, now);
+    server_on_data(server, repository, peer, event, now);
     return;
   }
   const VkrWireMessage *descriptor = NULL;
@@ -1588,35 +1806,41 @@ static void server_service_event(void *context, VkrNetConnectionId connection,
     return;
   }
   const VkrDepotMessage *message = &server->message;
-  switch (descriptor->id) {
-  case VKR_DEPOT_MSG_REFS_REQUEST:
-    server_on_refs(server, peer, message->request.request, now);
-    break;
-  case VKR_DEPOT_MSG_HAVE:
-    server_on_have(server, peer, &message->ids, now);
-    break;
-  case VKR_DEPOT_MSG_GET:
-    server_on_get(server, peer, &message->ids, now);
-    break;
-  case VKR_DEPOT_MSG_PUT:
-    server_on_put(server, peer, &message->ids, now);
-    break;
-  case VKR_DEPOT_MSG_UPDATE_REF:
-    server_on_update_ref(server, peer, &message->update_ref, now);
-    break;
-  case VKR_DEPOT_MSG_LOCK:
-    server_on_lock(server, peer, &message->lock, now);
-    break;
-  case VKR_DEPOT_MSG_LOCKS_REQUEST:
-    server_on_locks(server, peer, &message->locks_request, now);
-    break;
-  case VKR_DEPOT_MSG_HELLO:
+  if (descriptor->id == VKR_DEPOT_MSG_HELLO) {
     if (peer->version < VKR_DEPOT_SERVICE_VERSION) {
       vkr_net_core_close(server->core, connection,
                          VKR_NET_CLOSE_PROTOCOL_VIOLATION, now);
-      break;
+      return;
     }
     server_on_hello(server, peer, &message->hello, now);
+    return;
+  }
+  if (!repository) {
+    vkr_net_core_close(server->core, connection,
+                       VKR_DEPOT_CLOSE_SELECT_REPOSITORY, now);
+    return;
+  }
+  switch (descriptor->id) {
+  case VKR_DEPOT_MSG_REFS_REQUEST:
+    server_on_refs(server, repository, peer, message->request.request, now);
+    break;
+  case VKR_DEPOT_MSG_HAVE:
+    server_on_have(server, repository, peer, &message->ids, now);
+    break;
+  case VKR_DEPOT_MSG_GET:
+    server_on_get(server, repository, peer, &message->ids, now);
+    break;
+  case VKR_DEPOT_MSG_PUT:
+    server_on_put(server, repository, peer, &message->ids, now);
+    break;
+  case VKR_DEPOT_MSG_UPDATE_REF:
+    server_on_update_ref(server, repository, peer, &message->update_ref, now);
+    break;
+  case VKR_DEPOT_MSG_LOCK:
+    server_on_lock(server, repository, peer, &message->lock, now);
+    break;
+  case VKR_DEPOT_MSG_LOCKS_REQUEST:
+    server_on_locks(server, repository, peer, &message->locks_request, now);
     break;
   default:
     /* A reply sent to the server breaks the protocol. */
@@ -1646,7 +1870,11 @@ VkrDepotServer *vkr_depot_server_create(VkrAllocator *allocator,
                                         VkrNetCore *core,
                                         VkrNetSession *session,
                                         const VkrDepotServerConfig *config) {
-  if (!allocator || !core || !session || !config || !config->store_root) {
+  const uint32_t store_count = config && config->store_count
+                                   ? config->store_count
+                                   : (config && config->store_root ? 1u : 0u);
+  if (!allocator || !core || !session || !config || store_count == 0u ||
+      store_count > VKR_DEPOT_SERVER_REPOSITORIES_MAX) {
     return NULL;
   }
   VkrDepotServer *server = calloc(1u, sizeof(VkrDepotServer));
@@ -1657,17 +1885,29 @@ VkrDepotServer *vkr_depot_server_create(VkrAllocator *allocator,
   server->core = core;
   server->session = session;
   server->open_access = config->open_access;
-  if (!vkr_depot_store_open(&server->store, config->store_root,
-                            config->codec) ||
-      !server_access_load(server) || !server_locks_load(server)) {
-    vkr_depot_server_destroy(server);
-    return NULL;
-  }
-  if (config->load_threads > 0u) {
-    server->loader = server_loader_create(allocator, &server->store, config);
-    if (!server->loader) {
+  for (uint32_t i = 0u; i < store_count; ++i) {
+    const char *root =
+        config->store_count ? config->store_roots[i] : config->store_root;
+    const char *name = config->store_count && config->store_names
+                           ? config->store_names[i]
+                           : NULL;
+    ServerRepository *repository = &server->repositories[i];
+    server->repository_count = i + 1u;
+    if (!root ||
+        !vkr_depot_store_open(&repository->store, root, config->codec) ||
+        !server_access_load(repository) || !server_locks_load(repository)) {
       vkr_depot_server_destroy(server);
       return NULL;
+    }
+    snprintf(repository->name, sizeof(repository->name), "%s",
+             name && name[0] ? name : vkr_bakery_path_name(root));
+    if (config->load_threads > 0u) {
+      repository->loader =
+          server_loader_create(allocator, &repository->store, config);
+      if (!repository->loader) {
+        vkr_depot_server_destroy(server);
+        return NULL;
+      }
     }
   }
   VkrNetService service = vkr_depot_service_template();
@@ -1686,32 +1926,38 @@ void vkr_depot_server_destroy(VkrDepotServer *server) {
     return;
   }
   /* Stopped loaders leave every load they did not finish to its item. */
-  server_loader_destroy(server->loader);
+  for (uint32_t i = 0u; i < server->repository_count; ++i) {
+    server_loader_destroy(server->repositories[i].loader);
+  }
   for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
     if (server->peers[i].live) {
       server_peer_release(NULL, &server->peers[i]);
     }
   }
-  for (uint32_t i = 0u; i < server->lock_count; ++i) {
-    free(server->locks[i].path);
+  for (uint32_t i = 0u; i < server->repository_count; ++i) {
+    ServerRepository *repository = &server->repositories[i];
+    for (uint32_t k = 0u; k < repository->lock_count; ++k) {
+      free(repository->locks[k].path);
+    }
+    free(repository->locks);
   }
-  free(server->locks);
   free(server);
 }
 
 /* Sends one queued item, or drops it when its object is gone or torn
    (the client times out on it). False, with the item kept, when the data
    channel is full or a loader has not read it yet. */
-static bool8_t server_send_item(VkrDepotServer *server, ServerPeer *peer,
+static bool8_t server_send_item(VkrDepotServer *server,
+                                ServerRepository *repository, ServerPeer *peer,
                                 ServerSendItem *item, uint64_t now) {
   uint8_t *stored = NULL;
   uint64_t size = 0u;
   bool8_t found = false_v;
   ServerLoad *load = item->load;
   if (load) {
-    vkr_mutex_lock(server->loader->mutex);
+    vkr_mutex_lock(repository->loader->mutex);
     const uint8_t state = load->state;
-    vkr_mutex_unlock(server->loader->mutex);
+    vkr_mutex_unlock(repository->loader->mutex);
     if (state == SERVER_LOAD_WAITING) {
       return false_v;
     }
@@ -1719,8 +1965,8 @@ static bool8_t server_send_item(VkrDepotServer *server, ServerPeer *peer,
     stored = load->stored;
     size = load->size;
   } else {
-    found = server_read_object(&server->store, &item->id, item->zstd, &stored,
-                               &size);
+    found = server_read_object(&repository->store, &item->id, item->zstd,
+                               &stored, &size);
   }
   bool8_t sent = true_v;
   if (found) {
@@ -1749,29 +1995,37 @@ static bool8_t server_send_item(VkrDepotServer *server, ServerPeer *peer,
 }
 
 void vkr_depot_server_update(VkrDepotServer *server, uint64_t now_us) {
-  /* `vkr_depot access` or another process changed the access file. */
+  /* `vkr_depot access` or another process changed an access file. */
   if (now_us - server->access_checked_us >= SERVER_ACCESS_POLL_US) {
     server->access_checked_us = now_us;
-    bool8_t exists = false_v;
-    int64_t mtime_ns = 0;
-    uint64_t size = 0u;
-    server_access_stat(server, &exists, &mtime_ns, &size);
-    if (exists != server->access_exists ||
-        mtime_ns != server->access_mtime_ns || size != server->access_size) {
+    bool8_t changed = false_v;
+    for (uint32_t i = 0u; i < server->repository_count && !changed; ++i) {
+      const ServerRepository *repository = &server->repositories[i];
+      bool8_t exists = false_v;
+      int64_t mtime_ns = 0;
+      uint64_t size = 0u;
+      server_access_stat(repository, &exists, &mtime_ns, &size);
+      changed = exists != repository->access_exists ||
+                mtime_ns != repository->access_mtime_ns ||
+                size != repository->access_size;
+    }
+    if (changed) {
       (void)vkr_depot_server_reload_access(server, now_us);
     }
   }
   for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
     ServerPeer *peer = &server->peers[i];
-    if (!peer->live) {
+    ServerRepository *repository =
+        peer->live ? server_peer_repository(server, peer) : NULL;
+    if (!repository) {
       continue;
     }
-    if (server->loader) {
-      server_load_ahead(server, peer);
+    if (repository->loader) {
+      server_load_ahead(repository->loader, peer);
     }
     while (peer->queue_count > 0u) {
       ServerSendItem *item = &peer->queue[peer->queue_head];
-      if (!server_send_item(server, peer, item, now_us)) {
+      if (!server_send_item(server, repository, peer, item, now_us)) {
         break;
       }
       peer->queue_head = (peer->queue_head + 1u) % peer->queue_capacity;

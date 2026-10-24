@@ -673,9 +673,14 @@ static uint64_t depot_world_now(void *context) {
   return ((DepotWorld *)context)->now;
 }
 
-static void depot_world_init(DepotWorld *world, const char *store_root,
-                             const VkrNetSimLink *link,
-                             VkrNetKeyPair *client_keys) {
+/* A world whose server serves `store_count` stores; the first one's key is
+   the server's. */
+static void depot_world_init_stores(DepotWorld *world,
+                                    const char *const *store_roots,
+                                    uint32_t store_count,
+                                    const VkrNetSimLink *link,
+                                    VkrNetKeyPair *client_keys) {
+  const char *store_root = store_roots[0];
   MemZero(world, sizeof(*world));
   assert(vkr_dmemory_create(MB(16), GB(2), &world->memory));
   world->allocator = (VkrAllocator){.ctx = &world->memory};
@@ -695,7 +700,8 @@ static void depot_world_init(DepotWorld *world, const char *store_root,
       vkr_net_session_create(&world->allocator, world->server_core);
   world->client_session =
       vkr_net_session_create(&world->allocator, world->client_core);
-  const VkrDepotServerConfig depot_config = {.store_root = store_root,
+  const VkrDepotServerConfig depot_config = {.store_roots = store_roots,
+                                             .store_count = store_count,
                                              .codec = vkr_depot_zstd_codec()};
   world->server = vkr_depot_server_create(&world->allocator, world->server_core,
                                           world->server_session, &depot_config);
@@ -715,6 +721,12 @@ static void depot_world_init(DepotWorld *world, const char *store_root,
   assert(vkr_net_core_connect(world->client_core, &server_address,
                               world->server_key, NULL, 0u, world->now,
                               &world->connection));
+}
+
+static void depot_world_init(DepotWorld *world, const char *store_root,
+                             const VkrNetSimLink *link,
+                             VkrNetKeyPair *client_keys) {
+  depot_world_init_stores(world, &store_root, 1u, link, client_keys);
 }
 
 /* Connects the client again, sending `name` as the credential, to the
@@ -3451,6 +3463,118 @@ static void test_depot_hello(void) {
   printf("  test_depot_hello PASSED\n");
 }
 
+/* Fails when a server of two stores serves anything before a HELLO selects
+   one (version 1 clients included), when a HELLO naming no store, a store
+   the key has no role on, or another store's ID is not refused as such,
+   when a selected store answers with the other's branches, when a role
+   given on the second store does not let the key select it, or when the
+   peer list lacks the key, its outbound-only flag or its store. */
+static void test_depot_repositories_served(void) {
+  printf("  Running test_depot_repositories_served...\n");
+  char roots[2][VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("served-a", roots[0], sizeof(roots[0]));
+  depot_test_dir("served-b", roots[1], sizeof(roots[1]));
+  const char *const stores[2] = {roots[0], roots[1]};
+  VkrNetKeyPair keys;
+  vkr_net_keypair_generate(&keys);
+  assert(vkr_depot_access_set(roots[0], keys.public_key, VKR_DEPOT_ROLE_WRITE));
+  /* The second store has an owner, so its list does not let the key in. */
+  VkrNetKeyPair owner;
+  vkr_net_keypair_generate(&owner);
+  assert(
+      vkr_depot_access_set(roots[1], owner.public_key, VKR_DEPOT_ROLE_ADMIN));
+  uint8_t ids[2][VKR_DEPOT_REPOSITORY_ID_SIZE];
+  const VkrDepotId zero = {0};
+  VkrDepotId commit;
+  MemSet(commit.bytes, 0x42, sizeof(commit.bytes));
+  assert(vkr_depot_repository_id(roots[0], ids[0], true_v) &&
+         vkr_depot_repository_id(roots[1], ids[1], true_v));
+  assert(vkr_depot_ref_swap(roots[0], "main", &zero, &commit, NULL) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  assert(vkr_depot_ref_swap(roots[1], "dev", &zero, &commit, NULL) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  const VkrNetSimLink link = {.latency_us = 2000u,
+                              .bandwidth = 100u * 1000u * 1000u};
+
+  /* Version 1, which cannot select: refused at its first request. */
+  DepotWorld world;
+  depot_world_init_stores(&world, stores, 2u, &link, &keys);
+  assert(vkr_depot_server_repository_count(world.server) == 2u);
+  DepotRawService raw = {0};
+  depot_raw_open(&world, &raw, true_v);
+  const VkrDepotRequestWire refs = {.request = 1u};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs);
+  assert(world.closed && world.close_code == VKR_DEPOT_CLOSE_SELECT_REPOSITORY);
+  depot_world_destroy(&world);
+
+  /* Version 2: a request before HELLO is refused the same way. */
+  depot_world_init_stores(&world, stores, 2u, &link, &keys);
+  raw = (DepotRawService){0};
+  depot_raw_open(&world, &raw, false_v);
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs);
+  assert(world.closed && world.close_code == VKR_DEPOT_CLOSE_SELECT_REPOSITORY);
+  depot_world_destroy(&world);
+
+  depot_world_init_stores(&world, stores, 2u, &link, &keys);
+  raw = (DepotRawService){0};
+  depot_raw_open(&world, &raw, false_v);
+  VkrDepotHelloWire hello = {.request = 2u};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last_id == VKR_DEPOT_MSG_HELLO_REPLY &&
+         raw.last.hello_reply.status == VKR_DEPOT_HELLO_SELECT_REQUIRED);
+  hello = (VkrDepotHelloWire){.request = 3u,
+                              .repository_size = VKR_DEPOT_REPOSITORY_ID_SIZE};
+  MemCopy(hello.repository, ids[1], sizeof(ids[1]));
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last.hello_reply.status == VKR_DEPOT_HELLO_NO_ROLE);
+  MemSet(hello.repository, 0x99, sizeof(hello.repository));
+  hello.request = 4u;
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last.hello_reply.status == VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY);
+  MemCopy(hello.repository, ids[0], sizeof(ids[0]));
+  hello.request = 5u;
+  hello.flags = VKR_DEPOT_HELLO_OUTBOUND_ONLY;
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last.hello_reply.status == VKR_DEPOT_HELLO_OK &&
+         memcmp(raw.last.hello_reply.repository, ids[0], sizeof(ids[0])) == 0 &&
+         strcmp(raw.last.hello_reply.name, vkr_bakery_path_name(roots[0])) ==
+             0 &&
+         strcmp(raw.last.hello_reply.default_branch, "main") == 0);
+  const VkrDepotRequestWire refs_a = {.request = 6u};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs_a);
+  assert(raw.last_id == VKR_DEPOT_MSG_REFS && raw.last.refs.ref_count == 1u &&
+         strcmp(raw.last.refs.refs[0].name, "main") == 0);
+  VkrDepotServerPeer peers[4];
+  assert(vkr_depot_server_peers(world.server, peers, 4u) == 1u &&
+         memcmp(peers[0].key, keys.public_key, 32u) == 0 &&
+         peers[0].outbound_only && peers[0].repository == 0 &&
+         peers[0].connections == 1u);
+  depot_world_destroy(&world);
+
+  /* A role on the second store lets the key select it. */
+  depot_world_init_stores(&world, stores, 2u, &link, &keys);
+  assert(vkr_depot_server_set_role_in(world.server, 1u, keys.public_key,
+                                      VKR_DEPOT_ROLE_READ, world.now));
+  raw = (DepotRawService){0};
+  depot_raw_open(&world, &raw, false_v);
+  hello = (VkrDepotHelloWire){.request = 1u,
+                              .repository_size = VKR_DEPOT_REPOSITORY_ID_SIZE};
+  MemCopy(hello.repository, ids[1], sizeof(ids[1]));
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last.hello_reply.status == VKR_DEPOT_HELLO_OK &&
+         strcmp(raw.last.hello_reply.default_branch, "dev") == 0);
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_REFS_REQUEST, &refs);
+  assert(raw.last.refs.ref_count == 1u &&
+         strcmp(raw.last.refs.refs[0].name, "dev") == 0);
+  VkrDepotServerRepository info;
+  assert(vkr_depot_server_repository(world.server, 1u, &info) && info.has_id &&
+         memcmp(info.id, ids[1], sizeof(ids[1])) == 0 &&
+         strcmp(info.default_branch, "dev") == 0);
+  depot_world_destroy(&world);
+  assert(vkr_bakery_remove_tree(roots[0]) && vkr_bakery_remove_tree(roots[1]));
+  printf("  test_depot_repositories_served PASSED\n");
+}
+
 /* Fails when the server moves a branch to a commit whose tree names the
    depot's state folder, which every working copy that pulls it would let
    overwrite its access list, or when a page of locks with long paths does
@@ -3617,6 +3741,7 @@ bool32_t run_depot_tests(void) {
   test_depot_checkout_safety();
   test_depot_server_refusals();
   test_depot_hello();
+  test_depot_repositories_served();
   test_depot_access_requests();
   printf("--- Asset depot tests completed ---\n");
   return true;

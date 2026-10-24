@@ -15,6 +15,9 @@
    kept up with loopback on an M1 Pro, the second is headroom for a slower
    disk. */
 #define SERVICE_LOAD_THREADS 2u
+/* How often discovery's repository list follows the stores: a store gets
+   its ID or a first branch while it is served. */
+#define SERVICE_REFRESH_US 5000000u
 
 struct VkrDepotService {
   /* The caller's: only the host thread's handle, made and freed on the
@@ -39,6 +42,8 @@ struct VkrDepotService {
   uint8_t server_key[32];
   VkrDepotServiceAcceptFn on_accept;
   void *on_accept_context;
+  bool8_t outbound_only;
+  uint64_t refreshed_us;
 };
 
 // =============================================================================
@@ -74,9 +79,36 @@ static void service_wake(void *context) {
   vkr_net_host_wake(service->host);
 }
 
+/* Lists the served repositories in discovery answers. */
+static void service_refresh_responder(VkrDepotService *service) {
+  VkrDepotDiscoveredRepository listed[VKR_DEPOT_DISCOVERY_REPOSITORIES];
+  uint32_t count = 0u;
+  const uint32_t served = vkr_depot_server_repository_count(service->server);
+  for (uint32_t i = 0u; i < served && count < ArrayCount(listed); ++i) {
+    VkrDepotServerRepository repository;
+    if (!vkr_depot_server_repository(service->server, i, &repository)) {
+      continue;
+    }
+    VkrDepotDiscoveredRepository *entry = &listed[count++];
+    MemZero(entry, sizeof(*entry));
+    if (repository.has_id) {
+      MemCopy(entry->id, repository.id, sizeof(entry->id));
+    }
+    snprintf(entry->name, sizeof(entry->name), "%s", repository.name);
+    snprintf(entry->default_branch, sizeof(entry->default_branch), "%s",
+             repository.default_branch);
+  }
+  vkr_depot_responder_set_repositories(&service->responder, listed, count,
+                                       service->outbound_only);
+}
+
 /* After every pump, with the lock held. */
 static void service_step(void *context, uint64_t now_us) {
   VkrDepotService *service = context;
+  if (now_us - service->refreshed_us >= SERVICE_REFRESH_US) {
+    service->refreshed_us = now_us;
+    service_refresh_responder(service);
+  }
   VkrNetCore *core = vkr_net_host_core(service->host);
   VkrNetEvent event;
   while (vkr_net_core_poll(core, &event)) {
@@ -109,6 +141,30 @@ static bool8_t service_grant_owner(const char *store_root) {
   vkr_net_random(identity.secret_key, sizeof(identity.secret_key));
   return vkr_depot_access_set(store_root, identity.public_key,
                               VKR_DEPOT_ROLE_ADMIN);
+}
+
+/* Loads the secret key at `path`, creating one when the file is missing. */
+static bool8_t service_key(const char *path, VkrNetKeyPair *out_keys) {
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (vkr_bakery_is_file(path)) {
+    if (!vkr_bakery_read_file(path, 64u, &bytes, &size)) {
+      return false_v;
+    }
+    const bool8_t ok = size == VKR_NET_KEY_SIZE;
+    if (ok) {
+      vkr_net_keypair_from_secret(bytes, out_keys);
+    }
+    vkr_net_random(bytes, size);
+    free(bytes);
+    return ok;
+  }
+  char parent[VKR_DEPOT_PATH_CAPACITY];
+  vkr_bakery_path_parent(parent, sizeof(parent), path);
+  vkr_net_keypair_generate(out_keys);
+  return vkr_bakery_make_directories(parent) &&
+         vkr_bakery_write_private_file_atomic(path, out_keys->secret_key,
+                                              VKR_NET_KEY_SIZE);
 }
 
 /* Whether no other socket holds `bind`'s port in the other address family.
@@ -168,8 +224,15 @@ static bool8_t service_bind(VkrDepotService *service,
 VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
                                          const VkrDepotServiceConfig *config,
                                          char *error, uint32_t capacity) {
-  if (!allocator || !config || !config->store_root) {
-    snprintf(error, capacity, "the service needs a store");
+  const char *first_store = config && config->store_count
+                                ? config->store_roots[0]
+                                : (config ? config->store_root : NULL);
+  const uint32_t store_count =
+      config && config->store_count ? config->store_count : 1u;
+  if (!allocator || !config || !first_store ||
+      store_count > VKR_DEPOT_SERVER_REPOSITORIES_MAX) {
+    snprintf(error, capacity, "the service needs 1 to %u stores",
+             VKR_DEPOT_SERVER_REPOSITORIES_MAX);
     return NULL;
   }
   VkrDepotService *service = calloc(1u, sizeof(VkrDepotService));
@@ -181,6 +244,7 @@ VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
   service->responder.socket.handle = VKR_UDP_SOCKET_INVALID;
   service->on_accept = config->on_accept;
   service->on_accept_context = config->on_accept_context;
+  service->outbound_only = config->outbound_only;
   /* Object chunks of up to 1 MiB in flight on every connection. */
   if (!vkr_dmemory_create(MB(8), GB(1), &service->memory)) {
     snprintf(error, capacity, "out of memory");
@@ -191,16 +255,21 @@ VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
   service->memory_ready = true_v;
   VkrNetHostConfig host_config = {
       .socket = {.receive_buffer = 16u << 20, .send_buffer = 16u << 20}};
-  if (!vkr_depot_server_key(config->store_root,
-                            &host_config.core.static_keys)) {
-    snprintf(error, capacity, "could not open the store at %s",
-             config->store_root);
+  if (config->key_path
+          ? !service_key(config->key_path, &host_config.core.static_keys)
+          : !vkr_depot_server_key(first_store, &host_config.core.static_keys)) {
+    snprintf(error, capacity, "could not read the service key for %s",
+             config->key_path ? config->key_path : first_store);
     goto failed;
   }
   MemCopy(service->server_key, host_config.core.static_keys.public_key, 32u);
-  if (config->owner_admin && !service_grant_owner(config->store_root)) {
-    snprintf(error, capacity, "could not make this user the store's admin");
-    goto failed;
+  for (uint32_t i = 0u; i < store_count && config->owner_admin; ++i) {
+    const char *store =
+        config->store_count ? config->store_roots[i] : config->store_root;
+    if (!service_grant_owner(store)) {
+      snprintf(error, capacity, "could not make this user %s's admin", store);
+      goto failed;
+    }
   }
   host_config.core.accept_incoming = true_v;
   host_config.core.accept = service_accept;
@@ -218,6 +287,9 @@ VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
                                             vkr_net_host_core(service->host));
   const VkrDepotServerConfig server_config = {
       .store_root = config->store_root,
+      .store_roots = config->store_roots,
+      .store_names = config->store_names,
+      .store_count = config->store_count,
       .codec = config->codec,
       .open_access = config->open_access,
       .load_threads = SERVICE_LOAD_THREADS,
@@ -230,20 +302,21 @@ VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
                                     service->session, &server_config)
           : NULL;
   if (!service->server) {
-    snprintf(error, capacity, "could not start the server on %s",
-             config->store_root);
+    snprintf(error, capacity, "could not start the server on %s%s", first_store,
+             store_count > 1u ? " and its other stores" : "");
     goto failed;
   }
-  /* Other machines find this server by its name, the store's folder unless
-     the configuration gives one. */
+  /* Other machines find this server by its name, the first store's folder
+     unless the configuration gives one. */
   service->discovery_port = config->discovery_port
                                 ? config->discovery_port
                                 : (uint16_t)VKR_DEPOT_DISCOVERY_PORT;
   service->discoverable = vkr_depot_responder_open(
       &service->responder, service->discovery_port, service->address.port,
       service->server_key,
-      config->name ? config->name : vkr_bakery_path_name(config->store_root),
+      config->name ? config->name : vkr_bakery_path_name(first_store),
       config->host);
+  service_refresh_responder(service);
   service->thread = vkr_net_host_thread_start(allocator, service->host,
                                               service_step, service);
   if (!service->thread) {
@@ -301,9 +374,18 @@ void vkr_depot_service_info(VkrDepotService *service,
   out_info->discovery_port = service->discovery_port;
   snprintf(out_info->name, sizeof(out_info->name), "%s",
            service->responder.name);
+  out_info->outbound_only = service->outbound_only;
   vkr_net_host_thread_lock(service->thread);
   const VkrDepotServerStats stats = vkr_depot_server_stats(service->server);
   out_info->failed = vkr_net_host_thread_failed(service->thread);
+  out_info->repository_count =
+      vkr_depot_server_repository_count(service->server);
+  for (uint32_t i = 0u; i < out_info->repository_count; ++i) {
+    (void)vkr_depot_server_repository(service->server, i,
+                                      &out_info->repositories[i]);
+  }
+  out_info->known_peer_count = vkr_depot_server_peers(
+      service->server, out_info->known_peers, VKR_DEPOT_SERVER_PEERS_MAX);
   vkr_net_host_thread_unlock(service->thread);
   out_info->peers = stats.peers;
   out_info->bytes_in = stats.bytes_in;
@@ -342,6 +424,26 @@ bool8_t vkr_depot_service_reload_access(VkrDepotService *service) {
   vkr_net_host_thread_lock(service->thread);
   const bool8_t ok = vkr_depot_server_reload_access(
       service->server, vkr_net_host_now(service->host));
+  vkr_net_host_thread_unlock(service->thread);
+  return ok;
+}
+
+uint32_t vkr_depot_service_access_in(VkrDepotService *service, uint32_t index,
+                                     VkrDepotAccessEntry *out,
+                                     uint32_t capacity) {
+  vkr_net_host_thread_lock(service->thread);
+  const uint32_t count =
+      vkr_depot_server_access_in(service->server, index, out, capacity);
+  vkr_net_host_thread_unlock(service->thread);
+  return count;
+}
+
+bool8_t vkr_depot_service_set_role_in(VkrDepotService *service, uint32_t index,
+                                      const uint8_t key[32],
+                                      VkrDepotRole role) {
+  vkr_net_host_thread_lock(service->thread);
+  const bool8_t ok = vkr_depot_server_set_role_in(
+      service->server, index, key, role, vkr_net_host_now(service->host));
   vkr_net_host_thread_unlock(service->thread);
   return ok;
 }
