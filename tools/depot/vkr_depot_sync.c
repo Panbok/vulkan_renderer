@@ -1150,10 +1150,7 @@ static void depot_branch_follow(VkrDepotWorkspace *workspace,
     }
   }
   VkrDepotRemoteEntry origin;
-  if (track_origin && workspace->remote[0] &&
-      vkr_depot_remote_find(store, VKR_DEPOT_ORIGIN, &origin) &&
-      strcmp(origin.address, workspace->remote) == 0 &&
-      MemCompare(origin.key, workspace->server_key, 32u) == 0) {
+  if (track_origin && vkr_depot_remote_find(store, VKR_DEPOT_ORIGIN, &origin)) {
     (void)vkr_depot_tracking_set(store, VKR_DEPOT_ORIGIN, workspace->branch,
                                  commit);
   }
@@ -1410,6 +1407,18 @@ bool8_t vkr_depot_fetch_checkout(
 // =============================================================================
 
 /* Opens the working copy whose root is `directory` itself, not a parent. */
+/* The key of the server a working copy came from: origin's, or, for one
+   that shares its server's store, the store's own. */
+static bool8_t depot_clone_server_key(const VkrDepotWorkspace *workspace,
+                                      uint8_t out[32]) {
+  VkrDepotRemoteEntry origin;
+  if (vkr_depot_remote_find(workspace->store.root, VKR_DEPOT_ORIGIN, &origin)) {
+    MemCopy(out, origin.key, 32u);
+    return true_v;
+  }
+  return vkr_depot_repository_served_key(workspace->store.root, out);
+}
+
 static bool8_t depot_clone_resume(VkrDepotWorkspace *workspace,
                                   const char *directory,
                                   const VkrCodec *codec) {
@@ -1438,7 +1447,9 @@ bool8_t vkr_depot_clone(VkrAllocator *allocator,
   VkrDepotConnection *connection = NULL;
   bool8_t ok = false_v;
   if (depot_clone_resume(&workspace, config->directory, config->codec)) {
-    if (MemCompare(workspace.server_key, config->server_key, 32u) != 0 ||
+    uint8_t server_key[32] = {0};
+    if (!depot_clone_server_key(&workspace, server_key) ||
+        MemCompare(server_key, config->server_key, 32u) != 0 ||
         (!vkr_depot_id_zero(&workspace.base) &&
          strcmp(workspace.branch, branch) != 0)) {
       snprintf(error, capacity,
@@ -1457,27 +1468,32 @@ bool8_t vkr_depot_clone(VkrAllocator *allocator,
   }
   workspace.progress = config->progress;
   /* Saved before connecting: a refused or canceled clone leaves a working
-     copy that names its server, which a retry or `pull` completes. */
-  snprintf(workspace.remote, sizeof(workspace.remote), "%s", config->address);
-  MemCopy(workspace.server_key, config->server_key, 32u);
-  snprintf(workspace.branch, sizeof(workspace.branch), "%s", branch);
-  if (!vkr_depot_workspace_save(&workspace)) {
-    snprintf(error, capacity, "could not save the working copy at %s",
-             config->directory);
-    goto cleanup;
-  }
-  /* Saving made the server origin; origin selects the repository too. */
-  VkrDepotRemoteEntry origin;
-  if (config->repository &&
-      vkr_depot_remote_find(workspace.store.root, VKR_DEPOT_ORIGIN, &origin) &&
-      MemCompare(origin.repository, config->repository,
-                 sizeof(origin.repository)) != 0) {
-    MemCopy(origin.repository, config->repository, sizeof(origin.repository));
+     copy whose origin names its server, which a retry or `pull` completes.
+     A working copy that shares its server's store is that repository and
+     gets no origin. */
+  uint8_t served[32];
+  const bool8_t self =
+      vkr_depot_repository_served_key(workspace.store.root, served) &&
+      MemCompare(served, config->server_key, 32u) == 0;
+  if (!self) {
+    VkrDepotRemoteEntry origin = {0};
+    snprintf(origin.name, sizeof(origin.name), "%s", VKR_DEPOT_ORIGIN);
+    snprintf(origin.address, sizeof(origin.address), "%s", config->address);
+    MemCopy(origin.key, config->server_key, 32u);
+    if (config->repository) {
+      MemCopy(origin.repository, config->repository, sizeof(origin.repository));
+    }
     if (!vkr_depot_remote_set(workspace.store.root, &origin)) {
       snprintf(error, capacity, "could not save the remote origin at %s",
                config->directory);
       goto cleanup;
     }
+  }
+  snprintf(workspace.branch, sizeof(workspace.branch), "%s", branch);
+  if (!vkr_depot_workspace_save(&workspace)) {
+    snprintf(error, capacity, "could not save the working copy at %s",
+             config->directory);
+    goto cleanup;
   }
   const VkrDepotConnectConfig connect = {.address = config->address,
                                          .server_key = config->server_key,

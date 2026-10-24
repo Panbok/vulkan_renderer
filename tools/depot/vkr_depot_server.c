@@ -167,6 +167,7 @@ typedef struct ServerKnown {
   bool8_t outbound_only;
   int32_t repository;
   uint64_t last_seen_us;
+  VkrNetAddress address;
 } ServerKnown;
 
 struct VkrDepotServer {
@@ -1168,6 +1169,7 @@ void vkr_depot_server_accept(void *context, const VkrNetAddress *address,
   ServerKnown *known = server_known(server, peer_key);
   snprintf(known->name, sizeof(known->name), "%s", name);
   known->last_seen_us = server_unix_us();
+  known->address = *address;
   out_result->user = role;
 }
 
@@ -1338,6 +1340,7 @@ uint32_t vkr_depot_server_peers(const VkrDepotServer *server,
     }
     VkrDepotServerPeer peer = {
         .outbound_only = known->outbound_only,
+        .address = known->address,
         .repository = known->repository,
         .last_seen_us = known->last_seen_us,
     };

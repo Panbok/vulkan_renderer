@@ -112,14 +112,17 @@ depot_parse_repository(const char *hex,
 // Connections
 // =============================================================================
 
-/* Connects to the working copy's server; NULL after printing why. */
-static VkrDepotConnection *depot_connect(const VkrDepotWorkspace *workspace) {
+/* Connects to the working copy's remote origin; NULL after printing why. */
+static VkrDepotConnection *depot_connect(VkrDepotWorkspace *workspace) {
   char error[256];
-  const VkrDepotConnectConfig config = {.address = workspace->remote,
-                                        .server_key = workspace->server_key,
-                                        .store = &workspace->store};
-  VkrDepotConnection *connection =
-      vkr_depot_connect(&depot_allocator, &config, NULL, error, sizeof(error));
+  VkrDepotRemoteEntry origin;
+  if (!vkr_depot_remote_find(workspace->store.root, VKR_DEPOT_ORIGIN,
+                             &origin)) {
+    fprintf(stderr, "%s has no remote origin\n", workspace->root);
+    return NULL;
+  }
+  VkrDepotConnection *connection = vkr_depot_connect_remote(
+      &depot_allocator, workspace, &origin, NULL, error, sizeof(error));
   if (!connection) {
     fprintf(stderr, "%s\n", error);
   }
@@ -981,8 +984,15 @@ static int depot_refs(const char *directory) {
     fprintf(stderr, "no working copy at %s\n", directory);
     return 1;
   }
-  const VkrDepotConnectConfig config = {.address = workspace.remote,
-                                        .server_key = workspace.server_key};
+  VkrDepotRemoteEntry origin;
+  if (!vkr_depot_remote_find(workspace.store.root, VKR_DEPOT_ORIGIN, &origin)) {
+    fprintf(stderr, "%s has no remote origin\n", workspace.root);
+    vkr_depot_workspace_close(&workspace);
+    return 1;
+  }
+  const VkrDepotConnectConfig config = {.address = origin.address,
+                                        .server_key = origin.key,
+                                        .repository = origin.repository};
   VkrDepotRef refs[VKR_DEPOT_REFS_MAX];
   uint32_t count = 0u;
   char error[256];

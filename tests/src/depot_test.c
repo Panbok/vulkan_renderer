@@ -1695,6 +1695,19 @@ static void test_depot_service(void) {
    status a client reads lacks the running service, the client's key or
    its outbound-only flag. Runs under a temporary home and identity, so the
    machine's service folder stays untouched. */
+/* Whether `address` is at `host`, whatever its port. */
+static bool8_t depot_test_same_host(const VkrNetAddress *address,
+                                    const char *host) {
+  VkrNetAddress expected;
+  VkrNetAddress got = *address;
+  if (!vkr_net_address_parse(host, 0u, &expected)) {
+    return false_v;
+  }
+  got.port = 0u;
+  expected.port = 0u;
+  return vkr_net_address_equal(&got, &expected);
+}
+
 static void test_depot_service_settings(void) {
   printf("  Running test_depot_service_settings...\n");
   char home[VKR_DEPOT_PATH_CAPACITY];
@@ -1798,6 +1811,7 @@ static void test_depot_service_settings(void) {
            memcmp(status->known_peers[0].key, client.public_key, 32u) == 0 &&
            status->known_peers[0].outbound_only &&
            strcmp(status->known_peers[0].name, "dana@studio") == 0 &&
+           depot_test_same_host(&status->known_peers[0].address, "127.0.0.1") &&
            status->answer.repository_count == 1u &&
            strcmp(status->answer.repositories[0].name, "first") == 0);
   } else {
@@ -1871,6 +1885,77 @@ typedef struct DepotRepoWorld {
   uint8_t server_key[32];
   char server_store[VKR_DEPOT_PATH_CAPACITY];
 } DepotRepoWorld;
+
+/* Writes the working copy's state in version 1, the form before
+   repositories, which named the server it syncs with. */
+static void depot_write_state_v1(const VkrDepotWorkspace *workspace,
+                                 const char *address, const uint8_t key[32]) {
+  uint64_t size = 8u + 2u + strlen(address) + 32u + 2u +
+                  strlen(workspace->branch) + VKR_DEPOT_ID_SIZE + 4u;
+  for (uint32_t i = 0u; i < workspace->index.count; ++i) {
+    size +=
+        2u + strlen(workspace->index.entries[i].path) + 16u + VKR_DEPOT_ID_SIZE;
+  }
+  uint8_t *bytes = malloc(size);
+  assert(bytes);
+  uint8_t *cursor = bytes;
+  vkr_store_le_u32(cursor, 0x57444b56u);
+  vkr_store_le_u32(cursor + 4, 1u);
+  cursor += 8u;
+  const char *texts[2] = {address, workspace->branch};
+  for (uint32_t t = 0u; t < 2u; ++t) {
+    const uint16_t length = (uint16_t)strlen(texts[t]);
+    cursor[0] = (uint8_t)length;
+    cursor[1] = (uint8_t)(length >> 8);
+    memcpy(cursor + 2u, texts[t], length);
+    cursor += 2u + length;
+    if (t == 0u) {
+      memcpy(cursor, key, 32u);
+      cursor += 32u;
+    }
+  }
+  memcpy(cursor, workspace->base.bytes, VKR_DEPOT_ID_SIZE);
+  cursor += VKR_DEPOT_ID_SIZE;
+  vkr_store_le_u32(cursor, workspace->index.count);
+  cursor += 4u;
+  for (uint32_t i = 0u; i < workspace->index.count; ++i) {
+    const VkrDepotIndexEntry *entry = &workspace->index.entries[i];
+    const uint16_t length = (uint16_t)strlen(entry->path);
+    cursor[0] = (uint8_t)length;
+    cursor[1] = (uint8_t)(length >> 8);
+    memcpy(cursor + 2u, entry->path, length);
+    cursor += 2u + length;
+    vkr_store_le_u64(cursor, entry->size);
+    vkr_store_le_u64(cursor + 8, (uint64_t)entry->mtime_ns);
+    cursor += 16u;
+    memcpy(cursor, entry->blob.bytes, VKR_DEPOT_ID_SIZE);
+    cursor += VKR_DEPOT_ID_SIZE;
+  }
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(path, sizeof(path), workspace->root,
+                              VKR_DEPOT_META_DIR "/state"));
+  assert(vkr_bakery_write_file_atomic(path, bytes, size));
+  free(bytes);
+}
+
+/* The state file's version word and, from version 2 on, its flags word
+   (1: sparse); version 3 holds no server (ADR-133). */
+static uint32_t depot_test_state_word(const char *root, uint32_t word) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  assert(vkr_bakery_path_join(path, sizeof(path), root,
+                              VKR_DEPOT_META_DIR "/state") &&
+         vkr_bakery_read_file(path, 1u << 20, &bytes, &size) &&
+         size >= 4u * (word + 1u));
+  const uint32_t value = vkr_load_le_u32(bytes + 4u * word);
+  free(bytes);
+  return value;
+}
+
+static uint32_t depot_test_state_version(const char *root) {
+  return depot_test_state_word(root, 1u);
+}
 
 static void depot_repo_clone(const DepotRepoWorld *world, const char *label,
                              const char *store_root,
@@ -2109,11 +2194,15 @@ static void test_depot_repositories(void) {
   assert(
       vkr_depot_branch_delete(&alice, "feature", true_v, error, sizeof(error)));
 
-  /* A working copy of the older form gets its repository back on open. */
+  /* A working copy of the older form, whose state named its server, gets
+     its repository back on open, and its next save drops the server from
+     the state. */
   char alice_root[VKR_DEPOT_PATH_CAPACITY];
   char legacy[VKR_DEPOT_PATH_CAPACITY];
   snprintf(alice_root, sizeof(alice_root), "%s", alice.root);
   const VkrDepotId alice_base = alice.base;
+  assert(depot_test_state_version(alice_root) == 3u);
+  depot_write_state_v1(&alice, world.address, world.server_key);
   static const char *const added[] = {"remotes", "refs", "tracking"};
   for (uint32_t i = 0u; i < ArrayCount(added); ++i) {
     assert(vkr_bakery_path_join(legacy, sizeof(legacy), alice.store.root,
@@ -2123,7 +2212,10 @@ static void test_depot_repositories(void) {
   vkr_depot_workspace_close(&alice);
   assert(vkr_depot_workspace_open(&alice, alice_root, vkr_depot_zstd_codec()));
   assert(vkr_depot_remote_find(alice.store.root, VKR_DEPOT_ORIGIN, &origin) &&
-         memcmp(origin.key, world.server_key, 32u) == 0);
+         memcmp(origin.key, world.server_key, 32u) == 0 &&
+         strcmp(origin.address, world.address) == 0);
+  assert(vkr_depot_workspace_save(&alice) &&
+         depot_test_state_version(alice_root) == 3u);
   assert(vkr_depot_ref_read(alice.store.root, "main", &commit) &&
          vkr_depot_id_equal(&commit, &alice_base));
   assert(vkr_depot_tracking_read(alice.store.root, VKR_DEPOT_ORIGIN, "main",
@@ -2951,21 +3043,6 @@ static bool8_t depot_test_name_is(const DepotTestNames *names, uint32_t index,
          names->directories[index] == is_directory;
 }
 
-/* The state file's version: 1 for a working copy, 2 for a sparse one. */
-static uint32_t depot_test_state_version(const char *root) {
-  char path[VKR_DEPOT_PATH_CAPACITY];
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  assert(vkr_bakery_path_join(path, sizeof(path), root,
-                              VKR_DEPOT_META_DIR "/state") &&
-         vkr_bakery_read_file(path, 1u << 20, &bytes, &size) && size >= 8u);
-  const uint32_t version = (uint32_t)bytes[4] | ((uint32_t)bytes[5] << 8) |
-                           ((uint32_t)bytes[6] << 16) |
-                           ((uint32_t)bytes[7] << 24);
-  free(bytes);
-  return version;
-}
-
 /* A sparse working copy over loopback (vkr_depot_workspace.h). Fails when a
    sparse clone writes a file other than the root ignore rules or leaves out
    a folder of the tree, when a file
@@ -3050,7 +3127,8 @@ static void test_depot_sparse(void) {
   assert(vkr_bakery_path_join(clone_folder, sizeof(clone_folder), sparse_root,
                               "dir") &&
          vkr_bakery_is_directory(clone_folder));
-  assert(depot_test_state_version(sparse_root) == 2u);
+  assert(depot_test_state_version(sparse_root) == 3u &&
+         depot_test_state_word(sparse_root, 2u) == 1u);
   VkrDepotWorkspace sparse;
   assert(
       vkr_depot_workspace_open(&sparse, sparse_root, vkr_depot_zstd_codec()));
@@ -3149,7 +3227,8 @@ static void test_depot_sparse(void) {
   clone.directory = full_root;
   clone.sparse = false_v;
   assert(vkr_depot_clone(&allocator, &clone, &cloned, error, sizeof(error)));
-  assert(depot_test_state_version(full_root) == 1u);
+  assert(depot_test_state_version(full_root) == 3u &&
+         depot_test_state_word(full_root, 2u) == 0u);
   assert(depot_test_file_is(full_root, "a.txt", "alpha2"));
   assert(!depot_test_exists(full_root, "b.txt"));
   assert(depot_test_file_is(full_root, "dir/c.txt", "charlie"));

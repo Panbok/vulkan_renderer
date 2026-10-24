@@ -4,9 +4,10 @@
 #include "vkr_depot_store.h"
 
 /* A depot working copy: a directory of files plus `.vkrdepot/`, which holds
- * the state file (remote, server key, branch, base commit and the index of
- * every tracked file with its size, modification time and blob) and, unless
- * another store is named, the local object store.
+ * the state file (branch, base commit and the index of every tracked file
+ * with its size, modification time and blob) and, unless another store is
+ * named, the local object store, which is the repository: its remote
+ * `origin` is the server the working copy came from (ADR-133).
  *
  * A snapshot hashes only files whose size or modification time differ from
  * the index, chunks them with FastCDC into the store and builds the trees;
@@ -67,8 +68,6 @@ typedef struct VkrDepotFileList {
 typedef struct VkrDepotWorkspace {
   char root[VKR_DEPOT_PATH_CAPACITY];
   VkrDepotStore store;
-  char remote[VKR_DEPOT_REMOTE_MAX];
-  uint8_t server_key[32];
   char branch[VKR_DEPOT_BRANCH_NAME];
   VkrDepotId base;
   /* Tracked files at `base`, sorted by path. */

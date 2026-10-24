@@ -51,25 +51,35 @@ the served branch safely. Remote and tracking writes take the same lock.
 
 ### Working copies adopt the model on open
 
-The state file keeps its form: branch, base, index and the sparse flag, plus
-the server it used to sync with, which the editor still reads.
-Opening or saving a working copy gives its store what the older form kept
-in the state alone (`workspace_adopt_repository` in
+The state file (version 3) holds the flags word (sparse), the branch, the
+base and the index; the server a working copy syncs with is its store's
+remote `origin`, and every reader (the command, the editor's collaborative
+session, the sparse remote content directory) connects through it. States
+of version 1 and 2 also named the server. Opening or saving a working copy
+gives its store what the older form kept in the state alone
+(`workspace_adopt_repository` in
 [vkr_depot_workspace.c](../../tools/depot/vkr_depot_workspace.c)):
 
-- the state's server becomes the remote `origin`, unless it is the store's
-  own server, which makes the working copy that repository itself;
+- opening a version 1 or 2 state makes its server the remote `origin`,
+  unless it is the store's own server, which makes the working copy that
+  repository itself; the next save writes version 3;
 - `refs/<branch>` is set to the base when missing;
 - `tracking/origin/<branch>` is set to the base when missing.
 
-A clone (`vkr_depot_clone`) can select one of the repositories a service
-serves (`VkrDepotCloneConfig.repository`, `clone --repository ID`); the
-remote `origin` keeps that ID, so every later connection selects the same
-repository.
+A program from before version 3 refuses such a state, as one from before
+sparse copies refused version 2.
+
+A clone (`vkr_depot_clone`) writes the remote `origin` before it connects,
+so a refused or canceled clone can be resumed; one that shares its
+server's store gets none. It can select one of the repositories a service
+serves (`VkrDepotCloneConfig.repository`, `clone --repository ID`); `origin`
+keeps that ID, so every later connection selects the same repository.
+Commands that talk to the working copy's server (`refs`, `cooked`, `lock`,
+`unlock`, `locks`) use `origin` and refuse a working copy without one.
 
 Checkout and the older push (`vkr_depot_fetch_checkout`,
-`vkr_depot_commit_push`) move `refs/<branch>`, and origin's tracking branch
-when origin is the working copy's server.
+`vkr_depot_commit_push`) move `refs/<branch>` and origin's tracking
+branch.
 
 ### Commit, fetch, push and pull
 

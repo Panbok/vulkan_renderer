@@ -241,6 +241,11 @@ struct VkrEditorDepot {
   /* What each remote's last exchange gave, by index. */
   VkrDepotConnectStatus remote_connect[VKR_DEPOT_REMOTES_MAX];
   bool8_t remote_tried[VKR_DEPOT_REMOTES_MAX];
+  /* A peer that said it takes no connections from outside last connected
+     to the machine's service from the remote's host, and when (Unix
+     microseconds): the remote is reachable only while it connects. */
+  bool8_t remote_outbound[VKR_DEPOT_REMOTES_MAX];
+  uint64_t remote_seen_us[VKR_DEPOT_REMOTES_MAX];
   /* The machine's service over its loopback, for the cooked side branch of
      a served repository, and the store's repository ID it selects. */
   char address[DEPOT_TEXT];
@@ -2141,6 +2146,37 @@ static bool8_t depot_machine_set(const char *store, const char *project,
   return ok;
 }
 
+static bool8_t depot_same_host(const VkrNetAddress *a, const VkrNetAddress *b) {
+  VkrNetAddress x = *a;
+  VkrNetAddress y = *b;
+  x.port = 0u;
+  y.port = 0u;
+  return vkr_net_address_equal(&x, &y);
+}
+
+/* Marks each remote at a numeric address that an outbound-only peer of the
+   machine's service last connected from; a host name is not looked up on
+   this thread. */
+static void depot_match_outbound(VkrEditorDepot *depot,
+                                 const VkrDepotServiceStatus *machine) {
+  for (uint32_t r = 0u; r < depot->remote_count; ++r) {
+    depot->remote_outbound[r] = false_v;
+    depot->remote_seen_us[r] = 0u;
+    VkrNetAddress host;
+    if (!vkr_net_address_parse(depot->remotes[r].address, 0u, &host)) {
+      continue;
+    }
+    for (uint32_t i = 0u; i < machine->known_peer_count; ++i) {
+      const VkrDepotServerPeer *peer = &machine->known_peers[i];
+      if (peer->outbound_only && depot_same_host(&peer->address, &host) &&
+          peer->last_seen_us > depot->remote_seen_us[r]) {
+        depot->remote_outbound[r] = true_v;
+        depot->remote_seen_us[r] = peer->last_seen_us;
+      }
+    }
+  }
+}
+
 /* Takes what a status check read of the machine's service: whether it
    runs and serves the store, its loopback address for the cooked side
    branch, and the keys asking for access. */
@@ -2175,6 +2211,7 @@ static void depot_take_machine(VkrEditorDepot *depot,
       depot->requests[depot->request_count++] = machine->requests[i];
     }
   }
+  depot_match_outbound(depot, machine);
   depot->address[0] = '\0';
   MemZero(depot->server_key, sizeof(depot->server_key));
   if (depot->serving && machine->running) {
@@ -3395,8 +3432,19 @@ static const VkrDepotRemoteEntry *depot_selected(const VkrEditorDepot *depot) {
 }
 
 /* What a remote's last exchange says about reaching it. */
+/* Whether the remote is an outbound-only machine this one cannot reach:
+   its state says so instead of a failure. */
+static bool8_t depot_remote_outbound(const VkrEditorDepot *depot,
+                                     uint32_t index) {
+  return depot->remote_outbound[index] &&
+         depot->remote_connect[index] != VKR_DEPOT_CONNECT_OK;
+}
+
 static const char *depot_remote_state(const VkrEditorDepot *depot,
                                       uint32_t index) {
+  if (depot_remote_outbound(depot, index)) {
+    return "reachable only when it connects";
+  }
   if (!depot->remote_tried[index]) {
     return "not reached yet";
   }
@@ -3666,15 +3714,24 @@ static void depot_window_sync(VkrEditorDepot *depot, VkrEditorUi *editor,
   }
   char text[DEPOT_TEXT];
   const VkrDepotRemoteEntry *remote = depot_selected(depot);
-  string_format(text, sizeof(text), "%s  \xc2\xb7  %s  \xc2\xb7  %s",
+  const uint32_t selected = depot->selected_remote;
+  const bool8_t outbound = depot_remote_outbound(depot, selected);
+  char seen[48] = {0};
+  if (outbound) {
+    const uint64_t now_s = (uint64_t)vkr_bakery_unix_seconds();
+    const uint64_t seen_s = depot->remote_seen_us[selected] / 1000000u;
+    const uint64_t minutes = now_s > seen_s ? (now_s - seen_s) / 60u : 0u;
+    string_format(seen, sizeof(seen), ", last %llu min ago",
+                  (unsigned long long)minutes);
+  }
+  string_format(text, sizeof(text), "%s  \xc2\xb7  %s  \xc2\xb7  %s%s",
                 remote->name, remote->address,
-                depot_remote_state(depot, depot->selected_remote));
+                depot_remote_state(depot, selected), seen);
   VkrUiWidgetConfig state = depot_widget(12, *y, width - 24, 18);
   state.style.font_size_pt = theme->font_caption;
   state.style.text_color =
-      depot->remote_tried[depot->selected_remote] &&
-              depot->remote_connect[depot->selected_remote] !=
-                  VKR_DEPOT_CONNECT_OK
+      depot->remote_tried[selected] && !outbound &&
+              depot->remote_connect[selected] != VKR_DEPOT_CONNECT_OK
           ? theme->warning
           : theme->text_secondary;
   vkr_ui_label(ui, string8_lit("remote.state"), depot_string(text), &state);
@@ -4963,6 +5020,8 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
     vkr_bakery_json_set(
         arena, row, "state",
         vkr_bakery_json_cstr(arena, depot_remote_state(depot, i)));
+    vkr_bakery_json_set(arena, row, "outbound_only",
+                        vkr_bakery_json_bool(arena, depot->remote_outbound[i]));
     vkr_bakery_json_append(remotes, row);
   }
   vkr_bakery_json_set(arena, result, "remotes", remotes);

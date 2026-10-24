@@ -3364,13 +3364,19 @@ static void *session_depot_worker(void *argument) {
         (job->kind != SESSION_DEPOT_COMMIT ||
          vkr_depot_commit_snapshot(&workspace, &parent, job->message, &pending,
                                    job->error, sizeof(job->error)));
-    const VkrDepotConnectConfig connect = {.address = workspace.remote,
-                                           .server_key = workspace.server_key,
-                                           .store = &workspace.store};
+    /* The session's server is the working copy's remote origin. */
+    VkrDepotRemoteEntry origin;
+    const bool8_t has_origin =
+        vkr_depot_remote_find(workspace.store.root, VKR_DEPOT_ORIGIN, &origin);
+    if (snapshot && !has_origin) {
+      string_format(job->error, sizeof(job->error), "%s has no remote origin",
+                    job->directory);
+    }
     VkrDepotConnection *connection =
-        snapshot ? vkr_depot_connect(&allocator, &connect, NULL, job->error,
-                                     sizeof(job->error))
-                 : NULL;
+        snapshot && has_origin
+            ? vkr_depot_connect_remote(&allocator, &workspace, &origin, NULL,
+                                       job->error, sizeof(job->error))
+            : NULL;
     VkrDepotClient *client = vkr_depot_connection_client(connection);
     if (client && job->kind == SESSION_DEPOT_COMMIT) {
       job->ok = vkr_depot_commit_push(&workspace, client, job->branch, &parent,

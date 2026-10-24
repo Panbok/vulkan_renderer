@@ -851,7 +851,8 @@ bool8_t vkr_depot_service_publish(VkrDepotService *service, const char *path) {
   VkrDepotServiceInfo *info = malloc(sizeof(VkrDepotServiceInfo));
   const uint64_t capacity =
       4096u + (uint64_t)VKR_DEPOT_SERVER_REPOSITORIES_MAX * SERVICE_LINE_MAX +
-      (uint64_t)(VKR_DEPOT_SERVER_PEERS_MAX + VKR_DEPOT_REQUESTS_MAX) * 256u;
+      (uint64_t)(2u * VKR_DEPOT_SERVER_PEERS_MAX + VKR_DEPOT_REQUESTS_MAX) *
+          256u;
   VkrDepotAccessRequest requests[VKR_DEPOT_REQUESTS_MAX];
   char *text = malloc((size_t)capacity);
   if (!info || !text) {
@@ -879,6 +880,11 @@ bool8_t vkr_depot_service_publish(VkrDepotService *service, const char *path) {
                         peer->outbound_only ? 1u : 0u, peer->repository,
                         (unsigned long long)(peer->last_seen_us / 1000000u),
                         peer->name);
+    /* A line of its own, which older readers skip. */
+    char from[VKR_NET_ADDRESS_TEXT];
+    vkr_net_address_format(&peer->address, from, sizeof(from));
+    written += snprintf(text + written, (size_t)capacity - (size_t)written,
+                        "peer-address %s %s\n", key, from);
   }
   free(info);
   /* Keys refused for want of a role, for the owner to answer. */
@@ -920,6 +926,21 @@ bool8_t vkr_depot_service_publish(VkrDepotService *service, const char *path) {
   return ok;
 }
 
+/* `peer-address KEY ADDRESS` of `service.status`, after its `peer` line. */
+static void service_status_peer_address(VkrDepotServiceStatus *status,
+                                        const char *cursor) {
+  uint8_t key[32];
+  if (strlen(cursor) < 66u || !service_unhex(cursor, key, 32u)) {
+    return;
+  }
+  for (uint32_t i = 0u; i < status->known_peer_count; ++i) {
+    if (MemCompare(status->known_peers[i].key, key, 32u) == 0) {
+      (void)vkr_net_address_parse(cursor + 65u, 0u,
+                                  &status->known_peers[i].address);
+    }
+  }
+}
+
 /* `request KEY TRIES SECONDS NAME` of `service.status`. */
 static void service_status_request(VkrDepotServiceStatus *status,
                                    char *cursor) {
@@ -948,6 +969,10 @@ static void service_status_line(void *context, char *line) {
   }
   if (strncmp(line, "request ", 8u) == 0) {
     service_status_request(status, line + 8u);
+    return;
+  }
+  if (strncmp(line, "peer-address ", 13u) == 0) {
+    service_status_peer_address(status, line + 13u);
     return;
   }
   if (strncmp(line, "peer ", 5u) != 0 ||

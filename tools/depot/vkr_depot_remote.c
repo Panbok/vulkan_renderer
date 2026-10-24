@@ -74,6 +74,9 @@ struct VkrDepotRemote {
   bool8_t connection_memory_ready;
   char address[VKR_DEPOT_REMOTE_MAX];
   uint8_t server_key[32];
+  /* The repository the server serves under the working copy's origin;
+     zero for its default. */
+  uint8_t repository[VKR_DEPOT_REPOSITORY_ID_SIZE];
   /* On a working copy: the files are its unfetched ones, any file on disk
      is present, and a written file goes to its fetched log. */
   bool8_t workspace;
@@ -191,7 +194,8 @@ static bool8_t remote_reconnect(VkrDepotRemote *remote) {
   vkr_depot_disconnect(remote->connection);
   const VkrDepotConnectConfig connect = {.address = remote->address,
                                          .server_key = remote->server_key,
-                                         .store = &remote->store};
+                                         .store = &remote->store,
+                                         .repository = remote->repository};
   char error[256];
   remote->connection = vkr_depot_connect(&remote->connection_allocator,
                                          &connect, NULL, error, sizeof(error));
@@ -410,11 +414,18 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
   const char *address = config->address;
   const uint8_t *server_key = config->server_key;
   char store_root[VKR_DEPOT_PATH_CAPACITY];
+  VkrDepotRemoteEntry origin;
   if (workspace) {
-    /* The working copy names its server, branch and store. */
+    /* The working copy names its branch and store, and its remote origin
+       the server. */
     if (!vkr_depot_workspace_open(workspace, config->workspace,
                                   config->codec)) {
       snprintf(error, capacity, "no working copy at %s", config->workspace);
+      goto fail;
+    }
+    if (!vkr_depot_remote_find(workspace->store.root, VKR_DEPOT_ORIGIN,
+                               &origin)) {
+      snprintf(error, capacity, "%s has no remote origin", config->workspace);
       goto fail;
     }
     remote->workspace = true_v;
@@ -422,8 +433,9 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
              workspace->root);
     snprintf(store_root, sizeof(store_root), "%s", workspace->store.root);
     branch = workspace->branch;
-    address = workspace->remote;
-    server_key = workspace->server_key;
+    address = origin.address;
+    server_key = origin.key;
+    MemCopy(remote->repository, origin.repository, sizeof(remote->repository));
   } else {
     snprintf(remote->directory, sizeof(remote->directory), "%s",
              config->directory);
@@ -443,8 +455,10 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
 
   snprintf(remote->address, sizeof(remote->address), "%s", address);
   MemCopy(remote->server_key, server_key, sizeof(remote->server_key));
-  const VkrDepotConnectConfig connect = {
-      .address = address, .server_key = server_key, .store = &remote->store};
+  const VkrDepotConnectConfig connect = {.address = address,
+                                         .server_key = server_key,
+                                         .store = &remote->store,
+                                         .repository = remote->repository};
   remote->connection = vkr_depot_connect(&remote->connection_allocator,
                                          &connect, NULL, error, capacity);
   if (!remote->connection) {

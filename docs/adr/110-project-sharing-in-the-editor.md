@@ -121,6 +121,11 @@ thread reads finished results and progress counters only.
   ([ADR-123](123-asset-streaming-from-a-depot.md#sparse-project-sharing)).
 - A remote that stops answering follows its key through discovery, and the
   repository saves its new address.
+- A remote at a numeric address from which an outbound-only peer last
+  connected to this computer's service (`peer-address` in `service.status`)
+  shows "reachable only when it connects, last N min ago" instead of a
+  failure, unless an exchange with it works; its host is the remote's
+  machine, which drops connections from outside.
 - Discovery is not authenticated: each found repository shows its key's
   first digits and whether it was used before, and an answer with a known
   name but another key says it is not that computer.

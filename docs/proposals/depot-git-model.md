@@ -15,8 +15,7 @@ merge and the editor's Source Control are implemented and recorded in
 [ADR-110](../adr/110-project-sharing-in-the-editor.md), and the editor
 shares repositories through the per-machine service
 ([ADR-134](../adr/134-per-machine-depot-service.md)). This proposal keeps
-the work that remains: a remote's outbound-only state, the state file
-cleanup and the evidence between the two machines.
+the work that remains: the evidence between the two machines.
 
 ## Owner decisions, 2026-10-24
 
@@ -58,7 +57,7 @@ night. Each failure points at a part of the model:
 | --- | --- | --- |
 | D1, repositories and remotes | Implemented: local commits, remotes, tracking branches, fetch, fast-forward push and pull, branches, adoption of older working copies, HELLO from every client | ADR-133 |
 | D2, merge per file | Implemented: merge base, per-file decisions, units sent whole to Bakery's `merge_scene_unit` and `merge_project_document`, merge commits, pull that merges, `.vkrdepotmerge` written by `share_project` | ADR-133 |
-| D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service runs on the Mac as a launchd agent, follows `service.conf` while it runs, publishes its peers, has `add`, `remove` and `status` in the library, and syncs each served store with remotes that have an interval. The editor's Let others fetch and push adds the repository to the service, starts it, and answers the access requests the service publishes; the hub clones each repository a service lists. Left: below | ADR-110, ADR-133, ADR-134, below |
+| D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service runs on the Mac as a launchd agent, follows `service.conf` while it runs, publishes its peers, has `add`, `remove` and `status` in the library, and syncs each served store with remotes that have an interval. The editor's Let others fetch and push adds the repository to the service, starts it, and answers the access requests the service publishes; the hub clones each repository a service lists; a remote of an outbound-only machine says it is reachable only when it connects; the working copy's state no longer names its server. Left: the evidence between the two machines | ADR-110, ADR-133, ADR-134, below |
 | D4, self-contained projects | Implemented: a repository reads only its own assets and engine content (git `e18d74d2`), Bakery's `untracked_dependencies` lists and adopts the rest (`c4f425d5`), the editor's Commit stops on them with Copy in and commit, and Commit first prunes what no live file names with Bakery's `collect_garbage` (ADR-110). Projects live in their own folders under the projects folder, set in the Hub (ADR-069). New projects start from `assets/templates`. The Windows desktop's repository workspace moved to `D:\VKR Projects\Testbed`. Left: the evidence between the two machines | ADR-069, ADR-110, below |
 | D5, merge per entity | Implemented: overlays both sides changed merge per entity in Bakery's `merge_scene_unit`, checked on Windows with two clones on loopback. Left: the evidence between the two machines on Bistro | ADR-133, below |
 
@@ -70,11 +69,10 @@ night. Each failure points at a part of the model:
   every 30 s (`remote add ... --interval`) once the owner allowed VKR Depot
   under Local Network, and the launchd `com.vkr.depot.mirror` and
   `com.vkr.depot.serve` jobs are retired.
-- A remote's state shows "reachable only when it connects" for a peer the
-  service recorded as outbound only.
-- The working copy's state drops the server it syncs with once nothing
-  reads `remote` and `server_key` (`editor_session.c` and the sparse remote
-  in `vkr_depot_remote.c` read them today); the remote `origin` holds it.
+- Done 2026-10-24: a remote shows "reachable only when it connects" for an
+  outbound-only peer that connected from its host (ADR-110), and the working
+  copy's state (version 3) no longer names its server; `origin` holds it
+  (ADR-133).
 
 ### Self-contained projects (D4)
 
@@ -90,8 +88,7 @@ Implemented (ADR-133). Left: the evidence below between the two machines.
 
 ## Phases
 
-1. **D3, the rest:** the outbound-only state of a remote, the state file
-   cleanup.
+1. **D3, the rest:** implemented; the evidence below.
 2. **D4, the rest of self-contained projects.** Projects move outside the git
    repository under a configurable root, Testbed becomes a template,
    untracked dependencies show in status, the asset fallback ends for

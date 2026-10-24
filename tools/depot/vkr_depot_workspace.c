@@ -15,6 +15,10 @@
    program that predates sparse copies refuses instead of reading its
    unfetched files as deleted. */
 #define WORKSPACE_STATE_VERSION_SPARSE 2u
+/* Since repositories (ADR-133): a flags word, the branch, the base and the
+   index. The server a working copy syncs with is the remote `origin` in its
+   store; versions 1 and 2 also held it, and opening one adopts it. */
+#define WORKSPACE_STATE_VERSION_3 3u
 #define WORKSPACE_STATE_FLAG_SPARSE 1u
 /* `.vkrdepot/cooked`: the cooked files last hashed or written, so a cooked
    snapshot hashes only files whose size or time changed. */
@@ -204,33 +208,40 @@ bool8_t vkr_depot_cooked_cache_load(const VkrDepotWorkspace *workspace,
   return true_v;
 }
 
-/* Gives the store what a working copy of the older form kept in its state
-   alone (ADR-133, "Working copies adopt the model on open"): the server it
-   syncs with as the remote `origin`, the branch at the base, and origin's
-   record of that branch. A working copy whose server is its store's own,
-   such as one beside the server sharing its store, is that repository and
-   gets no `origin`. Runs on every open and save, so the editor's direct use
-   of `remote` stays in step; a store that cannot take the files only loses
-   the new commands. */
-static void workspace_adopt_repository(const VkrDepotWorkspace *workspace) {
+/* The server a state of version 1 or 2 named; empty for none. */
+typedef struct WorkspaceLegacyServer {
+  char address[VKR_DEPOT_REMOTE_MAX];
+  uint8_t key[32];
+} WorkspaceLegacyServer;
+
+/* Gives the store what the working copy's state cannot hold (ADR-133,
+   "Working copies adopt the model on open"): the branch at the base and
+   origin's record of that branch, and, from a state of version 1 or 2, the
+   server it synced with as the remote `origin`. A working copy whose
+   server is its store's own, such as one beside the server sharing its
+   store, is that repository and gets no `origin`. Runs on every open and
+   save; a store that cannot take the files only loses the new commands. */
+static void workspace_adopt_repository(const VkrDepotWorkspace *workspace,
+                                       const WorkspaceLegacyServer *legacy) {
   const char *store = workspace->store.root;
   uint8_t id[VKR_DEPOT_REPOSITORY_ID_SIZE];
   (void)vkr_depot_repository_id(store, id, true_v);
 
   uint8_t served[32];
-  const bool8_t self = vkr_depot_repository_served_key(store, served) &&
-                       MemCompare(served, workspace->server_key, 32u) == 0;
+  const bool8_t self = legacy && legacy->address[0] &&
+                       vkr_depot_repository_served_key(store, served) &&
+                       MemCompare(served, legacy->key, 32u) == 0;
   VkrDepotRemoteEntry origin = {0};
   bool8_t has_origin = vkr_depot_remote_find(store, VKR_DEPOT_ORIGIN, &origin);
-  if (workspace->remote[0] && !self &&
-      (!has_origin || strcmp(origin.address, workspace->remote) != 0 ||
-       MemCompare(origin.key, workspace->server_key, 32u) != 0)) {
-    if (!has_origin || MemCompare(origin.key, workspace->server_key, 32u)) {
+  if (legacy && legacy->address[0] && !self &&
+      (!has_origin || strcmp(origin.address, legacy->address) != 0 ||
+       MemCompare(origin.key, legacy->key, 32u) != 0)) {
+    if (!has_origin || MemCompare(origin.key, legacy->key, 32u)) {
       MemZero(&origin, sizeof(origin));
     }
     snprintf(origin.name, sizeof(origin.name), "%s", VKR_DEPOT_ORIGIN);
-    snprintf(origin.address, sizeof(origin.address), "%s", workspace->remote);
-    MemCopy(origin.key, workspace->server_key, 32u);
+    snprintf(origin.address, sizeof(origin.address), "%s", legacy->address);
+    MemCopy(origin.key, legacy->key, 32u);
     has_origin = vkr_depot_remote_set(store, &origin);
   }
 
@@ -252,9 +263,8 @@ static void workspace_adopt_repository(const VkrDepotWorkspace *workspace) {
 }
 
 bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace) {
-  const uint32_t flags_size = workspace->sparse ? 4u : 0u;
-  uint64_t size = 4u + 4u + flags_size + 2u + strlen(workspace->remote) + 32u +
-                  2u + strlen(workspace->branch) + VKR_DEPOT_ID_SIZE + 4u;
+  uint64_t size =
+      4u + 4u + 4u + 2u + strlen(workspace->branch) + VKR_DEPOT_ID_SIZE + 4u;
   for (uint32_t i = 0u; i < workspace->index.count; ++i) {
     size += 2u + strlen(workspace->index.entries[i].path) + 8u + 8u +
             VKR_DEPOT_ID_SIZE;
@@ -265,21 +275,10 @@ bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace) {
   }
   uint8_t *cursor = bytes;
   vkr_store_le_u32(cursor, WORKSPACE_STATE_MAGIC);
-  vkr_store_le_u32(cursor + 4, workspace->sparse
-                                   ? WORKSPACE_STATE_VERSION_SPARSE
-                                   : WORKSPACE_STATE_VERSION);
-  cursor += 8u;
-  if (workspace->sparse) {
-    vkr_store_le_u32(cursor, WORKSPACE_STATE_FLAG_SPARSE);
-    cursor += 4u;
-  }
-  const uint16_t remote_size = (uint16_t)strlen(workspace->remote);
-  cursor[0] = (uint8_t)remote_size;
-  cursor[1] = (uint8_t)(remote_size >> 8);
-  memcpy(cursor + 2u, workspace->remote, remote_size);
-  cursor += 2u + remote_size;
-  memcpy(cursor, workspace->server_key, 32u);
-  cursor += 32u;
+  vkr_store_le_u32(cursor + 4, WORKSPACE_STATE_VERSION_3);
+  vkr_store_le_u32(cursor + 8,
+                   workspace->sparse ? WORKSPACE_STATE_FLAG_SPARSE : 0u);
+  cursor += 12u;
   const uint16_t branch_size = (uint16_t)strlen(workspace->branch);
   cursor[0] = (uint8_t)branch_size;
   cursor[1] = (uint8_t)(branch_size >> 8);
@@ -308,12 +307,13 @@ bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace) {
       vkr_bakery_write_file_atomic(path, bytes, size);
   free(bytes);
   if (ok) {
-    workspace_adopt_repository(workspace);
+    workspace_adopt_repository(workspace, NULL);
   }
   return ok;
 }
 
-static bool8_t workspace_load_state(VkrDepotWorkspace *workspace) {
+static bool8_t workspace_load_state(VkrDepotWorkspace *workspace,
+                                    WorkspaceLegacyServer *out_legacy) {
   char path[VKR_DEPOT_PATH_CAPACITY];
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
@@ -332,11 +332,12 @@ static bool8_t workspace_load_state(VkrDepotWorkspace *workspace) {
   }
   version = vkr_load_le_u32(cursor + 4);
   if (version != WORKSPACE_STATE_VERSION &&
-      version != WORKSPACE_STATE_VERSION_SPARSE) {
+      version != WORKSPACE_STATE_VERSION_SPARSE &&
+      version != WORKSPACE_STATE_VERSION_3) {
     goto cleanup;
   }
   cursor += 8u;
-  if (version == WORKSPACE_STATE_VERSION_SPARSE) {
+  if (version != WORKSPACE_STATE_VERSION) {
     if (end - cursor < 4) {
       goto cleanup;
     }
@@ -344,19 +345,21 @@ static bool8_t workspace_load_state(VkrDepotWorkspace *workspace) {
         (vkr_load_le_u32(cursor) & WORKSPACE_STATE_FLAG_SPARSE) != 0u;
     cursor += 4u;
   }
-  if (end - cursor < 2) {
-    goto cleanup;
+  if (version != WORKSPACE_STATE_VERSION_3) {
+    if (end - cursor < 2) {
+      goto cleanup;
+    }
+    length = (uint16_t)(cursor[0] | (cursor[1] << 8));
+    cursor += 2u;
+    if (length >= VKR_DEPOT_REMOTE_MAX || end - cursor < (int64_t)length + 32) {
+      goto cleanup;
+    }
+    memcpy(out_legacy->address, cursor, length);
+    out_legacy->address[length] = '\0';
+    cursor += length;
+    memcpy(out_legacy->key, cursor, 32u);
+    cursor += 32u;
   }
-  length = (uint16_t)(cursor[0] | (cursor[1] << 8));
-  cursor += 2u;
-  if (length >= VKR_DEPOT_REMOTE_MAX || end - cursor < (int64_t)length + 32) {
-    goto cleanup;
-  }
-  memcpy(workspace->remote, cursor, length);
-  workspace->remote[length] = '\0';
-  cursor += length;
-  memcpy(workspace->server_key, cursor, 32u);
-  cursor += 32u;
   if (end - cursor < 2) {
     goto cleanup;
   }
@@ -481,11 +484,12 @@ bool8_t vkr_depot_workspace_open(VkrDepotWorkspace *workspace, const char *root,
   const bool8_t opened =
       vkr_depot_store_open(&workspace->store, (const char *)store_root, codec);
   free(store_root);
-  if (!opened || !workspace_load_state(workspace)) {
+  WorkspaceLegacyServer legacy = {0};
+  if (!opened || !workspace_load_state(workspace, &legacy)) {
     vkr_depot_workspace_close(workspace);
     return false_v;
   }
-  workspace_adopt_repository(workspace);
+  workspace_adopt_repository(workspace, &legacy);
   return true_v;
 }
 

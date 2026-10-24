@@ -161,6 +161,9 @@ typedef struct VkrDepotServerPeer {
   int32_t repository;
   /* Unix microseconds of its latest handshake or message. */
   uint64_t last_seen_us;
+  /* Where its latest handshake came from: a remote at that host is this
+     peer's machine. */
+  VkrNetAddress address;
 } VkrDepotServerPeer;
 
 uint32_t vkr_depot_server_repository_count(const VkrDepotServer *server);

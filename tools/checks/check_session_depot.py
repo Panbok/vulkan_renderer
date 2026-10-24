@@ -188,8 +188,16 @@ def main() -> int:
             return 1
         painter = Agent(mcp, guest_socket, "painter", work / "painter.log")
         agents.append(painter)
-        painter.call("session.join", {"address": f"127.0.0.1:{args.port}",
-                                      "key": session_key, "name": "beta"})
+        # The exec line can run before the scene finishes activating; the
+        # editor then answers VKR-AGENT-0003 and the join is asked again.
+        while True:
+            answer = painter.call("session.join",
+                                  {"address": f"127.0.0.1:{args.port}",
+                                   "key": session_key, "name": "beta"})
+            if answer.get("ok") or "VKR-AGENT-0003" not in str(
+                    answer.get("error")) or time.time() >= deadline:
+                break
+            time.sleep(2.0)
         joined = poll(painter, lambda s: s.get("joined") or s.get("error"),
                       deadline, guest)
         if not joined.get("joined"):

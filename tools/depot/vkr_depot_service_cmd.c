@@ -853,10 +853,12 @@ static int service_status(void) {
   for (uint32_t i = 0u; i < status->known_peer_count; ++i) {
     const VkrDepotServerPeer *peer = &status->known_peers[i];
     const uint64_t seen_s = peer->last_seen_us / 1000000u;
+    char from[VKR_NET_ADDRESS_TEXT];
+    vkr_net_address_format(&peer->address, from, sizeof(from));
     printf("  peer ");
     service_print_key(peer->key);
-    printf(" %s, %u connection%s, seen %llu s ago%s\n",
-           peer->name[0] ? peer->name : "-", peer->connections,
+    printf(" %s from %s, %u connection%s, seen %llu s ago%s\n",
+           peer->name[0] ? peer->name : "-", from, peer->connections,
            peer->connections == 1u ? "" : "s",
            (unsigned long long)(now_s > seen_s ? now_s - seen_s : 0u),
            peer->outbound_only ? ", outbound only" : "");

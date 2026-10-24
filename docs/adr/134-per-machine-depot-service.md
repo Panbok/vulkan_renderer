@@ -82,7 +82,7 @@ machine's service") owns the service folder, the user data folder's
 | --- | --- |
 | `service.conf` | bind (default `0.0.0.0:7320`), discovery name and port, outbound only, and one `store NAME PATH` line per served store |
 | `service.key` | the service's secret key; the first store added gives its `server.key`, so remotes that name that key stay valid |
-| `service.status` | what the running service last published: address, repositories, known peers and the access requests of keys it refused |
+| `service.status` | what the running service last published: address, repositories, known peers with the address each last connected from (a `peer-address` line, which older readers skip) and the access requests of keys it refused |
 | `bin/` (macOS: `VKR Depot.app/Contents/MacOS/`) | the installed copy of `vkr_depot`, so a rebuild never stops the service or locks its binary |
 | `service.log` | what `service run` prints when it runs as the service |
 
@@ -143,6 +143,9 @@ alike.
   request whose key already has a role in the store's access list.
 - On macOS the service syncs with other machines only after the user allows
   VKR Depot under Local Network once.
+- A peer's key is its user's identity, not its machine's service key, so
+  the editor links a remote to an outbound-only peer by the host it last
+  connected from (ADR-110).
 - A peer's outbound-only flag comes from its HELLO, so a version 1 client
   is never shown as outbound only.
 - A sync of a large store blocks only the sync thread; settings, publishing
