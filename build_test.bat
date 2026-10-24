@@ -61,6 +61,12 @@ if errorlevel 1 (
     popd
     exit /b 1
 )
+rem The depot's merge drivers and the pull report.
+python tools/checks/check_bakery_merge.py --bakery "!BAKERY_EXE!"
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
 
 rem Return to the original directory
 popd
