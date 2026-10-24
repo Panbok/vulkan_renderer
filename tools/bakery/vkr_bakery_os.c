@@ -352,6 +352,12 @@ bool8_t vkr_bakery_make_directories(const char *path) {
   if (length == 0u || length >= sizeof(partial)) {
     return length == 0u;
   }
+  /* A bare Windows drive such as "D:", the parent of "D:/name", names its
+     root here; a stat of "D:" itself fails. */
+  if (length == 2u && path[1] == ':') {
+    const char root[4] = {path[0], ':', '/', '\0'};
+    return vkr_bakery_is_directory(root);
+  }
   MemCopy(partial, path, length + 1u);
   for (uint64_t i = 1u; i <= length; ++i) {
     if (vkr_bakery_is_separator(partial[i]) || partial[i] == 0) {

@@ -1,6 +1,7 @@
 #include "core/ui/vkr_ui_dock.h"
 #include "filesystem/filesystem.h"
 #include "platform/vkr_platform.h"
+#include "vkr_bakery_os.h"
 #include "vkr_graphics_settings.h"
 
 #include <assert.h>
@@ -16,6 +17,10 @@ bool32_t run_path_io_tests(void) {
   const char invalid_utf8[] = {(char)0xff, 0};
   errno = ENOENT;
   assert(!file_fopen(invalid_utf8, "rb") && errno == EINVAL);
+  /* The parent of "E:/name" is the bare drive "E:", which a share into
+     "E:/name" makes first; it names the drive's root. */
+  const char drive[3] = {PROJECT_SOURCE_DIR[0], ':', '\0'};
+  assert(vkr_bakery_make_directories(drive));
 #endif
   FilePath directory = {.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp"),
                         .type = FILE_PATH_TYPE_ABSOLUTE};
