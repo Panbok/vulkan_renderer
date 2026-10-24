@@ -135,7 +135,11 @@ writes no ignored path (ADR-105).
 - A step the user starts stops a running status check first, so a remote
   that does not answer never holds the user's step behind its timeout.
 - **Commit** needs saved scenes and records the changes in the repository.
-  It first asks Bakery for the files the project reads from outside itself
+  A full working copy first runs Bakery's `collect_garbage`, so builds,
+  overlays, inventories and scenes no live file names leave the commit
+  under that operation's rules (a record's `previous_build` stays,
+  unreferenced files stay for 24 hours and unlisted scenes for an hour);
+  history keeps them. It then asks Bakery for the files the project reads from outside itself
   (`untracked_dependencies`): with any, it stops and lists them with their
   size, and **Copy in and commit** copies them into the repository's own
   `assets/` and commits them, or **Commit without them** goes on
@@ -196,6 +200,14 @@ writes no ignored path (ADR-105).
   then travels back.
 
 ## Evidence
+
+Prune on commit, Windows desktop, Release, 2026-10-24: a scratch copy of
+the FPS Arena project made a repository with `depot.init` on `D:/` (which
+failed with "Cannot create directory D:" until `vkr_bakery_make_directories`
+took a bare drive as its root), an unlisted scene folder two hours old
+committed with the `vkr_depot` command, then a headless editor's
+`depot.commit` logged "removed 1 unused paths" and committed its removal;
+the earlier commit still holds it.
 
 Of the Share, Get and Submit steps this replaced, Mac M1, Release,
 2026-10-12, headless editors driven through the agent

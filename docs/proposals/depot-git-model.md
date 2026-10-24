@@ -58,7 +58,7 @@ night. Each failure points at a part of the model:
 | D1, repositories and remotes | Implemented: local commits, remotes, tracking branches, fetch, fast-forward push and pull, branches, adoption of older working copies, HELLO from every client | ADR-133 |
 | D2, merge per file | Implemented: merge base, per-file decisions, units sent whole to Bakery's `merge_scene_unit` and `merge_project_document`, merge commits, pull that merges, `.vkrdepotmerge` written by `share_project`. A scene overlay both sides edited stays a conflict until D5 | ADR-133 |
 | D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service runs on the Mac as a launchd agent, follows `service.conf` while it runs, publishes its peers, has `add`, `remove` and `status` in the library, and syncs each served store with remotes that have an interval. The editor still serves a repository itself | ADR-110, ADR-133, ADR-134, below |
-| D4, self-contained projects | Partly implemented: a repository reads only its own assets and engine content (git `e18d74d2`), Bakery's `untracked_dependencies` lists and adopts the rest (`c4f425d5`), and the editor's Commit stops on them with Copy in and commit (ADR-110). Left: projects under a configurable root, Testbed as a template, pruning on commit | ADR-110, below |
+| D4, self-contained projects | Partly implemented: a repository reads only its own assets and engine content (git `e18d74d2`), Bakery's `untracked_dependencies` lists and adopts the rest (`c4f425d5`), the editor's Commit stops on them with Copy in and commit, and Commit first prunes what no live file names with Bakery's `collect_garbage` (ADR-110). Left: projects under a configurable root, Testbed as a template | ADR-110, below |
 | D5, merge per entity | Not started | below |
 
 ## Remaining work
@@ -81,14 +81,10 @@ night. Each failure points at a part of the model:
 
 ### Self-contained projects (D4)
 
-Implemented: untracked dependencies with Copy in and commit, and the end of
-the asset fallback for repository projects except engine content (see the
-table). Left:
+Implemented: untracked dependencies with Copy in and commit, the end of
+the asset fallback for repository projects except engine content, and
+pruning on commit (see the table). Left:
 
-- Commit prunes builds, overlays and inventories that no live file names,
-  with the rules of Bakery's `collect_garbage`: a record's `previous_build`
-  stays (ADR-088 revisions), and recent files get a grace period. Pruned
-  files stay in history.
 - Projects live under a configurable projects root. The default is under
   the user's profile, which is a non-ASCII path on the Windows desktop
   (`C:\Users\Пользователь`).

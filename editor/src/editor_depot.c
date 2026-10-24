@@ -1239,9 +1239,53 @@ static bool8_t depot_job_untracked(DepotJob *job, const char *folder) {
   return proceed;
 }
 
+/* Removes the builds, overlays and inventories no live file names, with
+   Bakery's `collect_garbage` rules (ADR-088 revisions stay, recent files
+   get its grace period), so the commit does not carry them; pruned files
+   stay in history. A failure leaves them and the commit goes on. */
+static void depot_job_prune(DepotJob *job, const char *folder) {
+  char project_id[40];
+  depot_first_project(folder, project_id);
+  Arena *arena = project_id[0] ? arena_create(KB(256), KB(64)) : NULL;
+  if (!arena) {
+    return;
+  }
+  /* The job names a project; the cleanup covers the whole workspace. */
+  char project_path[DEPOT_PATH];
+  string_format(project_path, sizeof(project_path),
+                "%s/.vkreditor/projects/%s/project.json", folder, project_id);
+  VkrBakeryJson *request = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, request, "operation",
+                      vkr_bakery_json_cstr(arena, "collect_garbage"));
+  vkr_bakery_json_set(arena, request, "project_path",
+                      vkr_bakery_json_cstr(arena, project_path));
+  const VkrBakeryJson *result = NULL;
+  if (depot_project_job(job, folder, arena, request,
+                        "Removing files no scene uses", &result)) {
+    int64_t removed = 0;
+    int64_t freed = 0;
+    (void)vkr_bakery_json_get_int(result, "removed", &removed);
+    (void)vkr_bakery_json_get_int(result, "freed_bytes", &freed);
+    if (removed > 0) {
+      log_info("Source control: removed %lld unused paths (%.1f MiB) before "
+               "the commit",
+               (long long)removed, (float64_t)freed / 1048576.0);
+    }
+  } else {
+    log_warn("Source control: %s", job->error);
+    job->error[0] = '\0';
+  }
+  arena_destroy(arena);
+}
+
 static void depot_job_commit(DepotWorker *worker) {
   DepotJob *job = worker->job;
   VkrDepotWorkspace *ws = worker->workspace;
+  /* A sparse copy holds only the files it read, so it cannot tell which
+     ones no scene uses. */
+  if (!ws->sparse) {
+    depot_job_prune(job, ws->root);
+  }
   if (!job->ignore_untracked && !ws->sparse &&
       !depot_job_untracked(job, ws->root)) {
     return;
