@@ -1198,10 +1198,10 @@ static bool8_t server_default_branch_visit(void *context, const char *branch) {
 }
 
 /* Selects the repository a version 2 connection works on. The server
-   serves one store, the default: a HELLO that names none selects it. A
-   store gets its ID with the repository file (proposal "Repository
-   layout"); until then a HELLO that names an ID finds nothing. A failed
-   HELLO may be retried; one after a selection breaks the protocol. */
+   serves one store, the default: a HELLO that names none or the store's ID
+   (`<store>/repository`) selects it, and one that names another ID finds
+   nothing. A failed HELLO may be retried; one after a selection breaks the
+   protocol. */
 static void server_on_hello(VkrDepotServer *server, ServerPeer *peer,
                             const VkrDepotHelloWire *hello, uint64_t now) {
   if (peer->selected) {
@@ -1217,11 +1217,19 @@ static void server_on_hello(VkrDepotServer *server, ServerPeer *peer,
     named = named || hello->repository[i] != 0u;
   }
   peer->outbound_only = (hello->flags & VKR_DEPOT_HELLO_OUTBOUND_ONLY) != 0u;
-  if (named) {
+  uint8_t id[VKR_DEPOT_REPOSITORY_ID_SIZE];
+  const bool8_t has_id =
+      vkr_depot_repository_id(server->store.root, id, false_v);
+  if (named && (!has_id || hello->repository_size != sizeof(id) ||
+                MemCompare(hello->repository, id, sizeof(id)) != 0)) {
     reply->status = VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY;
   } else {
     reply->status = VKR_DEPOT_HELLO_OK;
     peer->selected = true_v;
+    if (has_id) {
+      MemCopy(reply->repository, id, sizeof(id));
+      reply->repository_size = sizeof(id);
+    }
     snprintf(reply->name, sizeof(reply->name), "%s",
              vkr_bakery_path_name(server->store.root));
     (void)vkr_depot_ref_list(server->store.root, server_default_branch_visit,

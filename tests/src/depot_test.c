@@ -3143,11 +3143,18 @@ static void test_depot_hello(void) {
   assert(raw.last_id == VKR_DEPOT_MSG_HELLO_REPLY &&
          raw.last.hello_reply.request == 1u &&
          raw.last.hello_reply.status == VKR_DEPOT_HELLO_UNKNOWN_REPOSITORY);
+  /* The store's own ID selects it, and the reply names it. */
+  uint8_t id[VKR_DEPOT_REPOSITORY_ID_SIZE];
+  assert(vkr_depot_repository_id(store_root, id, true_v));
   hello = (VkrDepotHelloWire){.request = 2u,
+                              .repository_size = sizeof(id),
                               .flags = VKR_DEPOT_HELLO_OUTBOUND_ONLY};
+  MemCopy(hello.repository, id, sizeof(id));
   depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
   assert(raw.last_id == VKR_DEPOT_MSG_HELLO_REPLY &&
          raw.last.hello_reply.status == VKR_DEPOT_HELLO_OK &&
+         raw.last.hello_reply.repository_size == sizeof(id) &&
+         memcmp(raw.last.hello_reply.repository, id, sizeof(id)) == 0 &&
          strcmp(raw.last.hello_reply.name, vkr_bakery_path_name(store_root)) ==
              0 &&
          strcmp(raw.last.hello_reply.default_branch, "main") == 0);
@@ -3157,6 +3164,17 @@ static void test_depot_hello(void) {
   hello.request = 4u;
   depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
   assert(world.closed && world.close_code == VKR_NET_CLOSE_PROTOCOL_VIOLATION);
+  depot_world_destroy(&world);
+
+  /* A HELLO that names no repository selects the served store. */
+  depot_world_init(&world, store_root, &link, &keys);
+  raw = (DepotRawService){0};
+  depot_raw_open(&world, &raw, false_v);
+  hello = (VkrDepotHelloWire){.request = 1u};
+  depot_raw_ask(&world, &raw, VKR_DEPOT_MSG_HELLO, &hello);
+  assert(raw.last_id == VKR_DEPOT_MSG_HELLO_REPLY &&
+         raw.last.hello_reply.status == VKR_DEPOT_HELLO_OK &&
+         memcmp(raw.last.hello_reply.repository, id, sizeof(id)) == 0);
   depot_world_destroy(&world);
 
   /* A version 1 connection works without a HELLO and may not send one. */
