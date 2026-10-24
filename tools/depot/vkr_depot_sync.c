@@ -1466,11 +1466,25 @@ bool8_t vkr_depot_clone(VkrAllocator *allocator,
              config->directory);
     goto cleanup;
   }
+  /* Saving made the server origin; origin selects the repository too. */
+  VkrDepotRemoteEntry origin;
+  if (config->repository &&
+      vkr_depot_remote_find(workspace.store.root, VKR_DEPOT_ORIGIN, &origin) &&
+      MemCompare(origin.repository, config->repository,
+                 sizeof(origin.repository)) != 0) {
+    MemCopy(origin.repository, config->repository, sizeof(origin.repository));
+    if (!vkr_depot_remote_set(workspace.store.root, &origin)) {
+      snprintf(error, capacity, "could not save the remote origin at %s",
+               config->directory);
+      goto cleanup;
+    }
+  }
   const VkrDepotConnectConfig connect = {.address = config->address,
                                          .server_key = config->server_key,
                                          .store = &workspace.store,
                                          .name = config->name,
-                                         .progress = config->progress};
+                                         .progress = config->progress,
+                                         .repository = config->repository};
   connection = vkr_depot_connect(allocator, &connect, &out_result->connect,
                                  error, capacity);
   VkrDepotClient *client = vkr_depot_connection_client(connection);

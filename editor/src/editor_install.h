@@ -16,6 +16,8 @@ typedef enum VkrEditorTool {
   VKR_EDITOR_TOOL_BAKERY = 0,
   VKR_EDITOR_TOOL_HARNESS,
   VKR_EDITOR_TOOL_ASSET_PREVIEW,
+  /* Installs this computer's depot service (ADR-134). */
+  VKR_EDITOR_TOOL_DEPOT,
   VKR_EDITOR_TOOL_COUNT
 } VkrEditorTool;
 

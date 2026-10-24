@@ -1737,6 +1737,14 @@ static void test_depot_service_settings(void) {
   assert(!vkr_depot_service_add(&paths, settings, roots[0], "again", message,
                                 sizeof(message)));
   assert(vkr_bakery_is_file(paths.key));
+  /* The user's identity is the added store's admin, so the user's own
+     clones and editor get in. */
+  VkrDepotAccessEntry access[4];
+  VkrNetKeyPair owner;
+  assert(vkr_depot_access_list(roots[0], access, 4u) == 1u &&
+         access[0].role == VKR_DEPOT_ROLE_ADMIN &&
+         vkr_depot_identity(&owner, false_v) &&
+         memcmp(access[0].key, owner.public_key, 32u) == 0);
   VkrDepotServiceStatus *status = malloc(sizeof(VkrDepotServiceStatus));
   assert(status && vkr_depot_service_status(status, 0u));
   assert(status->has_key &&
@@ -1759,8 +1767,7 @@ static void test_depot_service_settings(void) {
                                         .bind = settings->bind,
                                         .discovery_port =
                                             (uint16_t)settings->discovery_port,
-                                        .codec = vkr_depot_zstd_codec(),
-                                        .open_access = true_v};
+                                        .codec = vkr_depot_zstd_codec()};
   char error[256];
   VkrDepotService *service =
       vkr_depot_service_start(&allocator, &config, error, sizeof(error));
@@ -1796,6 +1803,30 @@ static void test_depot_service_settings(void) {
   } else {
     printf("    UDP %u is taken; the running check is skipped\n",
            settings->discovery_port);
+  }
+
+  /* A key without a role is refused; the published status lists its
+     request for the owner to answer. */
+  char other_identity[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(other_identity, sizeof(other_identity), home,
+                              "other.key"));
+  depot_test_setenv("VKR_DEPOT_IDENTITY", other_identity);
+  const VkrDepotConnectConfig refused = {.address = address,
+                                         .server_key = info->server_key,
+                                         .name = "eve@elsewhere",
+                                         .timeout_ms = 5000u};
+  assert(!vkr_depot_branches(&allocator, &refused, refs, 4u, &ref_count,
+                             &connect_status, error, sizeof(error)) &&
+         connect_status == VKR_DEPOT_CONNECT_DENIED);
+  VkrNetKeyPair other;
+  assert(vkr_depot_identity(&other, false_v));
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+  assert(vkr_depot_service_publish(service, paths.status));
+  assert(vkr_depot_service_status(status, 1500u));
+  if (info->discoverable) {
+    assert(status->request_count == 1u &&
+           memcmp(status->requests[0].key, other.public_key, 32u) == 0 &&
+           strcmp(status->requests[0].name, "eve@elsewhere") == 0);
   }
 
   /* The settings change; the running service follows them. */

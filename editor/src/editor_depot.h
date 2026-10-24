@@ -151,17 +151,25 @@ bool8_t vkr_editor_depot_switch(VkrEditorDepot *depot, const char *branch,
 bool8_t vkr_editor_depot_remote(VkrEditorDepot *depot, const char *name,
                                 const char *address, const char *key_hex,
                                 char *error, uint32_t capacity);
-/* Starts or stops serving the open repository to the network. */
+/* Adds the open repository to the stores this computer's depot service
+   serves (ADR-134), or removes it, and starts the service when it does
+   not run. */
 bool8_t vkr_editor_depot_serve(VkrEditorDepot *depot, bool8_t serve,
                                char *error, uint32_t capacity);
-/* Clones the repository at `address` with `key_hex` into `destination`
-   (empty for the default folder) and opens it. `sparse` makes a sparse working
-   copy (ADR-123): files, cooked textures included, arrive when the editor
-   or its Bakery jobs read them, and the Get cooks nothing. */
+/* Installs and starts this computer's depot service with the vkr_depot
+   beside the editor (`vkr_depot service install`). */
+bool8_t vkr_editor_depot_start_service(VkrEditorDepot *depot, char *error,
+                                       uint32_t capacity);
+/* Clones the repository `repository_hex` (empty or NULL for the
+   service's default) the service at `address` with `key_hex` serves into
+   `destination` (empty for the default folder) and opens it. `sparse` makes
+   a sparse working copy (ADR-123): files, cooked textures included, arrive
+   when the editor or its Bakery jobs read them, and the Get cooks
+   nothing. */
 bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
-                               const char *key_hex, const char *name,
-                               const char *destination, bool8_t sparse,
-                               char *error, uint32_t capacity);
+                               const char *key_hex, const char *repository_hex,
+                               const char *name, const char *destination,
+                               bool8_t sparse, char *error, uint32_t capacity);
 
 /* Makes `directory`, when it is a sparse depot working copy, a remote
    content directory whose unfetched files arrive when read, for this
@@ -169,8 +177,8 @@ bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
    jobs it starts; ends the previous one. NULL ends it. One per process, as
    the VFS remote is. Call before the workspace's files are read. */
 void vkr_editor_depot_workspace_sparse(const char *directory);
-/* Gives the key a role on this editor's server: "write", "read" or
-   "none". */
+/* Gives the key a role in the open repository's access list, which the
+   machine's service serves: "write", "read" or "none". */
 bool8_t vkr_editor_depot_allow(VkrEditorDepot *depot, const char *key_hex,
                                const char *role, char *error,
                                uint32_t capacity);

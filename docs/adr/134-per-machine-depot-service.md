@@ -15,9 +15,10 @@ repositories that a version 2 connection selects with HELLO
 version 2 lists the served repositories and says when the machine is
 outbound only. The service follows its settings file while it runs,
 publishes its state for other processes, and syncs each served store with
-each of its remotes that has an interval. The editor still hosts its own
-server for Let others fetch and push; moving it onto the service is D3 of
-[the proposal](../proposals/depot-git-model.md).
+each of its remotes that has an interval. The editor's Let others fetch and
+push adds a repository to the service and starts the service when it does
+not run ([ADR-110](110-project-sharing-in-the-editor.md)); the editor serves
+nothing itself.
 
 ## Context
 
@@ -81,16 +82,20 @@ machine's service") owns the service folder, the user data folder's
 | --- | --- |
 | `service.conf` | bind (default `0.0.0.0:7320`), discovery name and port, outbound only, and one `store NAME PATH` line per served store |
 | `service.key` | the service's secret key; the first store added gives its `server.key`, so remotes that name that key stay valid |
-| `service.status` | what the running service last published: address, repositories and known peers |
-| `bin/` | the installed copy of `vkr_depot`, so a rebuild never stops the service or locks its binary |
+| `service.status` | what the running service last published: address, repositories, known peers and the access requests of keys it refused |
+| `bin/` (macOS: `VKR Depot.app/Contents/MacOS/`) | the installed copy of `vkr_depot`, so a rebuild never stops the service or locks its binary |
 | `service.log` | what `service run` prints when it runs as the service |
 
 The library functions take no running service: `vkr_depot_service_add`
-(checks the store, gives it a repository ID, adopts its key when the service
-has none, saves the settings), `vkr_depot_service_remove`, and
+(checks the store, gives it a repository ID, makes the user's identity its
+admin when it has no access list, adopts its key when the service has none,
+saves the settings), `vkr_depot_service_remove`, `vkr_depot_service_find`
+(a store's entry, with the service's path comparison) and
 `vkr_depot_service_status` (settings, key, a loopback discovery answer from
-a service with that key, and the published peers). The editor uses these
-instead of running the command.
+a service with that key, and the published peers and requests). A store's
+access list is a file the running service rereads within a second, so
+`vkr_depot_access_set` and `vkr_depot_access_list` answer requests without
+a connection. The editor uses these instead of running the command.
 
 [vkr_depot_service_cmd.c](../../tools/depot/vkr_depot_service_cmd.c) adds
 what only the command does:
@@ -99,8 +104,13 @@ what only the command does:
   Windows a Task Scheduler task in the user's session that restarts a
   minute after any exit, plus one UAC prompt for a Defender rule bound to
   the installed binary (skipped with `--outbound-only`); on macOS a launchd
-  agent `com.vkr.depot.service` kept alive. `--outbound-only` also writes
-  the marker that makes this machine's clients say so in their HELLO.
+  agent `com.vkr.depot.service` kept alive, whose binary sits in an app
+  bundle with an Info.plist that carries `NSLocalNetworkUsageDescription`,
+  signed ad hoc with the identifier `com.vkr.depot.service`. macOS refuses
+  local network connections of a bare binary that launchd starts, and keeps
+  the user's Local Network answer for the signing identifier across
+  installs. `--outbound-only` also writes the marker that makes this
+  machine's clients say so in their HELLO.
 - `run` serves the listed stores (none is allowed: the first `add` serves
   one), rereads `service.conf` each second and applies a change with
   `vkr_depot_service_apply` (stores only; bind, name, port and outbound only
@@ -127,9 +137,12 @@ alike.
   when that store is the first one the service adopts.
 - `service add` and `remove` take effect within a second on a running
   service; removing a store closes its connections.
-- A process reads the running service's peers from a file, not over a
-  connection. `service.status` is at most 5 seconds old and is read only
-  when the service answers discovery.
+- A process reads the running service's peers and requests from a file,
+  not over a connection. `service.status` is at most 5 seconds old and is
+  read only when the service answers discovery, so the editor also drops a
+  request whose key already has a role in the store's access list.
+- On macOS the service syncs with other machines only after the user allows
+  VKR Depot under Local Network once.
 - A peer's outbound-only flag comes from its HELLO, so a version 1 client
   is never shown as outbound only.
 - A sync of a large store blocks only the sync thread; settings, publishing
@@ -191,13 +204,19 @@ alike.
     binary before it adds its own.
 - On the same machine the UAC prompt came back declined, and the firewall
   rule is added by hand with the two commands `install` prints.
-- Not run: the editor on the service; the macOS build of
-  `file_reopen_standard_output`.
+- Mac M1, 2026-10-24: `vkr_depot` builds with no warnings with
+  `file_reopen_standard_output`, and the installed service writes its log
+  through it. The bare installed binary's interval sync logged "no answer
+  from 192.168.3.2:7320 within 30000 ms" while the same binary run from a
+  terminal fetched from windows-d, which led to the app bundle.
+- `test_depot_service_settings` also checks that `service add` makes the
+  user's identity the store's admin and that a refused key's request comes
+  back through `service.status`; each check fails with its code removed.
+- The editor on the service: see ADR-110's evidence.
+- Not run: interval sync from the Mac's bundled service before the Local
+  Network approval.
 
 ## Revisit when
 
-- The editor serves through the service (D3): Let others fetch and push
-  becomes `vkr_depot_service_add`, and access requests come from the
-  service.
 - A peer needs the status over the network, or more than 16 repositories
   or 64 known keys per machine.

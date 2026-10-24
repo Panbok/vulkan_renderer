@@ -321,6 +321,27 @@ bool8_t vkr_depot_access_set(const char *store_root, const uint8_t key[32],
   return ok;
 }
 
+uint32_t vkr_depot_access_list(const char *store_root, VkrDepotAccessEntry *out,
+                               uint32_t capacity) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (!server_file(store_root, "access", path, sizeof(path)) ||
+      !vkr_bakery_is_file(path) ||
+      !vkr_bakery_read_file(path, SERVER_ACCESS_MAX * 33u, &bytes, &size)) {
+    return 0u;
+  }
+  uint32_t count = 0u;
+  for (uint64_t offset = 0u; offset + 33u <= size && count < capacity;
+       offset += 33u) {
+    memcpy(out[count].key, bytes + offset, 32u);
+    out[count].role = (VkrDepotRole)bytes[offset + 32u];
+    count += 1u;
+  }
+  free(bytes);
+  return count;
+}
+
 static uint32_t server_role(const VkrDepotServer *server,
                             const ServerRepository *repository,
                             const uint8_t *key) {

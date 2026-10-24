@@ -25,15 +25,19 @@ outside the editor.
   cooked before texture recipes, commits and reopens there. Agents run
   `op depot.init {"destination":...,"serve":true}` and read
   `op depot.status` (repository, branch, ahead, behind, remotes, server).
-- **Serve:** Let others fetch and push serves the open repository while its
-  editor runs (`op depot.serve {"serve":true}`).
-- **Clone:** the project hub lists repositories served on the network;
-  Clone copies one, waits for the other editor's Allow, cooks textures for
-  this computer and opens it with the server as `origin`. Agents run
-  `op depot.clone {"address","key","name"}`; the launcher answers agents
+- **Serve:** Let others fetch and push adds the open repository to this
+  computer's depot service, which serves it also while the editor is
+  closed, and starts the service when it does not run
+  (`op depot.serve {"serve":true}`, `op depot.service`; ADR-134).
+- **Clone:** the project hub lists each repository a service on the network
+  serves; Clone copies one, waits for its owner's Allow, cooks textures for
+  this computer and opens it with the service as `origin`. Agents run
+  `op depot.clone {"address","key","repository","name"}`, with the
+  repository ID from `depot.status` `found`; the launcher answers agents
   without a scene.
-- **Approve:** the serving editor shows `N asking` and a card with Allow,
-  Fetch only and Deny; agents run `op depot.allow {"key","role"}`.
+- **Approve:** an editor on the serving computer shows `N asking` and a
+  card with Allow, Fetch only and Deny; agents run
+  `op depot.allow {"key","role"}`.
 - **Remotes:** Add remote in the window (one click from a service found on
   the network, or name, address and key); agents run
   `op depot.remote {"name","address","key"}`.
@@ -83,26 +87,24 @@ outside the editor.
   editor on both machines together.
 - Keep the Mac store small: the Mac disk runs near full. Bulk history
   belongs on the Windows D: store.
-- Run the server from a stable copy of the binary, not from `build_*`. On
-  macOS, a rebuilt binary has a new ad hoc signature, so a firewall rule for
-  the old one may not match it. Example:
-  `cp build_release/tools/depot/vkr_depot ~/vkr-depot/bin/` and
-  `serve ~/vkr-depot/store --bind 0.0.0.0:7320 --name mac-m1`. The depot
-  uses UDP 7320; discovery uses UDP 7319.
-- After you pull `main` with new depot code, rebuild, copy and restart the
-  server, and post the restart.
-- To keep a server or `mirror --watch` running past one agent session, run
-  it as a launchd agent (`~/Library/LaunchAgents/com.vkr.depot.*.plist`,
-  `launchctl bootstrap gui/$(id -u) <plist>`). Set `VKR_DEPOT_IDENTITY`
-  in the plist, or rely on the default
-  (`~/Library/Application Support/VKR/depot/identity.key`; the first run
-  copies an older key from `~/Library/Caches/vkr_bakery/vkr/depot/`). A
-  launchd job gets no LAN access until the owner allows it under Privacy &
-  Security > Local Network. `vkr_depot` and `vkr_editor` now carry an
-  embedded `Info.plist` with `NSLocalNetworkUsageDescription`; whether that
-  alone brings the prompt for a launchd job is unverified, so keep the app
-  bundle wrapper where it already works. A job that only serves, and is
-  reached over loopback, needs none.
+- Each machine runs one `vkr_depot service` (ADR-134): `service add STORE
+  --name NAME` serves a store, `service install [--outbound-only]` copies
+  the binary out of `build_*` and registers it at logon (launchd agent
+  `com.vkr.depot.service` on macOS, a logon task on Windows), and `service
+  status` shows what runs. The depot uses UDP 7320; discovery uses UDP
+  7319. `discover` lists each service's repository IDs for `clone
+  --repository ID`.
+- `remote add NAME ADDR KEY --interval SECONDS --store STORE` makes the
+  service fetch and push that served store with the remote on its own; it
+  replaces `mirror --watch`.
+- After you pull `main` with new depot code, rebuild and run `service
+  install` again, and post the restart.
+- On macOS the service runs from `VKR Depot.app` in
+  `~/Library/Application Support/VKR/depot/`, because launchd jobs get no
+  LAN access until the owner allows them under Privacy & Security > Local
+  Network, and a bare binary gets no prompt. The service logs "no answer
+  from ADDR" for each sync until then. The identity key is
+  `~/Library/Application Support/VKR/depot/identity.key`.
 
 ## Network: test before you blame the code
 

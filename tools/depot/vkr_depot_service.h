@@ -154,6 +154,9 @@ void vkr_depot_service_remove_repository(VkrDepotService *service,
  * registers and runs it (vkr_depot_service_cmd.c, in the vkr_depot command
  * only). */
 
+/* The app bundle in the service's folder that holds the binary on macOS. */
+#define VKR_DEPOT_SERVICE_BUNDLE "VKR Depot.app"
+
 typedef struct VkrDepotServicePaths {
   char folder[VKR_DEPOT_PATH_CAPACITY];
   char conf[VKR_DEPOT_PATH_CAPACITY];
@@ -195,8 +198,9 @@ vkr_depot_service_settings_save(const VkrDepotServicePaths *paths,
                                 const VkrDepotServiceSettings *settings);
 
 /* Adds `store_root` to the served stores as `name` (NULL for its folder's
-   name) and saves the settings: the store gets a repository ID, and the
-   first store's `server.key` becomes the service's key when it has none.
+   name) and saves the settings: the store gets a repository ID, the user's
+   identity becomes its admin when it has no access list, and the first
+   store's `server.key` becomes the service's key when it has none.
    False with a message for a folder that is no store, a name or path
    already served, or a full list. A running service serves it within a
    second. */
@@ -204,6 +208,11 @@ bool8_t vkr_depot_service_add(const VkrDepotServicePaths *paths,
                               VkrDepotServiceSettings *settings,
                               const char *store_root, const char *name,
                               char *message, uint32_t capacity);
+
+/* The index of the store at `store_root` in `settings`, compared as the
+   service compares paths, or -1 when it serves none there. */
+int32_t vkr_depot_service_find(const VkrDepotServiceSettings *settings,
+                               const char *store_root);
 
 /* Removes the served store named `which`, or at that path, and saves the
    settings. False with a message when none matches. */
@@ -233,11 +242,14 @@ typedef struct VkrDepotServiceStatus {
   /* The service answered discovery on loopback. */
   bool8_t running;
   VkrDepotDiscovered answer;
-  /* From `service.status`: when the service last published, and the keys
-     that connected since it started, the latest first. */
+  /* From `service.status`: when the service last published, the keys
+     that connected since it started, the latest first, and the keys it
+     refused for want of a role, newest first (address left zero). */
   uint64_t published_us;
   VkrDepotServerPeer known_peers[VKR_DEPOT_SERVER_PEERS_MAX];
   uint32_t known_peer_count;
+  VkrDepotAccessRequest requests[VKR_DEPOT_REQUESTS_MAX];
+  uint32_t request_count;
 } VkrDepotServiceStatus;
 
 /* The settings, the key, and, waiting up to `wait_ms` for discovery on

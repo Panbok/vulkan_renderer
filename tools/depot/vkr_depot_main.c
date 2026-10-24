@@ -10,6 +10,7 @@
  *                    [--watch SECONDS]
  *   vkr_depot access STORE KEY none|read|write|admin
  *   vkr_depot clone ADDR SERVER-KEY DIR [--branch NAME] [--store DIR]
+ *                   [--repository ID]
  *   vkr_depot status [DIR]
  *   vkr_depot commit [DIR] -m MESSAGE [--push] [--remote NAME]
  *   vkr_depot push|fetch [DIR] [--remote NAME] [--branch NAME]
@@ -17,8 +18,8 @@
  *                  [--bakery PATH]
  *   vkr_depot merge BRANCH|REMOTE/BRANCH [--dir DIR] [--take-theirs|
  *                   --keep-mine] [--bakery PATH]
- *   vkr_depot remote [list|add NAME ADDR KEY|remove NAME]
- *                    [--dir DIR|--store STORE]
+ *   vkr_depot remote [list|add NAME ADDR KEY [--interval SECONDS]|remove
+ *                    NAME] [--dir DIR|--store STORE]
  *   vkr_depot sync STORE [--remote NAME]
  *   vkr_depot branch [NAME [--delete [--force]]] [--dir DIR]
  *   vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]
@@ -40,7 +41,8 @@
  * branch and the working copy as they were, as `commit` did before
  * repositories. A remote defaults to `origin`, the server a clone came from.
  * `sync` does for a served store, with no working directory, what `mirror`
- * does for two servers, through one of the store's remotes. `serve` also
+ * does for two servers, through one of the store's remotes, and the
+ * machine's service runs it for each remote with an `--interval`. `serve` also
  * answers LAN discovery (vkr_depot_discovery.h), and `mirror` keeps the
  * branches of the local server and a peer server equal. A running
  * server applies `access` within a second; a key it refused waits there as a
@@ -82,6 +84,27 @@ static bool8_t depot_parse_key(const char *hex, uint8_t out[32]) {
     return false_v;
   }
   memcpy(out, key.bytes, 32u);
+  return true_v;
+}
+
+/* A repository ID: VKR_DEPOT_REPOSITORY_ID_SIZE bytes in hexadecimal. */
+static bool8_t
+depot_parse_repository(const char *hex,
+                       uint8_t out[VKR_DEPOT_REPOSITORY_ID_SIZE]) {
+  if (strlen(hex) != VKR_DEPOT_REPOSITORY_ID_SIZE * 2u) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < VKR_DEPOT_REPOSITORY_ID_SIZE * 2u; ++i) {
+    const char c = hex[i];
+    const int32_t digit = c >= '0' && c <= '9'   ? c - '0'
+                          : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                          : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                                 : -1;
+    if (digit < 0) {
+      return false_v;
+    }
+    out[i / 2u] = (uint8_t)(i % 2u ? (out[i / 2u] | digit) : digit << 4);
+  }
   return true_v;
 }
 
@@ -209,6 +232,14 @@ static int depot_discover(const char *to, uint32_t timeout_ms,
     depot_print_key(found[i].server_key);
     printf(" %s %s\n", found[i].name[0] ? found[i].name : "-",
            found[i].host[0] ? found[i].host : "-");
+    /* Each repository, for `clone --repository`. */
+    for (uint32_t r = 0u; r < found[i].repository_count; ++r) {
+      printf("  repository ");
+      for (uint32_t b = 0u; b < VKR_DEPOT_REPOSITORY_ID_SIZE; ++b) {
+        printf("%02x", found[i].repositories[r].id[b]);
+      }
+      printf(" %s\n", found[i].repositories[r].name);
+    }
   }
   if (!count) {
     fprintf(stderr, "no depot server answered within %u ms\n", timeout_ms);
@@ -283,15 +314,20 @@ static int depot_access(const char *store_root, const char *key_hex,
 
 static int depot_clone(const char *address, const char *key_hex,
                        const char *directory, const char *branch,
-                       const char *store_root, bool8_t sparse) {
+                       const char *store_root, const char *repository_hex,
+                       bool8_t sparse) {
   uint8_t server_key[32];
+  uint8_t repository[VKR_DEPOT_REPOSITORY_ID_SIZE] = {0};
   if (!depot_parse_key(key_hex, server_key) ||
-      !vkr_depot_branch_valid(branch)) {
-    fprintf(stderr, "clone needs ADDR SERVER-KEY DIR [--branch NAME]\n");
+      !vkr_depot_branch_valid(branch) ||
+      (repository_hex && !depot_parse_repository(repository_hex, repository))) {
+    fprintf(stderr, "clone needs ADDR SERVER-KEY DIR [--branch NAME] "
+                    "[--repository ID]\n");
     return 1;
   }
   const VkrDepotCloneConfig config = {.address = address,
                                       .server_key = server_key,
+                                      .repository = repository,
                                       .directory = directory,
                                       .branch = branch,
                                       .store_root = store_root,
@@ -765,11 +801,26 @@ static int depot_sync_command(const char *store_root, const char *remote) {
   return 0;
 }
 
+/* Sets the interval of a remote about to be saved, and keeps the repository
+   an earlier remote of that name at the same address and key learned. */
+static void depot_remote_keep_repository(const char *store,
+                                         VkrDepotRemoteEntry *remote,
+                                         uint32_t interval_seconds) {
+  remote->interval_seconds = interval_seconds;
+  VkrDepotRemoteEntry earlier;
+  if (vkr_depot_remote_find(store, remote->name, &earlier) &&
+      strcmp(earlier.address, remote->address) == 0 &&
+      MemCompare(earlier.key, remote->key, sizeof(remote->key)) == 0) {
+    MemCopy(remote->repository, earlier.repository, sizeof(remote->repository));
+  }
+}
+
 /* The remotes of the working copy at `directory`, or of `store_root` when
    given: a served store has no working directory. */
 static int depot_remote_command(const char *directory, const char *store_root,
                                 const char *action, const char *name,
-                                const char *address, const char *key_hex) {
+                                const char *address, const char *key_hex,
+                                uint32_t interval_seconds) {
   VkrDepotWorkspace workspace = {0};
   if (!store_root && depot_open(&workspace, directory)) {
     return 1;
@@ -783,6 +834,9 @@ static int depot_remote_command(const char *directory, const char *store_root,
       for (uint32_t i = 0u; i < count; ++i) {
         printf("%s %s ", remotes[i].name, remotes[i].address);
         depot_print_key(remotes[i].key);
+        if (remotes[i].interval_seconds) {
+          printf(" every %us", remotes[i].interval_seconds);
+        }
         printf("\n");
       }
       result = 0;
@@ -796,11 +850,18 @@ static int depot_remote_command(const char *directory, const char *store_root,
         !vkr_depot_address(address, &parsed) ||
         !depot_parse_key(key_hex, remote.key)) {
       fprintf(stderr, "remote add needs NAME (a-z, 0-9, - and _) ADDR KEY\n");
-    } else if (!vkr_depot_remote_set(store, &remote)) {
-      fprintf(stderr, "could not save remote %s\n", name);
     } else {
-      printf("remote %s %s\n", name, address);
-      result = 0;
+      depot_remote_keep_repository(store, &remote, interval_seconds);
+      if (!vkr_depot_remote_set(store, &remote)) {
+        fprintf(stderr, "could not save remote %s\n", name);
+      } else {
+        printf("remote %s %s", name, address);
+        if (interval_seconds) {
+          printf(" every %us", interval_seconds);
+        }
+        printf("\n");
+        result = 0;
+      }
     }
   } else if (strcmp(action, "remove") == 0 && name) {
     if (vkr_depot_remote_remove(store, name)) {
@@ -1022,6 +1083,7 @@ static void depot_usage(void) {
       "                   [--branch NAME] [--watch SECONDS]\n"
       "  vkr_depot access STORE KEY none|read|write|admin\n"
       "  vkr_depot clone ADDR SERVER-KEY DIR [--branch NAME] [--store DIR]\n"
+      "                  [--repository ID]\n"
       "                  [--sparse]\n"
       "  vkr_depot status|refs|locks [DIR]\n"
       "  vkr_depot commit [DIR] -m MESSAGE [--push] [--remote NAME]\n"
@@ -1030,8 +1092,8 @@ static void depot_usage(void) {
       "                 [--bakery PATH]\n"
       "  vkr_depot merge BRANCH|REMOTE/BRANCH [--dir DIR] [--take-theirs|\n"
       "                  --keep-mine] [--bakery PATH]\n"
-      "  vkr_depot remote [list|add NAME ADDR KEY|remove NAME]\n"
-      "                   [--dir DIR|--store STORE]\n"
+      "  vkr_depot remote [list|add NAME ADDR KEY [--interval SECONDS]|remove\n"
+      "                   NAME] [--dir DIR|--store STORE]\n"
       "  vkr_depot sync STORE [--remote NAME]\n"
       "  vkr_depot branch [NAME [--delete [--force]]] [--dir DIR]\n"
       "  vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]\n"
@@ -1065,6 +1127,8 @@ static int depot_main(int argc, char **argv) {
   uint32_t timeout_ms = 1500u;
   uint32_t discovery_port = VKR_DEPOT_DISCOVERY_PORT;
   uint32_t watch_seconds = 0u;
+  uint32_t interval_seconds = 0u;
+  const char *repository = NULL;
   const char *message = NULL;
   const char *dir = NULL;
   uint32_t count = 20u;
@@ -1128,6 +1192,12 @@ static int depot_main(int argc, char **argv) {
     } else if (value && strcmp(arg, "--watch") == 0) {
       watch_seconds = (uint32_t)strtoul(value, NULL, 10);
       ++i;
+    } else if (value && strcmp(arg, "--repository") == 0) {
+      repository = value;
+      ++i;
+    } else if (value && strcmp(arg, "--interval") == 0) {
+      interval_seconds = (uint32_t)strtoul(value, NULL, 10);
+      ++i;
     } else if (value && strcmp(arg, "--store") == 0) {
       store = value;
       ++i;
@@ -1171,7 +1241,7 @@ static int depot_main(int argc, char **argv) {
   }
   if (strcmp(command, "clone") == 0 && positional_count == 3u) {
     return depot_clone(positional[0], positional[1], positional[2], branch,
-                       store, sparse);
+                       store, repository, sparse);
   }
   if (strcmp(command, "status") == 0) {
     return depot_status(first);
@@ -1196,7 +1266,8 @@ static int depot_main(int argc, char **argv) {
   }
   if (strcmp(command, "remote") == 0) {
     return depot_remote_command(dir ? dir : ".", store, positional[0],
-                                positional[1], positional[2], positional[3]);
+                                positional[1], positional[2], positional[3],
+                                interval_seconds);
   }
   if (strcmp(command, "branch") == 0) {
     return depot_branch_command(dir ? dir : ".", positional[0], remove, force);

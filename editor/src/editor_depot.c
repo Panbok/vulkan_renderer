@@ -60,6 +60,7 @@ typedef enum DepotJobKind {
   DEPOT_JOB_CLONE,
   DEPOT_JOB_INIT,
   DEPOT_JOB_SWITCH,
+  DEPOT_JOB_SERVICE,
 } DepotJobKind;
 
 static const char *const depot_job_names[] = {"",
@@ -71,7 +72,8 @@ static const char *const depot_job_names[] = {"",
                                               "Fetching",
                                               "Cloning",
                                               "Making a repository",
-                                              "Switching branch"};
+                                              "Switching branch",
+                                              "Starting the depot service"};
 
 /* Branches and commit rows the window lists. */
 #define DEPOT_BRANCHES_MAX 16u
@@ -101,11 +103,12 @@ typedef struct DepotJob {
   DepotJobKind kind;
   /* Inputs. */
   char directory[DEPOT_PATH];
-  /* The remote a step exchanges with, and its address and key for the
-     cooked side branch; empty for none. */
+  /* The remote a step exchanges with, and its address, key and repository
+     for the cooked side branch; empty for none. */
   char remote[VKR_DEPOT_REMOTE_NAME];
   char address[DEPOT_TEXT];
   uint8_t server_key[32];
+  uint8_t repository[VKR_DEPOT_REPOSITORY_ID_SIZE];
   /* A Clone that makes a sparse working copy, whose files arrive when
      read. */
   bool8_t sparse;
@@ -171,6 +174,12 @@ typedef struct DepotJob {
   uint32_t history_count;
   DepotHistory history[DEPOT_HISTORY_MAX];
   char opened_project[40];
+  /* Status: this computer's depot service as it stands (heap, about
+     100 KB, kept with the job), and the store's access list. */
+  VkrDepotServiceStatus *machine;
+  bool8_t machine_read;
+  uint32_t access_count;
+  VkrDepotAccessEntry access[DEPOT_ACCESS_MAX];
   VkrDepotProgress progress;
   /* The texture cook that follows a pull, after the depot's phases. */
   VkrAtomicUint32 cook_done;
@@ -218,10 +227,13 @@ struct VkrEditorDepot {
   char workspace[DEPOT_PATH];
   char project_id[40];
   char project_name[96];
-  /* The workspace is a depot working copy, and this editor serves its
-     store (the store holds a server key). */
+  /* The workspace is a depot working copy, and this computer's depot
+     service serves its store (ADR-134). */
   bool8_t repository;
   bool8_t serving;
+  /* The store holds the server key an editor that served it itself left,
+     and the service does not serve it. */
+  bool8_t served_before;
   /* The store's remotes and the one steps use: origin, else the first. */
   VkrDepotRemoteEntry remotes[VKR_DEPOT_REMOTES_MAX];
   uint32_t remote_count;
@@ -229,19 +241,28 @@ struct VkrEditorDepot {
   /* What each remote's last exchange gave, by index. */
   VkrDepotConnectStatus remote_connect[VKR_DEPOT_REMOTES_MAX];
   bool8_t remote_tried[VKR_DEPOT_REMOTES_MAX];
-  /* This editor's own server, over its loopback, for the cooked side
-     branch of a served repository. */
+  /* The machine's service over its loopback, for the cooked side branch of
+     a served repository, and the store's repository ID it selects. */
   char address[DEPOT_TEXT];
   uint8_t server_key[32];
+  uint8_t repository_id[VKR_DEPOT_REPOSITORY_ID_SIZE];
 
-  /* Allocates its networking from memory of its own; the retained
-     allocator makes only its thread's handle, on the UI thread. */
-  VkrDepotService *service;
-  VkrDepotServiceInfo service_info;
-  char service_error[DEPOT_TEXT];
-  float64_t service_polled;
+  /* This computer's depot service as the last status check read it: it
+     runs apart from the editor and serves every shared repository. */
+  bool8_t machine_known;
+  bool8_t machine_running;
+  bool8_t machine_outbound_only;
+  uint8_t machine_key[32];
+  uint16_t machine_port;
+  /* Keys connected to it now. */
+  uint32_t machine_connected;
+  /* Keys it refused for want of a role, but those this user denied. */
   VkrDepotAccessRequest requests[DEPOT_REQUESTS_MAX];
   uint32_t request_count;
+  /* Denied in this run of the editor; the service keeps a refused key's
+     request until it restarts. */
+  uint8_t denied[DEPOT_REQUESTS_MAX][32];
+  uint32_t denied_count;
   VkrDepotAccessEntry access[DEPOT_ACCESS_MAX];
   uint32_t access_count;
 
@@ -307,6 +328,8 @@ struct VkrEditorDepot {
   char dialog_host[VKR_DEPOT_DISCOVERY_TEXT];
   char dialog_address[VKR_NET_ADDRESS_TEXT];
   uint8_t dialog_key[32];
+  /* The repository of that service to clone; zero for its default. */
+  uint8_t dialog_repository[VKR_DEPOT_REPOSITORY_ID_SIZE];
   char dialog_destination[DEPOT_PATH];
   /* The Clone makes a sparse working copy. */
   bool8_t dialog_sparse;
@@ -341,6 +364,43 @@ static bool8_t depot_key_parse(const char *hex, uint8_t out[32]) {
   }
   MemCopy(out, id.bytes, sizeof(id.bytes));
   return true_v;
+}
+
+/* A repository ID in hexadecimal; empty or NULL is the service's default,
+   zero. */
+static bool8_t
+depot_repository_parse(const char *hex,
+                       uint8_t out[VKR_DEPOT_REPOSITORY_ID_SIZE]) {
+  MemZero(out, VKR_DEPOT_REPOSITORY_ID_SIZE);
+  if (!hex || !hex[0]) {
+    return true_v;
+  }
+  if (string_length(hex) != VKR_DEPOT_REPOSITORY_ID_SIZE * 2u) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < VKR_DEPOT_REPOSITORY_ID_SIZE * 2u; ++i) {
+    const char c = hex[i];
+    const int32_t digit = c >= '0' && c <= '9'   ? c - '0'
+                          : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                          : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                                 : -1;
+    if (digit < 0) {
+      return false_v;
+    }
+    out[i / 2u] = (uint8_t)(i % 2u ? (out[i / 2u] | digit) : digit << 4);
+  }
+  return true_v;
+}
+
+static void
+depot_repository_hex(const uint8_t id[VKR_DEPOT_REPOSITORY_ID_SIZE],
+                     char out[VKR_DEPOT_REPOSITORY_ID_SIZE * 2u + 1u]) {
+  static const char digits[] = "0123456789abcdef";
+  for (uint32_t i = 0u; i < VKR_DEPOT_REPOSITORY_ID_SIZE; ++i) {
+    out[i * 2u] = digits[id[i] >> 4];
+    out[i * 2u + 1u] = digits[id[i] & 15u];
+  }
+  out[VKR_DEPOT_REPOSITORY_ID_SIZE * 2u] = '\0';
 }
 
 static bool8_t depot_key_zero(const uint8_t key[32]) {
@@ -704,6 +764,7 @@ static VkrDepotConnection *depot_job_connect(DepotWorker *worker,
       .store = store,
       .timeout_ms = 8000u,
       .progress = &job->progress,
+      .repository = job->repository,
   };
   return vkr_depot_connect(&worker->allocator, &config, &job->connect,
                            job->error, sizeof(job->error));
@@ -1311,6 +1372,12 @@ static void depot_job_status(DepotWorker *worker) {
     log_info("Source control: %s: %s", job->remote, job->error);
     job->error[0] = '\0';
   }
+  /* The machine's service answers discovery on loopback at once when it
+     runs. */
+  job->machine_read =
+      job->machine && vkr_depot_service_status(job->machine, 300u);
+  job->access_count =
+      vkr_depot_access_list(ws->store.root, job->access, DEPOT_ACCESS_MAX);
 }
 
 /* Switches the working copy to another branch, keeping no local change a
@@ -1383,6 +1450,7 @@ static void depot_job_clone(DepotWorker *worker) {
   const VkrDepotCloneConfig config = {
       .address = job->address,
       .server_key = job->server_key,
+      .repository = job->repository,
       .directory = job->directory,
       .branch = DEPOT_BRANCH,
       .codec = vkr_depot_zstd_codec(),
@@ -1692,8 +1760,8 @@ static void depot_job_rebuild_old_models(DepotJob *job,
 
 /* Copies the project's live files and every asset they use into the new
    workspace (Bakery's share_project), rebuilds models cooked before texture
-   recipes, makes it a repository and commits it. With `serve`, the store
-   gets a server key, which marks it as this editor's to serve. */
+   recipes, makes it a repository and commits it. With `serve`, the
+   machine's depot service serves it once the step finishes. */
 static void depot_job_init(DepotWorker *worker) {
   DepotJob *job = worker->job;
   Arena *arena = arena_create(MB(1), KB(256));
@@ -1741,18 +1809,60 @@ static void depot_job_init(DepotWorker *worker) {
             vkr_depot_commit_local(ws, job->message, &committed, job->error,
                                    sizeof(job->error));
   vkr_depot_workspace_close(ws);
-  if (job->ok && job->serve) {
-    char store[DEPOT_PATH];
-    VkrNetKeyPair keys;
-    string_format(store, sizeof(store), "%s/" VKR_DEPOT_META_DIR "/store",
-                  job->directory);
-    job->ok = vkr_depot_server_key(store, &keys);
-    vkr_net_random(keys.secret_key, sizeof(keys.secret_key));
-    if (!job->ok) {
-      string_format(job->error, sizeof(job->error), "%s could not be served",
-                    job->directory);
-    }
+}
+
+/* Installs and starts this computer's depot service with the vkr_depot
+   beside the editor: `service install` keeps the settings it finds, so
+   the stores it serves and its outbound-only choice stay. */
+static void depot_job_service(DepotWorker *worker) {
+  DepotJob *job = worker->job;
+  VkrDepotServicePaths paths;
+  char log[DEPOT_PATH];
+  if (!vkr_depot_service_paths(&paths) ||
+      !vkr_bakery_make_directories(paths.folder) ||
+      !vkr_bakery_path_join(log, sizeof(log), paths.folder, "install.log")) {
+    string_format(job->error, sizeof(job->error),
+                  "The depot service's folder could not be made");
+    return;
   }
+  const char *arguments[] = {"service", "install"};
+  const VkrPlatformProcessConfig config = {
+      .executable = vkr_editor_tool_path(VKR_EDITOR_TOOL_DEPOT),
+      .arguments = arguments,
+      .argument_count = ArrayCount(arguments),
+      .stdout_path = log,
+      .stderr_path = log,
+      .timeout_ms = 120000u,
+      .hidden = true_v,
+  };
+  int32_t exit_code = -1;
+  bool8_t timed_out = false_v;
+  job->ok = vkr_platform_process_run(&config, &exit_code, &timed_out) &&
+            !timed_out && exit_code == 0;
+  if (!job->ok) {
+    /* The command's last line says why. */
+    uint8_t *bytes = NULL;
+    uint64_t size = 0u;
+    char reason[DEPOT_TEXT] = {0};
+    if (vkr_bakery_read_file(log, KB(64), &bytes, &size) && size) {
+      uint64_t end = size;
+      while (end && (bytes[end - 1u] == '\n' || bytes[end - 1u] == '\r')) {
+        --end;
+      }
+      uint64_t start = end;
+      while (start && bytes[start - 1u] != '\n') {
+        --start;
+      }
+      const uint64_t length = Min(end - start, (uint64_t)sizeof(reason) - 1u);
+      MemCopy(reason, bytes + start, length);
+      reason[length] = '\0';
+    }
+    vkr_heap_free(bytes);
+    string_format(job->error, sizeof(job->error),
+                  "The depot service did not start%s%s", reason[0] ? ": " : "",
+                  reason);
+  }
+  (void)vkr_bakery_remove_file(log);
 }
 
 static void *depot_worker(void *argument) {
@@ -1773,6 +1883,8 @@ static void *depot_worker(void *argument) {
     depot_job_clone(&worker);
   } else if (job->kind == DEPOT_JOB_INIT) {
     depot_job_init(&worker);
+  } else if (job->kind == DEPOT_JOB_SERVICE) {
+    depot_job_service(&worker);
   } else if (!vkr_depot_workspace_open(worker.workspace, job->directory,
                                        vkr_depot_zstd_codec())) {
     string_format(job->error, sizeof(job->error), "No repository at %s",
@@ -1898,8 +2010,8 @@ depot_remote_entry(const VkrEditorDepot *depot, const char *name) {
 }
 
 /* Fills the inputs every workspace step needs: the remote it exchanges
-   with, or, for a served repository with none, this editor's own server
-   for the cooked side branch. */
+   with, or, for a served repository with none, the machine's service for
+   the cooked side branch. */
 static void depot_job_inputs(VkrEditorDepot *depot, const char *remote) {
   DepotJob *job = depot->job;
   string_format(job->directory, sizeof(job->directory), "%s", depot->workspace);
@@ -1907,13 +2019,16 @@ static void depot_job_inputs(VkrEditorDepot *depot, const char *remote) {
   job->remote[0] = '\0';
   job->address[0] = '\0';
   MemZero(job->server_key, sizeof(job->server_key));
+  MemZero(job->repository, sizeof(job->repository));
   if (entry) {
     string_format(job->remote, sizeof(job->remote), "%s", entry->name);
     string_format(job->address, sizeof(job->address), "%s", entry->address);
     MemCopy(job->server_key, entry->key, 32u);
+    MemCopy(job->repository, entry->repository, sizeof(job->repository));
   } else if (depot->serving && depot->address[0]) {
     string_format(job->address, sizeof(job->address), "%s", depot->address);
     MemCopy(job->server_key, depot->server_key, 32u);
+    MemCopy(job->repository, depot->repository_id, sizeof(job->repository));
   }
 }
 
@@ -1926,52 +2041,147 @@ static void depot_store_root(const char *workspace, char *out,
   string_format(out, capacity, "%s/" VKR_DEPOT_META_DIR "/store", workspace);
 }
 
-static void depot_service_stop(VkrEditorDepot *depot) {
-  if (depot->service) {
-    vkr_depot_service_stop(depot->service);
-    depot->service = NULL;
-  }
-  MemZero(&depot->service_info, sizeof(depot->service_info));
+/* Forgets what the last status check read of the machine's service. */
+static void depot_machine_reset(VkrEditorDepot *depot) {
+  depot->machine_known = false_v;
+  depot->machine_running = false_v;
+  depot->machine_outbound_only = false_v;
+  MemZero(depot->machine_key, sizeof(depot->machine_key));
+  depot->machine_port = 0u;
+  depot->machine_connected = 0u;
   depot->request_count = 0u;
   depot->access_count = 0u;
+  depot->address[0] = '\0';
+  MemZero(depot->server_key, sizeof(depot->server_key));
 }
 
-/* Serves the workspace's store; its own identity is the store's admin. */
-static bool8_t depot_service_start(VkrEditorDepot *depot) {
-  char store[DEPOT_PATH];
-  depot_store_root(depot->workspace, store, sizeof(store));
-  char host[VKR_DEPOT_DISCOVERY_TEXT];
-  vkr_depot_host_name(host, sizeof(host));
-  const VkrDepotServiceConfig config = {
-      .store_root = store,
-      .name = depot->project_name[0] ? depot->project_name : NULL,
-      .host = host,
-      .codec = vkr_depot_zstd_codec(),
-      .owner_admin = true_v,
-  };
-  depot->service =
-      vkr_depot_service_start(depot->allocator, &config, depot->service_error,
-                              sizeof(depot->service_error));
-  if (!depot->service) {
-    log_warn("Source control: the server did not start: %s",
-             depot->service_error);
+/* Reads the machine service's settings: whether it serves `store`. */
+static bool8_t depot_machine_serves(const char *store) {
+  VkrDepotServicePaths paths;
+  VkrDepotServiceSettings *settings =
+      vkr_heap_alloc_zeroed(1u, sizeof(*settings));
+  const bool8_t serves = settings && vkr_depot_service_paths(&paths) &&
+                         vkr_depot_service_settings_load(&paths, settings) &&
+                         vkr_depot_service_find(settings, store) >= 0;
+  vkr_heap_free(settings);
+  return serves;
+}
+
+static bool8_t depot_name_char(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+}
+
+static bool8_t depot_machine_name_taken(const VkrDepotServiceSettings *settings,
+                                        const char *name) {
+  for (uint32_t i = 0u; i < settings->store_count; ++i) {
+    if (string_equals(settings->stores[i].name, name)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* The name discovery lists the project under: the project's name in the
+   letters a store name takes, numbered when another store has it. */
+static void depot_machine_name(const VkrDepotServiceSettings *settings,
+                               const char *project, char *out,
+                               uint32_t capacity) {
+  char base[VKR_DEPOT_BRANCH_NAME - 4u];
+  uint32_t length = 0u;
+  for (const char *c = project; *c && length + 1u < sizeof(base); ++c) {
+    base[length++] = depot_name_char(*c) ? *c : '-';
+  }
+  base[length] = '\0';
+  if (!length) {
+    string_format(base, sizeof(base), "project");
+  } else if (base[0] == '.') {
+    base[0] = '-';
+  }
+  string_format(out, capacity, "%s", base);
+  for (uint32_t n = 2u; n < 100u && depot_machine_name_taken(settings, out);
+       ++n) {
+    string_format(out, capacity, "%s-%u", base, n);
+  }
+}
+
+/* Adds `store` to the stores the machine's service serves, or removes it;
+   a running service follows within a second. */
+static bool8_t depot_machine_set(const char *store, const char *project,
+                                 bool8_t serve, char *error,
+                                 uint32_t capacity) {
+  VkrDepotServicePaths paths;
+  VkrDepotServiceSettings *settings =
+      vkr_heap_alloc_zeroed(1u, sizeof(*settings));
+  if (!settings || !vkr_depot_service_paths(&paths) ||
+      !vkr_depot_service_settings_load(&paths, settings)) {
+    vkr_heap_free(settings);
+    string_format(error, capacity,
+                  "The depot service's settings could not be read");
     return false_v;
   }
-  depot->service_error[0] = '\0';
-  vkr_depot_service_info(depot->service, &depot->service_info);
-  MemCopy(depot->server_key, depot->service_info.server_key, 32u);
-  /* This editor's own steps reach its server over the loopback of the
-     family it bound, never another server that holds the other family's
-     port. */
-  string_format(depot->address, sizeof(depot->address),
-                depot->service_info.address.family == VKR_NET_ADDRESS_IPV6
-                    ? "[::1]:%u"
-                    : "127.0.0.1:%u",
-                (uint32_t)depot->service_info.address.port);
-  log_info("Source control: serving %s on UDP %u%s", depot->project_name,
-           (uint32_t)depot->service_info.address.port,
-           depot->service_info.discoverable ? "" : " (not discoverable)");
-  return true_v;
+  const bool8_t listed = vkr_depot_service_find(settings, store) >= 0;
+  char message[DEPOT_TEXT] = {0};
+  bool8_t ok = true_v;
+  if (serve && !listed) {
+    char name[VKR_DEPOT_BRANCH_NAME];
+    depot_machine_name(settings, project, name, sizeof(name));
+    ok = vkr_depot_service_add(&paths, settings, store, name, message,
+                               sizeof(message));
+  } else if (!serve && listed) {
+    ok = vkr_depot_service_remove(&paths, settings, store, message,
+                                  sizeof(message));
+  }
+  vkr_heap_free(settings);
+  if (!ok) {
+    string_format(error, capacity, "%s", message);
+  } else if (message[0]) {
+    log_info("Source control: depot service: %s", message);
+  }
+  return ok;
+}
+
+/* Takes what a status check read of the machine's service: whether it
+   runs and serves the store, its loopback address for the cooked side
+   branch, and the keys asking for access. */
+static void depot_take_machine(VkrEditorDepot *depot,
+                               const VkrDepotServiceStatus *machine) {
+  char store[DEPOT_PATH];
+  depot_store_root(depot->workspace, store, sizeof(store));
+  depot->machine_known = true_v;
+  depot->machine_running = machine->running;
+  depot->machine_outbound_only = machine->settings.outbound_only;
+  depot->serving = vkr_depot_service_find(&machine->settings, store) >= 0;
+  MemCopy(depot->machine_key,
+          machine->has_key ? machine->key : machine->answer.server_key, 32u);
+  depot->machine_port = machine->running ? machine->answer.address.port : 0u;
+  depot->machine_connected = 0u;
+  for (uint32_t i = 0u; i < machine->known_peer_count; ++i) {
+    depot->machine_connected += machine->known_peers[i].connections ? 1u : 0u;
+  }
+  /* The service publishes every 5 s, so a key just allowed may still be
+     listed; one with a role in the store's access list asks no more. */
+  depot->request_count = 0u;
+  for (uint32_t i = 0u; i < machine->request_count; ++i) {
+    const uint8_t *key = machine->requests[i].key;
+    bool8_t answered = false_v;
+    for (uint32_t d = 0u; d < depot->denied_count; ++d) {
+      answered = answered || MemCompare(depot->denied[d], key, 32u) == 0;
+    }
+    for (uint32_t a = 0u; a < depot->access_count; ++a) {
+      answered = answered || MemCompare(depot->access[a].key, key, 32u) == 0;
+    }
+    if (!answered && depot->request_count < DEPOT_REQUESTS_MAX) {
+      depot->requests[depot->request_count++] = machine->requests[i];
+    }
+  }
+  depot->address[0] = '\0';
+  MemZero(depot->server_key, sizeof(depot->server_key));
+  if (depot->serving && machine->running) {
+    vkr_net_address_format(&machine->answer.address, depot->address,
+                           sizeof(depot->address));
+    MemCopy(depot->server_key, depot->machine_key, 32u);
+  }
 }
 
 // =============================================================================
@@ -2039,8 +2249,7 @@ static void depot_load_remotes(VkrEditorDepot *depot) {
 }
 
 /* Reads the open workspace's depot state when it changed: a working copy
-   is a repository, and one whose store holds a server key is this editor's
-   to serve. */
+   is a repository, which the machine's depot service may serve. */
 static void depot_follow_workspace(VkrEditorDepot *depot, VkrEditorUi *editor) {
   char folder[DEPOT_PATH] = {0};
   const struct VkrEditorProject *project =
@@ -2056,15 +2265,15 @@ static void depot_follow_workspace(VkrEditorDepot *depot, VkrEditorUi *editor) {
     }
     return;
   }
-  depot_service_stop(depot);
+  depot_machine_reset(depot);
   depot_reset_status(depot);
   string_format(depot->workspace, sizeof(depot->workspace), "%s", folder);
   depot->repository = false_v;
   depot->serving = false_v;
+  depot->served_before = false_v;
   depot->remote_count = 0u;
   depot->selected_remote = 0u;
-  depot->address[0] = '\0';
-  MemZero(depot->server_key, sizeof(depot->server_key));
+  MemZero(depot->repository_id, sizeof(depot->repository_id));
   depot->project_id[0] = '\0';
   depot->project_name[0] = '\0';
   depot->init_destination[0] = '\0';
@@ -2093,13 +2302,15 @@ static void depot_follow_workspace(VkrEditorDepot *depot, VkrEditorUi *editor) {
   vkr_depot_workspace_close(ws);
   vkr_heap_free(ws);
   depot_load_remotes(depot);
+  char store[DEPOT_PATH];
   char key_path[DEPOT_PATH];
-  string_format(key_path, sizeof(key_path),
-                "%s/" VKR_DEPOT_META_DIR "/store/server.key", folder);
-  if (vkr_bakery_is_file(key_path)) {
-    depot->serving = true_v;
-    (void)depot_service_start(depot);
-  }
+  depot_store_root(folder, store, sizeof(store));
+  string_format(key_path, sizeof(key_path), "%s/server.key", store);
+  (void)vkr_depot_repository_id(store, depot->repository_id, false_v);
+  depot->serving = depot_machine_serves(store);
+  /* Editors before the machine's service served a store that held a
+     server key; the window offers to share it again. */
+  depot->served_before = !depot->serving && vkr_bakery_is_file(key_path);
   depot_remember_project(depot, folder, depot->project_name, depot->project_id,
                          depot->serving);
   depot->next_status = 0.0;
@@ -2118,7 +2329,12 @@ VkrEditorDepot *vkr_editor_depot_create(VkrAllocator *allocator) {
   MemZero(depot, sizeof(*depot));
   depot->allocator = allocator;
   depot->job = vkr_heap_alloc_zeroed(1u, sizeof(*depot->job));
-  if (!depot->job) {
+  if (depot->job) {
+    depot->job->machine =
+        vkr_heap_alloc_zeroed(1u, sizeof(*depot->job->machine));
+  }
+  if (!depot->job || !depot->job->machine) {
+    vkr_heap_free(depot->job);
     vkr_allocator_free(allocator, depot, sizeof(*depot),
                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
     return NULL;
@@ -2144,7 +2360,6 @@ void vkr_editor_depot_destroy(VkrEditorDepot *depot) {
     vkr_depot_progress_cancel(&depot->job->progress);
     depot_job_join(depot);
   }
-  depot_service_stop(depot);
   if (depot->browser_open) {
     vkr_depot_browser_close(&depot->browser);
   }
@@ -2153,6 +2368,7 @@ void vkr_editor_depot_destroy(VkrEditorDepot *depot) {
     (void)vkr_vfs_set_remote(NULL, NULL, NULL);
     vkr_depot_remote_close(depot->stream);
   }
+  vkr_heap_free(depot->job->machine);
   vkr_heap_free(depot->job);
   vkr_allocator_free(depot->allocator, depot, sizeof(*depot),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
@@ -2230,6 +2446,14 @@ static void depot_take_results(VkrEditorDepot *depot) {
   depot->connect = job->connect;
   depot->connected = job->connect == VKR_DEPOT_CONNECT_OK && job->remote[0];
   depot->status_known = depot->status_known || job->ok;
+  if (job->kind == DEPOT_JOB_STATUS && job->ok) {
+    depot->access_count = Min(job->access_count, DEPOT_ACCESS_MAX);
+    MemCopy(depot->access, job->access,
+            depot->access_count * sizeof(VkrDepotAccessEntry));
+    if (job->machine_read) {
+      depot_take_machine(depot, job->machine);
+    }
+  }
 }
 
 static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
@@ -2342,9 +2566,23 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   case DEPOT_JOB_INIT:
     if (job->ok) {
       depot->init_switch = true_v;
+      char store[DEPOT_PATH];
+      char error[DEPOT_TEXT] = {0};
+      depot_store_root(job->directory, store, sizeof(store));
+      if (job->serve && !depot_machine_set(store, depot->project_name, true_v,
+                                           error, sizeof(error))) {
+        string_format(depot->error, sizeof(depot->error), "%s", error);
+      }
       depot_remember_project(depot, job->directory, depot->project_name,
                              job->project_id, job->serve);
     }
+    break;
+  case DEPOT_JOB_SERVICE:
+    if (job->ok) {
+      vkr_editor_toast(editor, VKR_UI_ICON_CHECK_CIRCLE,
+                       vkr_ui_theme()->success, "The depot service runs");
+    }
+    depot->next_status = now + 1.0;
     break;
   default:
     break;
@@ -2404,25 +2642,6 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
   depot_follow_workspace(depot, editor);
 
   const float64_t now = vkr_platform_get_absolute_time();
-  if (depot->service) {
-    if (now - depot->service_polled > 0.5) {
-      depot->service_polled = now;
-      vkr_depot_service_info(depot->service, &depot->service_info);
-      depot->request_count =
-          Min(vkr_depot_service_requests(depot->service, depot->requests,
-                                         DEPOT_REQUESTS_MAX),
-              DEPOT_REQUESTS_MAX);
-      depot->access_count =
-          Min(vkr_depot_service_access(depot->service, depot->access,
-                                       DEPOT_ACCESS_MAX),
-              DEPOT_ACCESS_MAX);
-    }
-    if (depot->service_info.failed) {
-      string_format(depot->service_error, sizeof(depot->service_error),
-                    "The server's socket failed; sharing stopped");
-      depot_service_stop(depot);
-    }
-  }
 
   if (depot->waiting_kind != DEPOT_JOB_NONE && now >= depot->retry_at &&
       !depot_busy(depot)) {
@@ -2743,40 +2962,55 @@ bool8_t vkr_editor_depot_serve(VkrEditorDepot *depot, bool8_t serve,
     return false_v;
   }
   char store[DEPOT_PATH];
-  char key_path[DEPOT_PATH];
   depot_store_root(depot->workspace, store, sizeof(store));
-  string_format(key_path, sizeof(key_path), "%s/server.key", store);
+  if (!depot_machine_set(store, depot->project_name, serve, error, capacity)) {
+    return false_v;
+  }
+  depot->serving = serve;
+  depot->served_before = false_v;
   if (!serve) {
-    depot_service_stop(depot);
-    depot->serving = false_v;
     depot->address[0] = '\0';
-    /* The key stays out of the store, so the next open serves nothing;
-       computers that cloned keep their copies and can push again once
-       it serves with a new key. */
-    if (vkr_bakery_is_file(key_path) && !vkr_bakery_remove_file(key_path)) {
-      string_format(error, capacity, "The server key could not be removed");
-      return false_v;
-    }
-    return true_v;
+    MemZero(depot->server_key, sizeof(depot->server_key));
   }
-  VkrNetKeyPair keys;
-  if (!vkr_depot_server_key(store, &keys)) {
-    string_format(error, capacity, "The server key could not be made");
+  /* A service that does not run yet starts; the status check after it
+     shows the result. Before the first check, ask it on loopback. */
+  bool8_t running = depot->machine_running;
+  if (serve && !depot->machine_known) {
+    VkrDepotServiceStatus *machine =
+        depot->job->running ? NULL : depot->job->machine;
+    running = !machine ||
+              (vkr_depot_service_status(machine, 300u) && machine->running);
+  }
+  if (serve && !running &&
+      !vkr_editor_depot_start_service(depot, error, capacity)) {
     return false_v;
   }
-  vkr_net_random(keys.secret_key, sizeof(keys.secret_key));
-  depot->serving = true_v;
-  if (!depot->service && !depot_service_start(depot)) {
-    string_format(error, capacity, "%s", depot->service_error);
+  depot->next_status = 0.0;
+  return true_v;
+}
+
+bool8_t vkr_editor_depot_start_service(VkrEditorDepot *depot, char *error,
+                                       uint32_t capacity) {
+  if (!depot) {
     return false_v;
   }
+  depot_preempt_status(depot);
+  if (depot_busy(depot)) {
+    string_format(error, capacity, "Wait for the current step to finish");
+    return false_v;
+  }
+  if (!depot_start(depot, DEPOT_JOB_SERVICE)) {
+    string_format(error, capacity, "The step could not start");
+    return false_v;
+  }
+  depot->error[0] = '\0';
   return true_v;
 }
 
 bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
-                               const char *key_hex, const char *name,
-                               const char *destination, bool8_t sparse,
-                               char *error, uint32_t capacity) {
+                               const char *key_hex, const char *repository_hex,
+                               const char *name, const char *destination,
+                               bool8_t sparse, char *error, uint32_t capacity) {
   if (!depot) {
     return false_v;
   }
@@ -2788,6 +3022,10 @@ bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
   DepotJob *job = depot->job;
   if (!depot_key_parse(key_hex, job->server_key)) {
     string_format(error, capacity, "The server key is 64 hexadecimal digits");
+    return false_v;
+  }
+  if (!depot_repository_parse(repository_hex, job->repository)) {
+    string_format(error, capacity, "A repository ID is 32 hexadecimal digits");
     return false_v;
   }
   string_format(job->address, sizeof(job->address), "%s", address);
@@ -2827,6 +3065,8 @@ bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
   /* The hub shows the step on the server's row, however it started. */
   depot->dialog_open = true_v;
   MemCopy(depot->dialog_key, job->server_key, 32u);
+  MemCopy(depot->dialog_repository, job->repository,
+          sizeof(depot->dialog_repository));
   string_format(depot->dialog_address, sizeof(depot->dialog_address), "%s",
                 address);
   string_format(depot->dialog_destination, sizeof(depot->dialog_destination),
@@ -2839,8 +3079,8 @@ bool8_t vkr_editor_depot_allow(VkrEditorDepot *depot, const char *key_hex,
                                const char *role, char *error,
                                uint32_t capacity) {
   uint8_t key[32];
-  if (!depot || !depot->service) {
-    string_format(error, capacity, "This editor is not sharing a project");
+  if (!depot || !depot->serving) {
+    string_format(error, capacity, "This repository is not shared");
     return false_v;
   }
   if (!depot_key_parse(key_hex, key)) {
@@ -2857,11 +3097,27 @@ bool8_t vkr_editor_depot_allow(VkrEditorDepot *depot, const char *key_hex,
       depot_remember_person(depot, key, depot->requests[i].name);
     }
   }
-  if (!vkr_depot_service_set_role(depot->service, key, value)) {
+  /* The service rereads the store's access list within a second. */
+  char store[DEPOT_PATH];
+  depot_store_root(depot->workspace, store, sizeof(store));
+  if (!vkr_depot_access_set(store, key, value)) {
     string_format(error, capacity, "The access list could not be written");
     return false_v;
   }
-  depot->service_polled = 0.0;
+  if (value == VKR_DEPOT_ROLE_NONE &&
+      depot->denied_count < DEPOT_REQUESTS_MAX) {
+    MemCopy(depot->denied[depot->denied_count++], key, 32u);
+  }
+  for (uint32_t i = 0u; i < depot->request_count; ++i) {
+    if (MemCompare(depot->requests[i].key, key, 32u) == 0) {
+      MemCopy(&depot->requests[i], &depot->requests[i + 1u],
+              (depot->request_count - i - 1u) * sizeof(depot->requests[0]));
+      depot->request_count -= 1u;
+      break;
+    }
+  }
+  depot->access_count =
+      vkr_depot_access_list(store, depot->access, DEPOT_ACCESS_MAX);
   return true_v;
 }
 
@@ -3160,8 +3416,8 @@ static const char *depot_remote_state(const VkrEditorDepot *depot,
 
 static bool8_t depot_found_is_self(const VkrEditorDepot *depot,
                                    const VkrDepotDiscovered *found) {
-  return depot->service && MemCompare(found->server_key,
-                                      depot->service_info.server_key, 32u) == 0;
+  return depot->machine_known &&
+         MemCompare(found->server_key, depot->machine_key, 32u) == 0;
 }
 
 // =============================================================================
@@ -3764,14 +4020,16 @@ static void depot_window_remotes(VkrEditorDepot *depot, VkrEditorUi *editor,
 }
 
 static void depot_window_server(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                VkrUiSystem *ui, float32_t *y,
-                                float32_t width) {
+                                VkrUiSystem *ui, float32_t *y, float32_t width,
+                                bool8_t busy) {
+  const VkrUiTheme *theme = vkr_ui_theme();
   char text[DEPOT_TEXT];
   bool8_t serve = depot->serving;
   VkrUiWidgetConfig toggle = depot_widget(12, *y, width - 24, 22);
   toggle.tooltip = string8_lit(
-      "Other computers on your network can clone this repository and push "
-      "to it while this editor runs");
+      "This computer's depot service serves the repository, so other "
+      "computers on your network can clone it and push to it, also while "
+      "the editor is closed");
   (void)vkr_ui_checkbox(ui, string8_lit("serve"),
                         string8_lit("Let others fetch and push"), &serve,
                         &toggle);
@@ -3783,37 +4041,55 @@ static void depot_window_server(VkrEditorDepot *depot, VkrEditorUi *editor,
   }
   *y += 28;
   if (!depot->serving) {
+    if (depot->served_before) {
+      *y += depot_paragraph(
+          ui, "server.before",
+          "An older editor served this repository while it ran. Turn this "
+          "on to serve it from this computer's depot service.",
+          24, *y, width - 36);
+      *y += 4;
+    }
+    return;
+  }
+  if (!depot->machine_known) {
+    depot_caption(ui, "server.checking",
+                  "Checking this computer's depot "
+                  "service",
+                  24, *y, width - 36);
+    *y += 26;
+    return;
+  }
+  if (!depot->machine_running) {
+    depot_label(ui, "server.stopped",
+                "This computer's depot service is not running", 24, *y,
+                width - 160, theme->warning);
+    if (depot_button(editor, ui, "server.start", "Start", width - 112, *y - 4,
+                     100, false_v, busy)) {
+      char error[DEPOT_TEXT] = {0};
+      if (!vkr_editor_depot_start_service(depot, error, sizeof(error))) {
+        string_format(depot->error, sizeof(depot->error), "%s", error);
+      }
+    }
+    *y += 30;
     return;
   }
   char host[VKR_DEPOT_DISCOVERY_TEXT];
+  char print[16];
   vkr_depot_host_name(host, sizeof(host));
-  if (depot->service) {
-    char print[16];
-    depot_fingerprint(depot->service_info.server_key, print);
-    string_format(text, sizeof(text),
-                  "Served by this editor on %s, UDP %u  \xc2\xb7  key %s  "
-                  "\xc2\xb7  %u connected",
-                  host, (uint32_t)depot->service_info.address.port, print,
-                  depot->service_info.peers);
-    depot_caption(ui, "server.peers", text, 24, *y, width - 36);
-    *y += 22;
-    if (!depot->service_info.discoverable) {
-      string_format(text, sizeof(text),
-                    "Not listed on the network: another server uses its "
-                    "port. Others enter %s to find it.",
-                    host);
-      *y += depot_paragraph(ui, "server.hidden", text, 24, *y, width - 36);
-    }
-  } else {
-    depot_label(ui, "server.error",
-                depot->service_error[0] ? depot->service_error
-                                        : "The server is not running",
-                24, *y, width - 160, vkr_ui_theme()->warning);
-    if (depot_button(editor, ui, "server.retry", "Start", width - 112, *y - 4,
-                     100, false_v, false_v)) {
-      (void)depot_service_start(depot);
-    }
-    *y += 28;
+  depot_fingerprint(depot->machine_key, print);
+  string_format(text, sizeof(text),
+                "Served by this computer's depot service on %s, UDP %u  "
+                "\xc2\xb7  key %s  \xc2\xb7  %u connected",
+                host, (uint32_t)depot->machine_port, print,
+                depot->machine_connected);
+  *y += depot_paragraph(ui, "server.peers", text, 24, *y, width - 36);
+  if (depot->machine_outbound_only) {
+    *y += depot_paragraph(
+        ui, "server.outbound",
+        "This computer takes no connections from others. Its service "
+        "fetches and pushes through the remotes that have an interval, and "
+        "others reach it only while it is connected to them.",
+        24, *y, width - 36);
   }
   *y += 4;
 }
@@ -3958,7 +4234,7 @@ void vkr_editor_depot_window_build(VkrEditorUi *editor,
     depot_commit_rows(ui, "incoming", "To pull", depot->incoming,
                       depot->incoming_count, depot->behind, &y, width);
     depot_window_remotes(depot, editor, ui, &y, width, busy);
-    depot_window_server(depot, editor, ui, &y, width);
+    depot_window_server(depot, editor, ui, &y, width, busy);
     depot_window_requests(depot, editor, ui, &y, width);
     if (depot->serving) {
       depot_window_access(depot, editor, ui, &y, width);
@@ -4155,6 +4431,75 @@ static void depot_row_title(VkrUiSystem *ui, const char *text, VkrUiIcon icon,
   vkr_ui_label(ui, string8_lit("title"), depot_string(text), &c);
 }
 
+static float32_t depot_hub_dialog(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                  VkrUiSystem *ui, float32_t x, float32_t y,
+                                  float32_t width);
+
+/* One repository a service on the network serves, with Clone; returns its
+   height. */
+static float32_t depot_hub_found(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                 VkrUiSystem *ui,
+                                 const VkrDepotDiscovered *found,
+                                 const char *name, const uint8_t *repository,
+                                 float32_t x, float32_t y, float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t top = y;
+  char text[DEPOT_TEXT];
+  char address[VKR_NET_ADDRESS_TEXT];
+  vkr_net_address_format(&found->address, address, sizeof(address));
+  depot_card(ui, "card", x, y, width, 52);
+  depot_row_title(ui, name, VKR_UI_ICON_CLOUD, x + 12, y + 6, width - 150);
+  char print[16];
+  depot_fingerprint(found->server_key, print);
+  string_format(
+      text, sizeof(text), "Served by %s  \xc2\xb7  %s  \xc2\xb7  key %s%s",
+      found->host, address, print,
+      depot_key_known(depot, found->server_key) ? "  \xc2\xb7  used before"
+                                                : "");
+  depot_caption(ui, "host", text, x + 36, y + 28, width - 170);
+  /* An answer with the name of a server used before but another key:
+     discovery is not authenticated, so say it is not that computer. */
+  for (uint32_t k = 0u; k < depot->known_count; ++k) {
+    if (string_equals(depot->known[k].name, found->name) &&
+        !depot_key_known(depot, found->server_key)) {
+      VkrUiWidgetConfig warning = depot_widget(x + 36, y + 46, width - 170, 18);
+      warning.style.font_size_pt = theme->font_caption;
+      warning.style.text_color = theme->warning;
+      vkr_ui_label(ui, string8_lit("impostor"),
+                   string8_lit("Not the computer you cloned this project "
+                               "from before"),
+                   &warning);
+      y += 16;
+      break;
+    }
+  }
+  const bool8_t chosen =
+      depot->dialog_open &&
+      MemCompare(depot->dialog_key, found->server_key, 32u) == 0 &&
+      MemCompare(depot->dialog_repository, repository,
+                 sizeof(depot->dialog_repository)) == 0;
+  if (!chosen && depot_button(editor, ui, "get", "Clone", x + width - 112,
+                              y + 13, 100, true_v, depot_busy(depot))) {
+    depot->dialog_open = true_v;
+    depot->error[0] = '\0';
+    string_format(depot->dialog_name, sizeof(depot->dialog_name), "%s", name);
+    string_format(depot->dialog_host, sizeof(depot->dialog_host), "%s",
+                  found->host);
+    string_format(depot->dialog_address, sizeof(depot->dialog_address), "%s",
+                  address);
+    MemCopy(depot->dialog_key, found->server_key, 32u);
+    MemCopy(depot->dialog_repository, repository,
+            sizeof(depot->dialog_repository));
+    depot_default_destination(name, depot->dialog_destination,
+                              sizeof(depot->dialog_destination));
+  }
+  y += 60;
+  if (chosen) {
+    y += depot_hub_dialog(depot, editor, ui, x + 24, y, width - 24) + 8;
+  }
+  return y - top;
+}
+
 /* The expanded row of the server the user chose to get. */
 static float32_t depot_hub_dialog(VkrEditorDepot *depot, VkrEditorUi *editor,
                                   VkrUiSystem *ui, float32_t x, float32_t y,
@@ -4181,10 +4526,12 @@ static float32_t depot_hub_dialog(VkrEditorDepot *depot, VkrEditorUi *editor,
                           &depot->dialog_sparse, &sparse);
     y += 28;
     char key[VKR_DEPOT_ID_HEX];
+    char repository[VKR_DEPOT_REPOSITORY_ID_SIZE * 2u + 1u];
     depot_key_hex(depot->dialog_key, key);
+    depot_repository_hex(depot->dialog_repository, repository);
     if (depot_button(editor, ui, "get.go", "Clone", x + 12, y, 140, true_v,
                      depot_busy(depot)) &&
-        !vkr_editor_depot_clone(depot, depot->dialog_address, key,
+        !vkr_editor_depot_clone(depot, depot->dialog_address, key, repository,
                                 depot->dialog_name, depot->dialog_destination,
                                 depot->dialog_sparse, error, sizeof(error))) {
       string_format(depot->error, sizeof(depot->error), "%s", error);
@@ -4289,66 +4636,27 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
                 VKR_UI_ICON_CLOUD, x, y, width);
   y += 30;
   uint32_t shown = 0u;
+  /* A service of version 2 lists each repository it serves; one of
+     version 1 serves one, its default. */
+  static const uint8_t default_repository[VKR_DEPOT_REPOSITORY_ID_SIZE] = {0};
   for (uint32_t i = 0u; depot->browser_open && i < depot->browser.found_count;
        ++i) {
     const VkrDepotDiscovered *found = &depot->browser.found[i];
     if (depot_found_is_self(depot, found)) {
       continue;
     }
-    ++shown;
-    (void)vkr_ui_push_id_u64(ui, 2000u + i);
-    char address[VKR_NET_ADDRESS_TEXT];
-    vkr_net_address_format(&found->address, address, sizeof(address));
-    depot_card(ui, "card", x, y, width, 52);
-    depot_row_title(ui, found->name, VKR_UI_ICON_CLOUD, x + 12, y + 6,
-                    width - 150);
-    char print[16];
-    depot_fingerprint(found->server_key, print);
-    string_format(
-        text, sizeof(text), "Served by %s  \xc2\xb7  %s  \xc2\xb7  key %s%s",
-        found->host, address, print,
-        depot_key_known(depot, found->server_key) ? "  \xc2\xb7  used before"
-                                                  : "");
-    depot_caption(ui, "host", text, x + 36, y + 28, width - 170);
-    /* An answer with the name of a server used before but another key:
-       discovery is not authenticated, so say it is not that computer. */
-    for (uint32_t k = 0u; k < depot->known_count; ++k) {
-      if (string_equals(depot->known[k].name, found->name) &&
-          !depot_key_known(depot, found->server_key)) {
-        VkrUiWidgetConfig warning =
-            depot_widget(x + 36, y + 46, width - 170, 18);
-        warning.style.font_size_pt = theme->font_caption;
-        warning.style.text_color = theme->warning;
-        vkr_ui_label(ui, string8_lit("impostor"),
-                     string8_lit("Not the computer you cloned this project "
-                                 "from before"),
-                     &warning);
-        y += 16;
-        break;
-      }
+    const uint32_t rows = Max(found->repository_count, 1u);
+    for (uint32_t r = 0u; r < rows; ++r) {
+      const VkrDepotDiscoveredRepository *listed =
+          found->repository_count ? &found->repositories[r] : NULL;
+      const char *name = listed ? listed->name : found->name;
+      const uint8_t *repository = listed ? listed->id : default_repository;
+      ++shown;
+      (void)vkr_ui_push_id_u64(ui, 2000u + i * 64u + r);
+      y += depot_hub_found(depot, editor, ui, found, name, repository, x, y,
+                           width);
+      (void)vkr_ui_pop_id(ui);
     }
-    const bool8_t chosen =
-        depot->dialog_open &&
-        MemCompare(depot->dialog_key, found->server_key, 32u) == 0;
-    if (!chosen && depot_button(editor, ui, "get", "Clone", x + width - 112,
-                                y + 13, 100, true_v, depot_busy(depot))) {
-      depot->dialog_open = true_v;
-      depot->error[0] = '\0';
-      string_format(depot->dialog_name, sizeof(depot->dialog_name), "%s",
-                    found->name);
-      string_format(depot->dialog_host, sizeof(depot->dialog_host), "%s",
-                    found->host);
-      string_format(depot->dialog_address, sizeof(depot->dialog_address), "%s",
-                    address);
-      MemCopy(depot->dialog_key, found->server_key, 32u);
-      depot_default_destination(found->name, depot->dialog_destination,
-                                sizeof(depot->dialog_destination));
-    }
-    y += 60;
-    if (chosen) {
-      y += depot_hub_dialog(depot, editor, ui, x + 24, y, width - 24) + 8;
-    }
-    (void)vkr_ui_pop_id(ui);
   }
   /* A Clone started by address, whose server discovery has not heard. */
   bool8_t dialog_listed = false_v;
@@ -4735,16 +5043,19 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
   vkr_bakery_json_set(arena, result, "textures", textures);
   vkr_bakery_json_set(arena, result, "error",
                       vkr_bakery_json_cstr(arena, depot->error));
-  if (depot->service) {
+  if (depot->serving) {
     VkrBakeryJson *server = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, server, "known",
+                        vkr_bakery_json_bool(arena, depot->machine_known));
+    vkr_bakery_json_set(arena, server, "running",
+                        vkr_bakery_json_bool(arena, depot->machine_running));
+    vkr_bakery_json_set(arena, server, "port",
+                        vkr_bakery_json_int(arena, depot->machine_port));
     vkr_bakery_json_set(
-        arena, server, "port",
-        vkr_bakery_json_int(arena, depot->service_info.address.port));
-    vkr_bakery_json_set(
-        arena, server, "discoverable",
-        vkr_bakery_json_bool(arena, depot->service_info.discoverable));
+        arena, server, "outbound_only",
+        vkr_bakery_json_bool(arena, depot->machine_outbound_only));
     vkr_bakery_json_set(arena, server, "peers",
-                        vkr_bakery_json_int(arena, depot->service_info.peers));
+                        vkr_bakery_json_int(arena, depot->machine_connected));
     VkrBakeryJson *requests = vkr_bakery_json_array(arena);
     for (uint32_t i = 0u; i < depot->request_count; ++i) {
       VkrBakeryJson *row = vkr_bakery_json_object(arena);
@@ -4786,6 +5097,18 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
     vkr_bakery_json_set(
         arena, row, "self",
         vkr_bakery_json_bool(arena, depot_found_is_self(depot, entry)));
+    VkrBakeryJson *repositories = vkr_bakery_json_array(arena);
+    for (uint32_t r = 0u; r < entry->repository_count; ++r) {
+      VkrBakeryJson *listed = vkr_bakery_json_object(arena);
+      char id[VKR_DEPOT_REPOSITORY_ID_SIZE * 2u + 1u];
+      depot_repository_hex(entry->repositories[r].id, id);
+      vkr_bakery_json_set(arena, listed, "id", vkr_bakery_json_cstr(arena, id));
+      vkr_bakery_json_set(
+          arena, listed, "name",
+          vkr_bakery_json_cstr(arena, entry->repositories[r].name));
+      vkr_bakery_json_append(repositories, listed);
+    }
+    vkr_bakery_json_set(arena, row, "repositories", repositories);
     vkr_bakery_json_append(found, row);
   }
   vkr_bakery_json_set(arena, result, "found", found);

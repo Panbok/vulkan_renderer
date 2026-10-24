@@ -17,6 +17,7 @@ vkr_global const char *const vkr_editor_built_tools[VKR_EDITOR_TOOL_COUNT] = {
     [VKR_EDITOR_TOOL_BAKERY] = VKR_EDITOR_BAKERY_PATH,
     [VKR_EDITOR_TOOL_HARNESS] = VKR_EDITOR_HARNESS_PATH,
     [VKR_EDITOR_TOOL_ASSET_PREVIEW] = VKR_EDITOR_ASSET_PREVIEW_PATH,
+    [VKR_EDITOR_TOOL_DEPOT] = VKR_EDITOR_DEPOT_PATH,
 };
 
 vkr_internal const char *vkr_editor_install_file_name(const char *path) {

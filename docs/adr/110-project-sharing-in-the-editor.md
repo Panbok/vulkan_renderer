@@ -14,11 +14,12 @@ merges, syncs with remotes, serves a repository to the local network,
 approves access and clones repositories other computers serve, with no
 command line and no settings to type. It replaced Share, Get, Submit and Get
 latest on 2026-10-24 (the depot model is
-[ADR-133](133-depot-repositories-remotes-and-merge.md)). A repository is
-served by the editor that has it open; serving through the per-machine
-`vkr_depot service` instead, the Windows build of the editor part, a run
-between two computers and the macOS Local Network prompt for the editor are
-unverified.
+[ADR-133](133-depot-repositories-remotes-and-merge.md)). This computer's
+depot service ([ADR-134](134-per-machine-depot-service.md)) serves the
+repositories the user shares, also while the editor is closed; the editor
+adds them to it, starts it and shows its state. The Windows build of the
+editor part, a run between two computers and the macOS Local Network prompt
+for the editor are unverified.
 
 ## Context
 
@@ -40,13 +41,15 @@ Owner decisions:
   ([ADR-077](077-asset-build-system.md#decision)).
 - **2026-10-24:** a model shaped like git replaces sharing: every project a
   repository, local commits, remotes, merge; the server becomes a service per
-  machine ([proposal](../proposals/depot-git-model.md#owner-decisions-2026-10-24)).
+  machine that the editor shows and never hosts
+  ([proposal](../proposals/depot-git-model.md#owner-decisions-2026-10-24)).
 
 ## Decision
 
 [editor_depot.c](../../editor/src/editor_depot.c) owns source control. One
 worker thread runs one step at a time (status, commit, push, pull, sync,
-fetch, clone, make repository, switch); the server runs on its own thread
+fetch, clone, make repository, switch, start the service); the machine's
+depot service serves repositories in a process of its own
 ([vkr_depot_service.h](../../tools/depot/vkr_depot_service.h)). The UI
 thread reads finished results and progress counters only.
 
@@ -60,35 +63,49 @@ thread reads finished results and progress counters only.
   rebuilds each model `needs_rebuild` lists, removes the builds that
   replaced, makes the folder a working copy, commits `Created <name>` and
   reopens the editor there (`vkr_editor_projects_open_workspace`).
-- A store holding `server.key` is served by this editor while the repository
-  is open: **Let others fetch and push** writes the key and starts the
-  server, and clearing it removes the key. Each repository the editor made
-  or cloned is listed in `<user data>/VKR/depot.json` for the project hub.
+- **Let others fetch and push** adds the repository's store to the stores
+  the machine's service serves (`vkr_depot_service_add`, under the
+  project's name in the letters a store name takes), and clearing it
+  removes the store; a running service follows within a second. When the
+  service does not run, the editor installs and starts it with the
+  `vkr_depot` beside it (`vkr_depot service install`, which keeps the
+  service's settings), also from a Start button. A store that still holds
+  the `server.key` of an editor that served it itself is not served until
+  the user turns this on. Each repository the editor made or cloned is
+  listed in `<user data>/VKR/depot.json` for the project hub.
 - New materials, graphs and themes in a repository are written to its own
   `assets/`, so the project carries them (ADR-077).
 
-### Server and access
+### Service and access
 
-- The service binds `[::]:7320` or the next free port, skipping a port
-  another socket holds for IPv4, answers discovery on UDP 7319 when that
-  port is free with the project's name and the computer's name, and uses
-  memory of its own (8 MB, growing to 1 GB). The editor reaches its own
-  server over the loopback of the family it bound.
-- The store's owner is the editor's identity. A computer the server does
-  not know is refused at the handshake and recorded with the name it sent
-  (`user@computer`); the top bar shows `N asking`, and a card offers Allow,
-  Fetch only and Deny, with the first eight digits of the asking key; the
-  waiting computer shows its own, so two people can tell a real request from
-  an impostor that sends the same name. The waiting computer retries every
-  3 s and continues on its own once allowed. Names of allowed computers are
-  kept for the access list.
+- Each status step reads the machine's service on the worker thread
+  (`vkr_depot_service_status`, waiting up to 300 ms for its loopback
+  discovery answer) and the store's access list. The window shows whether
+  the service runs, its computer name, port, key and connected peers, and,
+  for an outbound-only computer, that others reach it only while it is
+  connected to them. The editor reaches the service over its loopback
+  address, selecting the repository by its ID, for the cooked side branch.
+- The store's owner is the user's identity (`vkr_depot_service_add` makes
+  it the admin). A computer the service does not know is refused at the
+  handshake and recorded with the name it sent (`user@computer`); the
+  service publishes the requests in `service.status`, the top bar shows `N
+  asking`, and a card offers Allow, Fetch only and Deny, with the first
+  eight digits of the asking key; the waiting computer shows its own, so
+  two people can tell a real request from an impostor that sends the same
+  name. Allow and Fetch only write the store's access list, which the
+  service rereads within a second; Deny hides the request until the editor
+  restarts. The waiting computer retries every 3 s and continues on its own
+  once allowed. Names of allowed computers are kept for the access list.
 - The identity key lives in the user data folder, not the cache
   (`vkr_depot_identity_path`).
 
 ### Cloning
 
 - The project hub lists the repositories on this computer (Open) and those
-  found on the network (Clone): a broadcast every 2 s plus a direct probe of
+  found on the network (Clone), one row per repository a service lists in
+  its version 2 answer; Clone selects that repository and the remote
+  `origin` keeps its ID (ADR-133). Discovery is a broadcast every 2 s plus a
+  direct probe of
   every server used before, since some endpoint security drops answers to
   broadcasts but not to direct probes. A field takes a computer name or
   address for a server discovery misses.
@@ -114,7 +131,8 @@ Scripts are native code. A project copied from another computer does not
 build or run its scripts until its user chooses Run scripts (a card, the
 Source Control window or `depot.trust`); a pull, switch or merge that
 changes a `Scripts/` folder holds them again until the user trusts the
-change. A repository this editor serves trusts its scripts. Built libraries never travel: the
+change. A repository this computer shared when the editor first listed it
+trusts its scripts. Built libraries never travel: the
 workspace's `.vkrdepotignore` names `.vkreditor/scripts/`, and checkout
 writes no ignored path (ADR-105).
 
@@ -161,15 +179,17 @@ writes no ignored path (ADR-105).
 
 - `depot.status`, `depot.init`, `depot.commit`, `depot.push`, `depot.pull`,
   `depot.sync`, `depot.fetch`, `depot.switch`, `depot.remote`,
-  `depot.serve`, `depot.clone`, `depot.allow`, `depot.find`, `depot.trust`
+  `depot.serve`, `depot.service`, `depot.clone` (with `repository`, an ID
+  from `depot.status` `found`), `depot.allow`, `depot.find`, `depot.trust`
   and `depot.cancel` are in the agent table
   ([editor_ops.c](../../editor/src/editor_ops.c)) and need no scene; the
   launcher serves the agent channel and source control too.
 - On macOS the `vkr_editor` and `vkr_depot` executables carry an Info.plist
   with `NSLocalNetworkUsageDescription` in `__TEXT,__info_plist`
   ([vkr_info_plist.cmake](../../cmake/vkr_info_plist.cmake)), so the Local
-  Network prompt names the program and says why. Windows Defender Firewall
-  asks once when the editor first serves.
+  Network prompt names the program and says why; the service runs from an
+  app bundle of its own (ADR-134). On Windows, `service install` asks once
+  (UAC) for the firewall rule.
 
 ## Consequences
 
@@ -178,12 +198,13 @@ writes no ignored path (ADR-105).
   bases on its depot.
 - A repository lives outside the git repository. Editing the original after
   Make repository does not reach the repository.
-- A repository served by the editor is reachable only while that editor
-  runs. A computer whose endpoint security drops unsolicited inbound traffic
-  cannot serve; it adds another computer's repository as a remote and
-  pushes and pulls.
-- Two editors on one computer: the second serves on the next port without
-  discovery while the first holds UDP 7319.
+- A shared repository is reachable while its user is logged in, whether an
+  editor runs or not. A computer whose endpoint security drops unsolicited
+  inbound traffic cannot serve; it adds another computer's repository as a
+  remote and pushes and pulls, and a remote with an interval lets its
+  service do that on its own.
+- Every editor on one computer shares through the one service; a status
+  step costs one loopback discovery round.
 
 ## Alternatives considered
 
@@ -192,8 +213,10 @@ writes no ignored path (ADR-105).
   repository.
 - **A hidden staging copy:** each submit copies and diffs the closure, and
   pulls land where nobody edits.
-- **A background login item for the server:** always reachable, but a
-  second process and its own Local Network approval; declined 2026-10-11.
+- **The editor serving the repository while it runs** (2026-10-11 to
+  2026-10-24): no second process, but a repository was reachable only
+  while its editor ran, and a second editor served on the next port
+  without discovery.
 - **Open access on the network, or a pairing code:** declined for approval
   on the server.
 - **Shipping cooked textures, or rebuilding a model on each receiver:**
@@ -255,14 +278,28 @@ in and commit copied them into the repository's `assets/` and committed
 them. A pull that changed one scene reported "1 of 1 pulled scenes open"
 through Bakery's `pull_report`.
 
+The editor on the machine's service, Mac M1, Release, 2026-10-24: a
+headless editor under a separate `HOME` on that FPS Arena repository,
+against a `vkr_depot service run` of that `HOME` on 127.0.0.1:7362 with
+discovery on UDP 7363 (so the installed service stayed untouched).
+`depot.serve` added the store to `service.conf` and the service logged
+"serving … as arena" within a second; `depot.status` then showed it
+running on port 7362 with its key. A second identity's `vkr_depot clone
+--repository` was refused 13 times while `depot.status` listed its request
+with its name; `depot.allow` gave it write access and its next try cloned
+147 files. A third identity allowed as read-only stayed out of the request
+list in the next two status steps. `depot.serve` with `serve` false removed
+the store and the service stopped serving it. A window capture showed the
+serving line with host, port, key and connected peers.
+
 Unverified: the editor part on Windows; Source Control between two
-computers; serving through `vkr_depot service`; the Local Network prompt for
-the editor binary; scene reload after a pull with the scene open; Make
-repository end to end on a complete project.
+computers; Start (`service install`) from the editor; the Local Network
+prompt for the editor binary and for the service's bundle; scene reload
+after a pull with the scene open; Make repository end to end on a complete
+project.
 
 ## Revisit when
 
-Source Control between two computers fails where loopback passes, users need
-a repository reachable while its editor is closed (the per-machine service),
-or a scene's conflicts need settling per entity in the window (Use
+Source Control between two computers fails where loopback passes, or a
+scene's conflicts need settling per entity in the window (Use
 theirs and Keep mine settle a unit whole).

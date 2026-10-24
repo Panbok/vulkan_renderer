@@ -207,3 +207,9 @@ bool8_t vkr_depot_server_key(const char *store_root, VkrNetKeyPair *out_keys);
 /* Gives `key` a role in the store's access list (NONE removes it). */
 bool8_t vkr_depot_access_set(const char *store_root, const uint8_t key[32],
                              VkrDepotRole role);
+
+/* The store's access list as its file holds it; returns how many entries
+   it stored, zero when the file is missing or unreadable. A running
+   server serves the same list within a second of a change. */
+uint32_t vkr_depot_access_list(const char *store_root, VkrDepotAccessEntry *out,
+                               uint32_t capacity);

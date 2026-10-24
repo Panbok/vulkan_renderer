@@ -529,6 +529,15 @@ bool8_t vkr_depot_service_paths(VkrDepotServicePaths *out) {
 #if defined(_WIN32)
   return vkr_bakery_path_join(out->binary, sizeof(out->binary), out->bin_folder,
                               "vkr_depot.exe");
+#elif defined(__APPLE__)
+  /* macOS lets a launchd agent reach the local network only from an app
+     bundle the user allowed under Local Network; a bare binary is refused
+     without a prompt. */
+  return vkr_bakery_path_join(out->bin_folder, sizeof(out->bin_folder),
+                              out->folder,
+                              VKR_DEPOT_SERVICE_BUNDLE "/Contents/MacOS") &&
+         vkr_bakery_path_join(out->binary, sizeof(out->binary), out->bin_folder,
+                              "vkr_depot");
 #else
   return vkr_bakery_path_join(out->binary, sizeof(out->binary), out->bin_folder,
                               "vkr_depot");
@@ -715,6 +724,11 @@ bool8_t vkr_depot_service_add(const VkrDepotServicePaths *paths,
     snprintf(message, capacity, "could not give %s a repository ID", absolute);
     return false_v;
   }
+  /* The user's own clones and editor reach it through the service too. */
+  if (!service_grant_owner(absolute)) {
+    snprintf(message, capacity, "could not make you the admin of %s", absolute);
+    return false_v;
+  }
   VkrDepotServiceStore *store = &settings->stores[settings->store_count++];
   snprintf(store->root, sizeof(store->root), "%s", absolute);
   snprintf(store->name, sizeof(store->name), "%s", label);
@@ -726,6 +740,20 @@ bool8_t vkr_depot_service_add(const VkrDepotServicePaths *paths,
   snprintf(message, capacity, "serving %s as %s%s", absolute, label,
            adopted ? "; the service adopts its server key" : "");
   return true_v;
+}
+
+int32_t vkr_depot_service_find(const VkrDepotServiceSettings *settings,
+                               const char *store_root) {
+  char absolute[VKR_DEPOT_PATH_CAPACITY];
+  if (!vkr_bakery_path_absolute(store_root, absolute, sizeof(absolute))) {
+    return -1;
+  }
+  for (uint32_t i = 0u; i < settings->store_count; ++i) {
+    if (service_same_path(settings->stores[i].root, absolute)) {
+      return (int32_t)i;
+    }
+  }
+  return -1;
 }
 
 bool8_t vkr_depot_service_remove(const VkrDepotServicePaths *paths,
@@ -823,7 +851,8 @@ bool8_t vkr_depot_service_publish(VkrDepotService *service, const char *path) {
   VkrDepotServiceInfo *info = malloc(sizeof(VkrDepotServiceInfo));
   const uint64_t capacity =
       4096u + (uint64_t)VKR_DEPOT_SERVER_REPOSITORIES_MAX * SERVICE_LINE_MAX +
-      (uint64_t)VKR_DEPOT_SERVER_PEERS_MAX * 256u;
+      (uint64_t)(VKR_DEPOT_SERVER_PEERS_MAX + VKR_DEPOT_REQUESTS_MAX) * 256u;
+  VkrDepotAccessRequest requests[VKR_DEPOT_REQUESTS_MAX];
   char *text = malloc((size_t)capacity);
   if (!info || !text) {
     free(info);
@@ -852,6 +881,17 @@ bool8_t vkr_depot_service_publish(VkrDepotService *service, const char *path) {
                         peer->name);
   }
   free(info);
+  /* Keys refused for want of a role, for the owner to answer. */
+  const uint32_t request_count =
+      vkr_depot_service_requests(service, requests, ArrayCount(requests));
+  for (uint32_t i = 0u; i < request_count; ++i) {
+    char key[65];
+    service_hex(requests[i].key, 32u, key);
+    written += snprintf(text + written, (size_t)capacity - (size_t)written,
+                        "request %s %u %llu %s\n", key, requests[i].tries,
+                        (unsigned long long)(requests[i].time_us / 1000000u),
+                        requests[i].name);
+  }
   const uint64_t size = (uint64_t)written;
   bool8_t ok = true_v;
   if (!service->published || service->published_size != size ||
@@ -880,10 +920,34 @@ bool8_t vkr_depot_service_publish(VkrDepotService *service, const char *path) {
   return ok;
 }
 
+/* `request KEY TRIES SECONDS NAME` of `service.status`. */
+static void service_status_request(VkrDepotServiceStatus *status,
+                                   char *cursor) {
+  if (status->request_count == VKR_DEPOT_REQUESTS_MAX) {
+    return;
+  }
+  VkrDepotAccessRequest *request = &status->requests[status->request_count];
+  MemZero(request, sizeof(*request));
+  if (strlen(cursor) < 64u || !service_unhex(cursor, request->key, 32u)) {
+    return;
+  }
+  cursor += 64u;
+  char *end = NULL;
+  request->tries = (uint32_t)strtoul(cursor, &end, 10);
+  request->time_us = strtoull(end, &end, 10) * 1000000u;
+  snprintf(request->name, sizeof(request->name), "%s",
+           *end == ' ' ? end + 1 : end);
+  status->request_count += 1u;
+}
+
 static void service_status_line(void *context, char *line) {
   VkrDepotServiceStatus *status = context;
   if (strncmp(line, "time ", 5u) == 0) {
     status->published_us = strtoull(line + 5u, NULL, 10);
+    return;
+  }
+  if (strncmp(line, "request ", 8u) == 0) {
+    service_status_request(status, line + 8u);
     return;
   }
   if (strncmp(line, "peer ", 5u) != 0 ||

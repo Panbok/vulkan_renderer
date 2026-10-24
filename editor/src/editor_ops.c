@@ -17047,6 +17047,7 @@ typedef enum OpsDepotAction {
   OPS_DEPOT_SWITCH,
   OPS_DEPOT_REMOTE,
   OPS_DEPOT_SERVE,
+  OPS_DEPOT_SERVICE,
   OPS_DEPOT_CLONE,
   OPS_DEPOT_ALLOW,
   OPS_DEPOT_FIND,
@@ -17070,6 +17071,7 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
       [OPS_DEPOT_SWITCH] = {"branch", "", "", ""},
       [OPS_DEPOT_REMOTE] = {"name", "address", "key", "action"},
       [OPS_DEPOT_SERVE] = {"", "", "", ""},
+      [OPS_DEPOT_SERVICE] = {"", "", "", ""},
       [OPS_DEPOT_CLONE] = {"address", "key", "name", "destination"},
       [OPS_DEPOT_ALLOW] = {"key", "role", "", ""},
       [OPS_DEPOT_FIND] = {"address", "", "", ""},
@@ -17130,11 +17132,20 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
     ok = vkr_editor_depot_serve(depot, ops_arg_bool(args, "serve", true_v),
                                 error, sizeof(error));
     break;
-  case OPS_DEPOT_CLONE:
-    ok = vkr_editor_depot_clone(depot, first, second, third, fourth,
+  case OPS_DEPOT_SERVICE:
+    ok = vkr_editor_depot_start_service(depot, error, sizeof(error));
+    break;
+  case OPS_DEPOT_CLONE: {
+    char repository[64] = {0};
+    if (!ops_arg_string(ctx, args, "repository", repository,
+                        sizeof(repository))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    ok = vkr_editor_depot_clone(depot, first, second, repository, third, fourth,
                                 ops_arg_bool(args, "sparse", false_v), error,
                                 sizeof(error));
     break;
+  }
   case OPS_DEPOT_ALLOW:
     ok = vkr_editor_depot_allow(depot, first, second[0] ? second : "write",
                                 error, sizeof(error));
@@ -17168,6 +17179,7 @@ OPS_DEPOT_RUNNER(ops_run_depot_fetch, OPS_DEPOT_FETCH)
 OPS_DEPOT_RUNNER(ops_run_depot_switch, OPS_DEPOT_SWITCH)
 OPS_DEPOT_RUNNER(ops_run_depot_remote, OPS_DEPOT_REMOTE)
 OPS_DEPOT_RUNNER(ops_run_depot_serve, OPS_DEPOT_SERVE)
+OPS_DEPOT_RUNNER(ops_run_depot_service, OPS_DEPOT_SERVICE)
 OPS_DEPOT_RUNNER(ops_run_depot_clone, OPS_DEPOT_CLONE)
 OPS_DEPOT_RUNNER(ops_run_depot_allow, OPS_DEPOT_ALLOW)
 OPS_DEPOT_RUNNER(ops_run_depot_find, OPS_DEPOT_FIND)
@@ -21077,23 +21089,32 @@ static const OpsDef s_ops[] = {
      "\"action\":{\"type\":\"string\"}},\"required\":[\"name\"]}",
      ops_run_depot_remote, NULL, OPS_NO_SCENE},
     {"depot.serve",
-     "Starts ('serve' true, the default) or stops serving the open "
-     "repository to the network while this editor runs.",
+     "Adds ('serve' true, the default) the open repository to the stores "
+     "this computer's depot service serves to the network, starting the "
+     "service when it does not run, or removes it.",
      "{\"type\":\"object\",\"properties\":{\"serve\":{\"type\":"
      "\"boolean\"}}}",
      ops_run_depot_serve, NULL, OPS_NO_SCENE},
+    {"depot.service",
+     "Installs and starts this computer's depot service, which serves "
+     "shared repositories apart from the editor.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_service, NULL,
+     OPS_NO_SCENE},
     {"depot.clone",
-     "Clones the repository another computer serves at 'address' with "
-     "service 'key' into 'destination' (default <projects folder>/<name>) and "
-     "opens it; 'sparse' fetches each file when something first reads it.",
+     "Clones the repository 'repository' (an ID from depot.status found, "
+     "default the service's first) another computer's service at 'address' "
+     "with 'key' serves into 'destination' (default <projects "
+     "folder>/<name>) and opens it; 'sparse' fetches each file when "
+     "something first reads it.",
      "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
-     "\"string\"},\"key\":{\"type\":\"string\"},\"name\":{\"type\":"
+     "\"string\"},\"key\":{\"type\":\"string\"},\"repository\":{"
+     "\"type\":\"string\"},\"name\":{\"type\":"
      "\"string\"},\"destination\":{\"type\":\"string\"},\"sparse\":{"
      "\"type\":\"boolean\"}},\"required\":[\"address\",\"key\"]}",
      ops_run_depot_clone, NULL, OPS_NO_SCENE},
     {"depot.allow",
-     "Gives the identity 'key' a 'role' (write, read or none) on the "
-     "repository this editor serves.",
+     "Gives the identity 'key' a 'role' (write, read or none) on the open "
+     "repository, which this computer's depot service serves.",
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":"
      "\"string\"},\"role\":{\"type\":\"string\"}},\"required\":"
      "[\"key\"]}",

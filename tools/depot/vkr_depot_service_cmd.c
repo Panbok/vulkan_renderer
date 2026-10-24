@@ -30,7 +30,8 @@
  * (vkr_depot_service.h, "The machine's service"); this file adds what only
  * the command does:
  *
- * `install` copies the binary into the folder's `bin/` and registers it to
+ * `install` copies the binary into the folder's `bin/` (an app bundle on
+ * macOS, which Local Network privacy needs) and registers it to
  * start at logon: a Task Scheduler task that restarts on failure on
  * Windows, which also asks once (UAC) for a Defender rule bound to the
  * installed binary, and a launchd agent kept alive on macOS. The task and
@@ -99,7 +100,46 @@ static bool8_t service_exec(const char *executable,
          !timed_out && exit_code == 0;
 }
 
-/* Copies this executable into the service's `bin/`. */
+#if defined(__APPLE__)
+/* Gives the bundle around the copied binary its Info.plist and an ad hoc
+   signature. macOS keeps the user's Local Network answer for the signing
+   identifier, so a later install keeps it. */
+static bool8_t service_bundle_seal(const VkrDepotServicePaths *paths) {
+  char bundle[VKR_DEPOT_PATH_CAPACITY];
+  char info[VKR_DEPOT_PATH_CAPACITY];
+  if (!vkr_bakery_path_join(bundle, sizeof(bundle), paths->folder,
+                            VKR_DEPOT_SERVICE_BUNDLE) ||
+      !vkr_bakery_path_join(info, sizeof(info), bundle,
+                            "Contents/Info.plist")) {
+    return false_v;
+  }
+  static const char text[] =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+      "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+      "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+      "<plist version=\"1.0\"><dict>\n"
+      "  <key>CFBundleIdentifier</key><string>" SERVICE_LAUNCHD_LABEL
+      "</string>\n"
+      "  <key>CFBundleName</key><string>VKR Depot</string>\n"
+      "  <key>CFBundleExecutable</key><string>vkr_depot</string>\n"
+      "  <key>CFBundlePackageType</key><string>APPL</string>\n"
+      "  <key>CFBundleVersion</key><string>1</string>\n"
+      "  <key>LSUIElement</key><true/>\n"
+      "  <key>NSLocalNetworkUsageDescription</key><string>Serves this "
+      "machine's VKR depot repositories and syncs them with the depot "
+      "services of other machines in this network.</string>\n"
+      "</dict></plist>\n";
+  if (!vkr_bakery_write_file_atomic(info, text, sizeof(text) - 1u)) {
+    return false_v;
+  }
+  const char *sign[] = {
+      "-s", "-", "--force", "--identifier", SERVICE_LAUNCHD_LABEL, bundle};
+  return service_exec("/usr/bin/codesign", sign, ArrayCount(sign), NULL);
+}
+#endif
+
+/* Copies this executable into the service's `bin/` (inside its app bundle
+   on macOS). */
 static bool8_t service_copy_binary(const VkrDepotServicePaths *paths) {
   char self[VKR_DEPOT_PATH_CAPACITY];
   if (!vkr_bakery_executable_path(self, sizeof(self)) ||
@@ -122,10 +162,12 @@ static bool8_t service_copy_binary(const VkrDepotServicePaths *paths) {
   }
   const bool8_t ok = vkr_bakery_write_file_atomic(paths->binary, bytes, size);
   free(bytes);
-#if !defined(_WIN32)
-  return ok && chmod(paths->binary, 0755) == 0;
-#else
+#if defined(_WIN32)
   return ok;
+#elif defined(__APPLE__)
+  return ok && chmod(paths->binary, 0755) == 0 && service_bundle_seal(paths);
+#else
+  return ok && chmod(paths->binary, 0755) == 0;
 #endif
 }
 

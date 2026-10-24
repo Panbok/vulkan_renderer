@@ -107,6 +107,10 @@ bool8_t vkr_depot_find_ref(VkrDepotClient *client, const char *branch,
 typedef struct VkrDepotCloneConfig {
   const char *address;
   const uint8_t *server_key;
+  /* The repository to clone among those the service serves,
+     VKR_DEPOT_REPOSITORY_ID_SIZE bytes; NULL or zero for its default. The
+     remote origin keeps it. */
+  const uint8_t *repository;
   /* The working copy's root, made when missing. */
   const char *directory;
   /* NULL for "main". */

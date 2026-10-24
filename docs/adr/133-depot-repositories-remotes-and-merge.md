@@ -62,6 +62,11 @@ in the state alone (`workspace_adopt_repository` in
 - `refs/<branch>` is set to the base when missing;
 - `tracking/origin/<branch>` is set to the base when missing.
 
+A clone (`vkr_depot_clone`) can select one of the repositories a service
+serves (`VkrDepotCloneConfig.repository`, `clone --repository ID`); the
+remote `origin` keeps that ID, so every later connection selects the same
+repository.
+
 Checkout and the older push (`vkr_depot_fetch_checkout`,
 `vkr_depot_commit_push`) move `refs/<branch>`, and origin's tracking branch
 when origin is the working copy's server.
@@ -152,7 +157,11 @@ when origin is the working copy's server.
 `vkr_depot commit` is local; `commit --push` commits and pushes, or puts the
 branch, base and index back when the push is refused. `push`, `fetch`,
 `pull`, `merge`, `remote`, `branch`, `switch` and `sync` follow git's verbs
-([vkr_depot_main.c](../../tools/depot/vkr_depot_main.c)).
+([vkr_depot_main.c](../../tools/depot/vkr_depot_main.c)). `remote add ...
+--interval SECONDS` sets the interval the machine's service syncs a served
+store with that remote at ([ADR-134](134-per-machine-depot-service.md)),
+and keeps the repository ID a remote of that name, address and key had
+learned.
 
 ## Consequences
 

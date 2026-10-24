@@ -12,9 +12,12 @@ background service per machine serves the repositories, and the editor has a
 Source Control window instead of Share and Get. The repository model, the
 merge and the editor's Source Control are implemented and recorded in
 [ADR-133](../adr/133-depot-repositories-remotes-and-merge.md) and
-[ADR-110](../adr/110-project-sharing-in-the-editor.md). This proposal keeps
-the work that remains: the editor on the per-machine service, the rest of
-self-contained projects (D4) and the evidence between the two machines.
+[ADR-110](../adr/110-project-sharing-in-the-editor.md), and the editor
+shares repositories through the per-machine service
+([ADR-134](../adr/134-per-machine-depot-service.md)). This proposal keeps
+the work that remains: a remote's outbound-only state, the Mac's mirror
+giving way to the service, the state file cleanup and the evidence between
+the two machines.
 
 ## Owner decisions, 2026-10-24
 
@@ -56,22 +59,18 @@ night. Each failure points at a part of the model:
 | --- | --- | --- |
 | D1, repositories and remotes | Implemented: local commits, remotes, tracking branches, fetch, fast-forward push and pull, branches, adoption of older working copies, HELLO from every client | ADR-133 |
 | D2, merge per file | Implemented: merge base, per-file decisions, units sent whole to Bakery's `merge_scene_unit` and `merge_project_document`, merge commits, pull that merges, `.vkrdepotmerge` written by `share_project` | ADR-133 |
-| D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service runs on the Mac as a launchd agent, follows `service.conf` while it runs, publishes its peers, has `add`, `remove` and `status` in the library, and syncs each served store with remotes that have an interval. The editor still serves a repository itself | ADR-110, ADR-133, ADR-134, below |
+| D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service runs on the Mac as a launchd agent, follows `service.conf` while it runs, publishes its peers, has `add`, `remove` and `status` in the library, and syncs each served store with remotes that have an interval. The editor's Let others fetch and push adds the repository to the service, starts it, and answers the access requests the service publishes; the hub clones each repository a service lists. Left: below | ADR-110, ADR-133, ADR-134, below |
 | D4, self-contained projects | Implemented: a repository reads only its own assets and engine content (git `e18d74d2`), Bakery's `untracked_dependencies` lists and adopts the rest (`c4f425d5`), the editor's Commit stops on them with Copy in and commit, and Commit first prunes what no live file names with Bakery's `collect_garbage` (ADR-110). Projects live in their own folders under the projects folder, set in the Hub (ADR-069). New projects start from `assets/templates`. The Windows desktop's repository workspace moved to `D:\VKR Projects\Testbed`. Left: the evidence between the two machines | ADR-069, ADR-110, below |
 | D5, merge per entity | Implemented: overlays both sides changed merge per entity in Bakery's `merge_scene_unit`, checked on Windows with two clones on loopback. Left: the evidence between the two machines on Bistro | ADR-133, below |
 
 ## Remaining work
 
-### The editor on the per-machine service (D3)
+### The rest of the service and editor (D3)
 
-- The editor stops hosting the server: Let others fetch and push registers
-  the repository with `vkr_depot_service_add`, starts the service when it
-  does not run, and shows its state (running, address, served repositories,
-  known peers) from `vkr_depot_service_status` (ADR-134). Access requests
-  and the access list come from the service.
-- The service syncs remotes that have an `interval` (ADR-134); the launchd
-  `com.vkr.depot.mirror` job on the Mac gives way to it once a remote of the
-  served store has one.
+- The Mac's served store has the remote `windows` with a 30 s interval
+  (`remote add ... --interval`); the launchd `com.vkr.depot.mirror` job
+  gives way once the owner allows VKR Depot under Local Network and the
+  service's sync reaches windows-d.
 - A remote's state shows "reachable only when it connects" for a peer the
   service recorded as outbound only.
 - The working copy's state drops the server it syncs with once nothing
@@ -92,8 +91,8 @@ Implemented (ADR-133). Left: the evidence below between the two machines.
 
 ## Phases
 
-1. **D3 editor on the service:** the service's settings and status are in
-   the library (ADR-134).
+1. **D3, the rest:** the mirror's retirement on the Mac, the outbound-only
+   state of a remote, the state file cleanup.
 2. **D4, the rest of self-contained projects.** Projects move outside the git
    repository under a configurable root, Testbed becomes a template,
    untracked dependencies show in status, the asset fallback ends for

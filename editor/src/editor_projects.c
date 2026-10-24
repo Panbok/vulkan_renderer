@@ -3557,7 +3557,7 @@ static void project_publish_imported_assets(VkrEditorProjects *projects,
   VkrJsonReader reader = vkr_json_reader_from_string(result);
   uint32_t imported = 0u;
   uint32_t id_capacity = 0u;
-  char (*ids)[37] = NULL;
+  char(*ids)[37] = NULL;
   if (vkr_json_find_array(&reader, "imported_assets")) {
     /* Each quoted identity and its separator take at least 38 bytes. */
     id_capacity = (uint32_t)Min(reader.length / 38u + 1u, 65536u);

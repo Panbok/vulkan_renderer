@@ -91,9 +91,10 @@ vkr_embed_info_plist(vkr_editor com.vkr.editor "VKR Editor"
 
 # Every cooker, table, shader compile, project job, scene bake and material
 # preview runs through vkr_bakery; the harness and preview tool remain
-# separate renderer programs.
+# separate renderer programs. vkr_depot installs this computer's depot
+# service, which serves the repositories Source Control shares (ADR-134).
 add_dependencies(vkr_editor vkr_bakery vkr_harness vkr_asset_preview
-    vkr_script_sdk vkr_mcp)
+    vkr_script_sdk vkr_mcp vkr_depot)
 # Build packages the open project with the player template beside
 # vkr_player (docs/proposals/project-packaging.md).
 if(TARGET vkr_player)
@@ -102,6 +103,7 @@ endif()
 target_compile_definitions(vkr_editor PRIVATE
     VKR_EDITOR_ASSET_PREVIEW_PATH="$<TARGET_FILE:vkr_asset_preview>"
     VKR_EDITOR_BAKERY_PATH="$<TARGET_FILE:vkr_bakery>"
+    VKR_EDITOR_DEPOT_PATH="$<TARGET_FILE:vkr_depot>"
     VKR_EDITOR_HARNESS_PATH="$<TARGET_FILE:vkr_harness>"
     # Linked script modules, such as the FPS sample, keep their sources in
     # this tree (ADR-079).
