@@ -10,8 +10,12 @@ in `base`, `mine` and `theirs` folders, as the depot's merge writes them
 - entities one side appended stay, after the base entities, and the
   overlay the other side changed is the one `scene.json` names;
 - both sides appending entities keeps both appends in order;
-- a record both sides changed apart, and an overlay both sides changed,
-  are conflicts that write nothing;
+- a record both sides changed apart, and an overlay both sides changed
+  that does not merge per entity, are conflicts that write nothing;
+- overlays both sides changed merge per entity: entities each side moved
+  or appended (numbered anew through `document_ids`), created entities
+  renumbered on a clash with their parents kept, and two fields of one
+  entity; one field both sides changed apart is the only conflict;
 - `project.json` keeps the scenes each side added and reports a name both
   sides changed apart as a conflict;
 - `pull_report` re-cooks a scene stripped of its cooked textures, as a
@@ -63,6 +67,92 @@ def merge(root, bakery, name, operation, anchor, sides):
                    result_path, bakery=bakery)
     assert job.execute() == 0, job.output
     return jobs.load_json(result_path), folder / 'output'
+
+
+def override(index, name, position, node=-1):
+    """An override record as the editor writes one: every field the entity
+    has, with `scene_entity` indexing the file's `document_ids`."""
+    return {'scene_entity': index, 'gltf_node': node,
+            'source_fingerprint': '0000000000000000', 'parent': None, 'fields': 3,
+            'name': name, 'position': position, 'rotation': [0.0, 0.0, 0.0, 1.0],
+            'scale': [1.0, 1.0, 1.0], 'components': {}}
+
+
+def created(id_, uuid_, name, parent=None):
+    return {'id': id_, 'uuid': uuid_, 'parent': parent, 'fields': 3, 'name': name,
+            'position': [0.0, 0.0, 0.0], 'rotation': [0.0, 0.0, 0.0, 1.0],
+            'scale': [1.0, 1.0, 1.0], 'components': {'tags': {'tags': name}}}
+
+
+def overlay(ids, overrides, created_records):
+    return {'version': 5, 'document_ids': ids, 'overrides': overrides,
+            'created': created_records, 'scene_settings': {'inherit_world': True}}
+
+
+def check_overlay_per_entity(root, bakery, anchor, records):
+    """Overlays both sides changed merge per entity: an entity each side
+    moved, entities each side appended and edited (whose indices differ
+    between the sides' files), created entities with the same id on both
+    sides and a parent naming one, and two fields of one entity; one field
+    both sides changed apart is the only conflict."""
+    base_entities = [entity('e1', 'floor'), entity('e2', 'wall')]
+    floor = [0.0, 0.0, 0.0]
+    base_overlay = overlay(['e1', 'e2'], [override(0, 'floor', floor)],
+                           [created(1, 'c1', 'box')])
+
+    def side(entities, edits, name):
+        def writer(folder):
+            write_side(folder, entities, records, edits, name, 'i0')
+        return writer
+
+    mine_entities = base_entities + [entity('e3', 'lamp')]
+    theirs_entities = base_entities + [entity('e4', 'door')]
+    mine_overlay = overlay(
+        ['e1', 'e2', 'e3'],
+        [override(0, 'floor', [1.0, 0.0, 0.0]), override(2, 'lamp', [0.0, 3.0, 0.0])],
+        [created(1, 'c1', 'box'), created(2, 'c2', 'lid', {'created': 1})])
+    theirs_overlay = overlay(
+        ['e1', 'e2', 'e4'],
+        [override(0, 'Floor', floor), override(1, 'wall', [0.0, 0.0, 2.0]),
+         override(2, 'door', [5.0, 0.0, 0.0])],
+        [created(1, 'c1', 'crate'), created(2, 'c3', 'barrel')])
+    result, output = merge(root, bakery, 'per-entity', 'merge_scene_unit', anchor,
+                           {'base': side(base_entities, base_overlay, 'o0'),
+                            'mine': side(mine_entities, mine_overlay, 'o1'),
+                            'theirs': side(theirs_entities, theirs_overlay, 'o2')})
+    assert result['merged'] is True, result
+    scene = json.loads((output / 'scene.json').read_text())
+    assert [e['id'] for e in scene['entities']] == ['e1', 'e2', 'e3', 'e4']
+    assert scene['edit_overlay'] not in ('edits/o1.json', 'edits/o2.json'), scene
+    merged = json.loads((output / scene['edit_overlay']).read_text())
+    ids = merged['document_ids']
+    by_entity = {ids[r['scene_entity']]: r for r in merged['overrides']}
+    assert set(by_entity) == {'e1', 'e2', 'e3', 'e4'}, merged['overrides']
+    # e1: mine moved it, theirs renamed it; both reach the record.
+    assert by_entity['e1']['position'] == [1.0, 0.0, 0.0] and \
+        by_entity['e1']['name'] == 'Floor', by_entity['e1']
+    assert by_entity['e2']['position'] == [0.0, 0.0, 2.0]
+    assert by_entity['e3']['name'] == 'lamp' and by_entity['e4']['name'] == 'door'
+    # Theirs' index 2 named e4; in the merged file e4 has its own index.
+    assert ids.index('e4') == 3 and ids.index('e3') == 2, ids
+    by_uuid = {r['uuid']: r for r in merged['created']}
+    assert by_uuid['c1']['name'] == 'crate' and by_uuid['c1']['id'] == 1, by_uuid
+    assert by_uuid['c2']['id'] == 2 and by_uuid['c2']['parent'] == {'created': 1}
+    # c3 had id 2 on theirs, which mine's c2 holds: it gets a new one.
+    assert by_uuid['c3']['id'] == 3, by_uuid
+    assert merged['scene_settings'] == {'inherit_world': True}
+    assert list(merged)[:3] == ['version', 'document_ids', 'overrides'], list(merged)
+
+    apart = overlay(['e1', 'e2'], [override(0, 'floor', [9.0, 0.0, 0.0])],
+                    [created(1, 'c1', 'box')])
+    result, output = merge(root, bakery, 'per-entity-apart', 'merge_scene_unit', anchor,
+                           {'base': side(base_entities, base_overlay, 'o0'),
+                            'mine': side(base_entities, mine_overlay, 'o1'),
+                            'theirs': side(base_entities, apart, 'o3')})
+    assert result['merged'] is False, result
+    conflicts = [(c['path'], c['id']) for c in result['conflicts']]
+    assert conflicts == [('edits floor (e1/-1)', 'position')], result
+    assert not any(output.iterdir()), 'A conflict writes nothing'
 
 
 def main():
@@ -134,6 +224,8 @@ def main():
         reasons = {(c['path'], c['id']) for c in result['conflicts']}
         assert ('inventory', 'r2') in reasons and ('edits', None) in reasons, result
         assert not any(output.iterdir()), 'A conflict writes nothing'
+
+        check_overlay_per_entity(root, args.bakery, anchor, base_records)
 
         scenes = [{'id': 's1', 'name': 'One', 'path': 'scenes/s1/scene.json'}]
 

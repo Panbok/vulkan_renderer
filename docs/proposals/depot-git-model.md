@@ -14,8 +14,7 @@ merge and the editor's Source Control are implemented and recorded in
 [ADR-133](../adr/133-depot-repositories-remotes-and-merge.md) and
 [ADR-110](../adr/110-project-sharing-in-the-editor.md). This proposal keeps
 the work that remains: the editor on the per-machine service, the rest of
-self-contained projects (D4), merge per entity (D5) and the evidence
-between the two machines.
+self-contained projects (D4) and the evidence between the two machines.
 
 ## Owner decisions, 2026-10-24
 
@@ -56,10 +55,10 @@ night. Each failure points at a part of the model:
 | Phase | State | Record |
 | --- | --- | --- |
 | D1, repositories and remotes | Implemented: local commits, remotes, tracking branches, fetch, fast-forward push and pull, branches, adoption of older working copies, HELLO from every client | ADR-133 |
-| D2, merge per file | Implemented: merge base, per-file decisions, units sent whole to Bakery's `merge_scene_unit` and `merge_project_document`, merge commits, pull that merges, `.vkrdepotmerge` written by `share_project`. A scene overlay both sides edited stays a conflict until D5 | ADR-133 |
+| D2, merge per file | Implemented: merge base, per-file decisions, units sent whole to Bakery's `merge_scene_unit` and `merge_project_document`, merge commits, pull that merges, `.vkrdepotmerge` written by `share_project` | ADR-133 |
 | D3, service and editor | Editor Source Control implemented, with Bakery's pull report after each pull. The per-machine service runs on the Mac as a launchd agent, follows `service.conf` while it runs, publishes its peers, has `add`, `remove` and `status` in the library, and syncs each served store with remotes that have an interval. The editor still serves a repository itself | ADR-110, ADR-133, ADR-134, below |
 | D4, self-contained projects | Partly implemented: a repository reads only its own assets and engine content (git `e18d74d2`), Bakery's `untracked_dependencies` lists and adopts the rest (`c4f425d5`), the editor's Commit stops on them with Copy in and commit, and Commit first prunes what no live file names with Bakery's `collect_garbage` (ADR-110). Left: projects under a configurable root, Testbed as a template | ADR-110, below |
-| D5, merge per entity | Not started | below |
+| D5, merge per entity | Implemented: overlays both sides changed merge per entity in Bakery's `merge_scene_unit`, checked on Windows with two clones on loopback. Left: the evidence between the two machines on Bistro | ADR-133, below |
 
 ## Remaining work
 
@@ -92,9 +91,7 @@ pruning on commit (see the table). Left:
 
 ### Merge per entity (D5)
 
-Scene edit overlays merge per entity: two machines that move different
-entities of one scene merge with no conflict, and only fields both sides
-changed are conflicts, shown per entity.
+Implemented (ADR-133). Left: the evidence below between the two machines.
 
 ## Phases
 

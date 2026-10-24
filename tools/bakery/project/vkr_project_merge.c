@@ -3,9 +3,10 @@
 #include "platform/vkr_platform.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-/* The depot's merge drivers (docs/proposals/depot-git-model.md, "Merge"):
+/* The depot's merge drivers (ADR-133, "Merge"):
  * `merge_scene_unit` and `merge_project_document` merge one unit of
  * managed project files that both sides of a depot merge changed. The
  * depot writes each side's member files into `base`, `mine` and `theirs`
@@ -22,8 +23,12 @@
  * both changed apart, or one changed while the other removed it, is a
  * conflict. The overlay names scene entities by index, so its entity list
  * may only grow at the end: one side's entities, or both sides' appended
- * entities when each kept the base list as its start. The overlay itself
- * merges whole, and the other fields of `scene.json` merge one by one.
+ * entities when each kept the base list as its start. An overlay only one
+ * side changed is taken whole; when both changed it, it merges per entity
+ * (vkr_merge_overlay): overrides, deletions and created entities by the
+ * entity they name, the fields of an entity both sides changed one by
+ * one, and the scene and collision settings each as one value. The other
+ * fields of `scene.json` merge one by one.
  * `project.json` merges its `scenes` and `assets` by `id` and its other
  * fields one by one. The job reads the request's folders and writes only
  * into `output`. */
@@ -263,6 +268,538 @@ vkr_internal bool8_t vkr_merge_write(VkrProjectJob *job, const char *output,
   return true_v;
 }
 
+// =============================================================================
+// Edit overlay, per entity
+// =============================================================================
+
+/* One side's overlay in the merge's own terms. Every `scene_entity` number
+ * in its records, which indexes that file's `document_ids`, becomes the
+ * entity's ID, and every `{"created": n}` becomes the created entity's
+ * `uuid`, so the records of the three sides compare and the merged file
+ * can number them anew. A record's key names its entity: `<entity>/<node>`
+ * for an override or a deletion, the `uuid` for a created entity. */
+typedef struct VkrMergeOverlay {
+  const VkrBakeryJson *document;
+  const VkrBakeryJson *document_ids;
+  /* Created id, in decimal, to its uuid, and back. */
+  VkrProjectSet created_uuids;
+  VkrProjectSet created_ids;
+  /* The records with references rewritten (created ones without `id`), in
+     file order, and each key to its record. */
+  VkrProjectNodes overrides;
+  VkrProjectNodes created;
+  VkrProjectSet override_keys;
+  VkrProjectSet created_keys;
+} VkrMergeOverlay;
+
+vkr_internal const VkrBakeryJson *vkr_merge_node(const VkrProjectSet *set,
+                                                 const char *key) {
+  return (const VkrBakeryJson *)vkr_project_set_get(set, key);
+}
+
+vkr_internal void vkr_merge_overlay_free(VkrMergeOverlay *side) {
+  vkr_project_set_free(&side->created_uuids);
+  vkr_project_set_free(&side->created_ids);
+  vkr_project_set_free(&side->override_keys);
+  vkr_project_set_free(&side->created_keys);
+}
+
+vkr_internal void vkr_merge_set_text(Arena *arena, VkrBakeryJson *node,
+                                     const char *text) {
+  node->type = VKR_BAKERY_JSON_STRING;
+  node->string = vkr_bakery_json_cstr(arena, text)->string;
+}
+
+/* The key a rewritten record is filed under; NULL for a record without
+   the members that name its entity. */
+vkr_internal const char *vkr_merge_key(VkrProjectJob *job,
+                                       const VkrBakeryJson *record,
+                                       bool8_t created) {
+  if (created) {
+    return vkr_project_json_text(record, "uuid");
+  }
+  const char *entity = vkr_project_json_text(record, "scene_entity");
+  int64_t node = 0;
+  return entity && vkr_bakery_json_get_int(record, "gltf_node", &node)
+             ? vkr_project_printf(job, "%s/%lld", entity, (long long)node)
+             : NULL;
+}
+
+/* Rewrites a record's entity references into IDs, in place. */
+vkr_internal void vkr_merge_canonical(VkrProjectJob *job,
+                                      const VkrMergeOverlay *side,
+                                      VkrBakeryJson *node) {
+  for (VkrBakeryJson *child = node->first; child; child = child->next) {
+    const char *key = node->type == VKR_BAKERY_JSON_OBJECT
+                          ? (const char *)child->key.str
+                          : "";
+    if (child->type == VKR_BAKERY_JSON_INT &&
+        strcmp(key, "scene_entity") == 0) {
+      const VkrBakeryJson *id =
+          side->document_ids && child->integer >= 0
+              ? vkr_bakery_json_at(side->document_ids, (uint32_t)child->integer)
+              : NULL;
+      const char *text = id ? vkr_bakery_json_cstr_value(job->arena, id) : NULL;
+      /* A file without document IDs names entities by their index. */
+      vkr_merge_set_text(
+          job->arena, child,
+          text ? text
+               : vkr_project_printf(job, "#%lld", (long long)child->integer));
+    } else if (child->type == VKR_BAKERY_JSON_INT &&
+               strcmp(key, "created") == 0) {
+      const char *uuid = vkr_project_set_get(
+          &side->created_uuids,
+          vkr_project_printf(job, "%lld", (long long)child->integer));
+      vkr_merge_set_text(job->arena, child,
+                         uuid ? uuid
+                              : vkr_project_printf(job, "#missing-%lld",
+                                                   (long long)child->integer));
+    } else if (child->type == VKR_BAKERY_JSON_OBJECT ||
+               child->type == VKR_BAKERY_JSON_ARRAY) {
+      vkr_merge_canonical(job, side, child);
+    }
+  }
+}
+
+/* A copy of `object` without its member `key`. */
+vkr_internal VkrBakeryJson *
+vkr_merge_without(Arena *arena, const VkrBakeryJson *object, const char *key) {
+  VkrBakeryJson *copy = vkr_bakery_json_object(arena);
+  for (const VkrBakeryJson *field = object->first; field; field = field->next) {
+    if (strcmp((const char *)field->key.str, key) != 0) {
+      vkr_bakery_json_set(arena, copy, (const char *)field->key.str,
+                          vkr_bakery_json_clone(arena, field));
+    }
+  }
+  return copy;
+}
+
+/* Files a rewritten record under its key; false for a record without one
+   or a key the side files twice (the loader keeps such duplicates
+   unapplied, so they do not merge per entity). */
+vkr_internal bool8_t vkr_merge_file(VkrProjectJob *job, VkrProjectSet *keys,
+                                    VkrProjectNodes *records,
+                                    VkrBakeryJson *record, bool8_t created) {
+  const char *key = vkr_merge_key(job, record, created);
+  if (!key || vkr_project_set_has(keys, key)) {
+    return false_v;
+  }
+  if (!vkr_project_set_add(keys, key, (const char *)record) ||
+      !vkr_project_nodes_push(job, records, record)) {
+    return vkr_project_fail(job, "Out of memory");
+  }
+  return true_v;
+}
+
+/* Reads one side's overlay; a NULL `document` reads as one without edits.
+   False, with the job not failed, when the file cannot merge per entity:
+   an older version, a created entity without `uuid`, or a duplicate. */
+vkr_internal bool8_t vkr_merge_overlay_read(VkrProjectJob *job,
+                                            const VkrBakeryJson *document,
+                                            VkrMergeOverlay *side) {
+  Arena *arena = job->arena;
+  side->document = document;
+  if (!document) {
+    return true_v;
+  }
+  int64_t version = 0;
+  if (document->type != VKR_BAKERY_JSON_OBJECT ||
+      !vkr_bakery_json_get_int(document, "version", &version) || version < 4) {
+    return false_v;
+  }
+  side->document_ids = vkr_bakery_json_get(document, "document_ids");
+  const VkrBakeryJson *created = vkr_bakery_json_get(document, "created");
+  for (const VkrBakeryJson *item = created ? created->first : NULL; item;
+       item = item->next) {
+    int64_t id = 0;
+    const char *uuid = vkr_project_json_text(item, "uuid");
+    if (!uuid || !vkr_bakery_json_get_int(item, "id", &id)) {
+      return false_v;
+    }
+    const char *number = vkr_project_printf(job, "%lld", (long long)id);
+    if (!vkr_project_set_add(&side->created_uuids, number, uuid) ||
+        !vkr_project_set_add(&side->created_ids, uuid, number)) {
+      return vkr_project_fail(job, "Out of memory");
+    }
+  }
+  const VkrBakeryJson *overrides = vkr_bakery_json_get(document, "overrides");
+  for (const VkrBakeryJson *item = overrides ? overrides->first : NULL; item;
+       item = item->next) {
+    VkrBakeryJson *record = vkr_bakery_json_clone(arena, item);
+    vkr_merge_canonical(job, side, record);
+    if (!vkr_merge_file(job, &side->override_keys, &side->overrides, record,
+                        false_v)) {
+      return false_v;
+    }
+  }
+  for (const VkrBakeryJson *item = created ? created->first : NULL; item;
+       item = item->next) {
+    VkrBakeryJson *record = vkr_merge_without(arena, item, "id");
+    vkr_merge_canonical(job, side, record);
+    if (!vkr_merge_file(job, &side->created_keys, &side->created, record,
+                        true_v)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* One entity's merged record, NULL when it leaves or conflicts. When both
+   sides changed it, a deletion against a change, or a side without it, is
+   a conflict; otherwise its fields merge one by one and its components by
+   type. A record names every field the entity has, so a field only one
+   side changed from the base takes that side, while an entity the base
+   did not edit conflicts on each field the sides hold apart. */
+vkr_internal VkrBakeryJson *vkr_merge_entity(VkrMerge *merge, const char *key,
+                                             const VkrBakeryJson *base,
+                                             const VkrBakeryJson *mine,
+                                             const VkrBakeryJson *theirs) {
+  VkrProjectJob *job = merge->job;
+  Arena *arena = job->arena;
+  bool8_t conflict = false_v;
+  bool8_t present = false_v;
+  const VkrBakeryJson *chosen =
+      vkr_merge_choose(base, mine, theirs, &conflict, &present);
+  if (!conflict) {
+    return present ? vkr_bakery_json_clone(arena, chosen) : NULL;
+  }
+  const char *name = vkr_project_json_text(mine ? mine : theirs, "name");
+  const char *path = vkr_project_printf(job, "edits %s%s(%s)", name ? name : "",
+                                        name ? " " : "", key);
+  if (!mine || !theirs) {
+    vkr_merge_conflict(merge, path, NULL,
+                       "changed on one side, removed on the other");
+    return NULL;
+  }
+  if (vkr_bakery_json_get(mine, "deleted") ||
+      vkr_bakery_json_get(theirs, "deleted")) {
+    vkr_merge_conflict(merge, path, NULL,
+                       "deleted on one side, changed on the other");
+    return NULL;
+  }
+  static const char *const skip[] = {"components"};
+  VkrBakeryJson *merged =
+      vkr_merge_fields(merge, path, base, mine, theirs, skip, ArrayCount(skip));
+  const VkrBakeryJson *components[3] = {
+      base ? vkr_bakery_json_get(base, "components") : NULL,
+      vkr_bakery_json_get(mine, "components"),
+      vkr_bakery_json_get(theirs, "components")};
+  if (components[1] || components[2]) {
+    vkr_bakery_json_set(
+        arena, merged, "components",
+        vkr_merge_fields(merge, vkr_project_printf(job, "%s components", path),
+                         components[0], components[1], components[2], NULL,
+                         0u));
+  }
+  return merged;
+}
+
+/* Merges one list (`overrides` or `created`) by key: mine's records in
+   their order, then theirs' that mine lacks, and deletions after the rest,
+   as the writer puts them. */
+vkr_internal bool8_t vkr_merge_entity_list(VkrMerge *merge,
+                                           const VkrMergeOverlay sides[3],
+                                           bool8_t created,
+                                           VkrProjectNodes *out) {
+  VkrProjectJob *job = merge->job;
+  VkrProjectNodes deletions = {0};
+  for (uint32_t s = 1u; s <= 2u; ++s) {
+    const VkrProjectNodes *records =
+        created ? &sides[s].created : &sides[s].overrides;
+    for (uint32_t i = 0u; i < records->count; ++i) {
+      const char *key = vkr_merge_key(job, records->items[i], created);
+      const VkrProjectSet *keys[3];
+      for (uint32_t k = 0u; k < 3u; ++k) {
+        keys[k] = created ? &sides[k].created_keys : &sides[k].override_keys;
+      }
+      if (s == 2u && vkr_project_set_has(keys[1], key)) {
+        continue;
+      }
+      VkrBakeryJson *merged = vkr_merge_entity(
+          merge, key, vkr_merge_node(keys[0], key),
+          vkr_merge_node(keys[1], key), vkr_merge_node(keys[2], key));
+      if (!merged) {
+        continue;
+      }
+      VkrProjectNodes *list =
+          vkr_bakery_json_get(merged, "deleted") ? &deletions : out;
+      VKR_PROJECT_TRY(vkr_project_nodes_push(job, list, merged));
+    }
+  }
+  for (uint32_t i = 0u; i < deletions.count; ++i) {
+    VKR_PROJECT_TRY(vkr_project_nodes_push(job, out, deletions.items[i]));
+  }
+  return true_v;
+}
+
+/* The merged file's numbering: the merged scene's entity IDs as
+   `document_ids`, extended by IDs records name that the scene lost, and
+   the created entities' ids. */
+typedef struct VkrMergeNumbers {
+  VkrBakeryJson *document_ids;
+  VkrProjectSet entity_index;
+  VkrProjectSet created_ids;
+} VkrMergeNumbers;
+
+/* Rewrites a merged record's IDs into the merged file's numbers, in place;
+   false for a parent the merge removed. */
+vkr_internal bool8_t vkr_merge_numbered(VkrProjectJob *job,
+                                        VkrMergeNumbers *numbers,
+                                        VkrBakeryJson *node) {
+  for (VkrBakeryJson *child = node->first; child; child = child->next) {
+    const char *key = node->type == VKR_BAKERY_JSON_OBJECT
+                          ? (const char *)child->key.str
+                          : "";
+    const char *text = child->type == VKR_BAKERY_JSON_STRING
+                           ? vkr_bakery_json_cstr_value(job->arena, child)
+                           : NULL;
+    if (text && strcmp(key, "scene_entity") == 0) {
+      int64_t index = 0;
+      if (text[0] == '#') {
+        index = strtoll(text + 1, NULL, 10);
+      } else {
+        const char *known = vkr_project_set_get(&numbers->entity_index, text);
+        if (!known) {
+          /* An entity the merged scene lost keeps a place after its own,
+             as the editor writes a kept record's lost ID. */
+          known = vkr_project_printf(job, "%u", numbers->document_ids->count);
+          vkr_bakery_json_append(numbers->document_ids,
+                                 vkr_bakery_json_cstr(job->arena, text));
+          if (!vkr_project_set_add(&numbers->entity_index, text, known)) {
+            return vkr_project_fail(job, "Out of memory");
+          }
+        }
+        index = strtoll(known, NULL, 10);
+      }
+      child->type = VKR_BAKERY_JSON_INT;
+      child->integer = index;
+    } else if (text && strcmp(key, "created") == 0) {
+      const char *id = vkr_project_set_get(&numbers->created_ids, text);
+      if (!id) {
+        return false_v;
+      }
+      child->type = VKR_BAKERY_JSON_INT;
+      child->integer = strtoll(id, NULL, 10);
+    } else if (child->type == VKR_BAKERY_JSON_OBJECT ||
+               child->type == VKR_BAKERY_JSON_ARRAY) {
+      VKR_PROJECT_TRY(vkr_merge_numbered(job, numbers, child));
+    }
+  }
+  return true_v;
+}
+
+/* Gives each merged created entity an id: its own where no earlier one
+   took it, else one past every id any side used. */
+vkr_internal bool8_t vkr_merge_created_ids(VkrProjectJob *job,
+                                           const VkrMergeOverlay sides[3],
+                                           const VkrProjectNodes *created,
+                                           VkrMergeNumbers *numbers) {
+  int64_t next = 1;
+  for (uint32_t s = 0u; s < 3u; ++s) {
+    const VkrProjectSet *ids = &sides[s].created_ids;
+    for (uint32_t slot = 0u; slot < ids->capacity; ++slot) {
+      if (ids->keys[slot]) {
+        next = Max(next, strtoll(ids->values[slot], NULL, 10) + 1);
+      }
+    }
+  }
+  VkrProjectSet taken = {0};
+  bool8_t ok = true_v;
+  for (uint32_t pass = 0u; pass < 2u && ok; ++pass) {
+    for (uint32_t i = 0u; i < created->count && ok; ++i) {
+      const char *uuid = vkr_project_json_text(created->items[i], "uuid");
+      if (vkr_project_set_has(&numbers->created_ids, uuid)) {
+        continue;
+      }
+      const char *own = vkr_project_set_get(&sides[1].created_ids, uuid);
+      own = own ? own : vkr_project_set_get(&sides[2].created_ids, uuid);
+      const char *id = NULL;
+      if (pass == 0u && own && !vkr_project_set_has(&taken, own)) {
+        id = own;
+      } else if (pass == 1u) {
+        id = vkr_project_printf(job, "%lld", (long long)next++);
+      }
+      if (id) {
+        ok = vkr_project_set_add(&taken, id, uuid) &&
+             vkr_project_set_add(&numbers->created_ids, uuid, id);
+      }
+    }
+  }
+  vkr_project_set_free(&taken);
+  return ok ? true_v : vkr_project_fail(job, "Out of memory");
+}
+
+/* The whole-object members of the overlay merge as one value each. */
+vkr_internal void vkr_merge_overlay_member(VkrMerge *merge,
+                                           const VkrMergeOverlay sides[3],
+                                           const char *key,
+                                           VkrBakeryJson *out) {
+  Arena *arena = merge->job->arena;
+  const VkrBakeryJson *values[3];
+  for (uint32_t s = 0u; s < 3u; ++s) {
+    values[s] =
+        sides[s].document ? vkr_bakery_json_get(sides[s].document, key) : NULL;
+  }
+  bool8_t conflict = false_v;
+  bool8_t present = false_v;
+  const VkrBakeryJson *chosen =
+      vkr_merge_choose(values[0], values[1], values[2], &conflict, &present);
+  if (conflict) {
+    vkr_merge_conflict(merge, "edits", key, "changed on both sides");
+  } else if (present) {
+    vkr_bakery_json_set(arena, out, key, vkr_bakery_json_clone(arena, chosen));
+  }
+}
+
+/* Merges three overlays both sides changed, per entity, for a scene whose
+   merged entities are `entities`. NULL with `*out_whole` when a file does
+   not merge per entity (the unit then conflicts as a whole), or NULL with
+   the conflicts recorded. */
+vkr_internal VkrBakeryJson *
+vkr_merge_overlay(VkrMerge *merge, const VkrBakeryJson *const overlays[3],
+                  const VkrBakeryJson *entities, bool8_t *out_whole) {
+  VkrProjectJob *job = merge->job;
+  Arena *arena = job->arena;
+  *out_whole = false_v;
+  VkrMergeOverlay sides[3] = {0};
+  VkrMergeNumbers numbers = {.document_ids = vkr_bakery_json_array(arena)};
+  VkrProjectNodes overrides = {0};
+  VkrProjectNodes created = {0};
+  VkrBakeryJson *document = NULL;
+  const uint32_t conflicts_before = merge->conflicts->count;
+  for (uint32_t s = 0u; s < 3u && !*out_whole; ++s) {
+    *out_whole = !vkr_merge_overlay_read(job, overlays[s], &sides[s]);
+  }
+  if (*out_whole || job->failed ||
+      !vkr_merge_entity_list(merge, sides, false_v, &overrides) ||
+      !vkr_merge_entity_list(merge, sides, true_v, &created)) {
+    goto cleanup;
+  }
+  /* The merged scene's entity IDs, when every entity has one. */
+  bool8_t ids = entities && entities->count > 0u;
+  for (const VkrBakeryJson *entity = entities ? entities->first : NULL;
+       entity && ids; entity = entity->next) {
+    const char *id = vkr_project_json_text(entity, "id");
+    ids = id && !vkr_project_set_has(&numbers.entity_index, id) &&
+          vkr_project_set_add(
+              &numbers.entity_index, id,
+              vkr_project_printf(job, "%u", numbers.document_ids->count));
+    if (ids) {
+      vkr_bakery_json_append(numbers.document_ids,
+                             vkr_bakery_json_cstr(arena, id));
+    }
+  }
+  if (!ids) {
+    vkr_project_set_free(&numbers.entity_index);
+    numbers.entity_index = (VkrProjectSet){0};
+    numbers.document_ids = vkr_bakery_json_array(arena);
+  }
+  if (!vkr_merge_created_ids(job, sides, &created, &numbers)) {
+    goto cleanup;
+  }
+  VkrBakeryJson *override_list = vkr_bakery_json_array(arena);
+  VkrBakeryJson *created_list = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < overrides.count + created.count; ++i) {
+    const bool8_t is_created = i >= overrides.count;
+    VkrBakeryJson *record =
+        is_created ? created.items[i - overrides.count] : overrides.items[i];
+    const char *key = vkr_merge_key(job, record, is_created);
+    if (!vkr_merge_numbered(job, &numbers, record)) {
+      if (job->failed) {
+        goto cleanup;
+      }
+      vkr_merge_conflict(merge, vkr_project_printf(job, "edits (%s)", key),
+                         "parent", "its parent was removed on the other side");
+      continue;
+    }
+    if (!is_created) {
+      vkr_bakery_json_append(override_list, record);
+      continue;
+    }
+    /* `id` first, as the editor writes it. */
+    VkrBakeryJson *numbered = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(
+        arena, numbered, "id",
+        vkr_bakery_json_int(
+            arena,
+            strtoll(vkr_project_set_get(&numbers.created_ids,
+                                        vkr_project_json_text(record, "uuid")),
+                    NULL, 10)));
+    for (VkrBakeryJson *field = record->first; field; field = field->next) {
+      vkr_bakery_json_set(arena, numbered, (const char *)field->key.str,
+                          vkr_bakery_json_clone(arena, field));
+    }
+    vkr_bakery_json_append(created_list, numbered);
+  }
+  /* A record whose scene entity has no merged ID cannot be numbered. */
+  if (!ids && numbers.document_ids->count > 0u) {
+    *out_whole = true_v;
+    goto cleanup;
+  }
+  if (merge->conflicts->count > conflicts_before) {
+    goto cleanup;
+  }
+  /* The writer's order: `document_ids` before the records it numbers, and
+     the settings last. */
+  document = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, document, "version",
+                      vkr_bakery_json_int(arena, 5));
+  if (numbers.document_ids->count > 0u) {
+    vkr_bakery_json_set(arena, document, "document_ids", numbers.document_ids);
+  }
+  vkr_bakery_json_set(arena, document, "overrides", override_list);
+  bool8_t has_created = created_list->count > 0u;
+  for (uint32_t s = 1u; s <= 2u && !has_created; ++s) {
+    has_created = sides[s].document &&
+                  vkr_bakery_json_get(sides[s].document, "created") != NULL;
+  }
+  if (has_created) {
+    vkr_bakery_json_set(arena, document, "created", created_list);
+  }
+  vkr_merge_overlay_member(merge, sides, "scene_settings", document);
+  vkr_merge_overlay_member(merge, sides, "collision_settings", document);
+  if (merge->conflicts->count > conflicts_before) {
+    document = NULL;
+  }
+cleanup:
+  for (uint32_t s = 0u; s < 3u; ++s) {
+    vkr_merge_overlay_free(&sides[s]);
+  }
+  vkr_project_set_free(&numbers.entity_index);
+  vkr_project_set_free(&numbers.created_ids);
+  return job->failed ? NULL : document;
+}
+
+/* Writes a merged overlay on one line, as the editor writes it, so it
+   stays within the size the editor loads; a larger one is a conflict. */
+vkr_internal bool8_t vkr_merge_write_overlay(VkrMerge *merge,
+                                             const char *output,
+                                             const char *relative,
+                                             const VkrBakeryJson *value,
+                                             VkrBakeryJson *written) {
+  VkrProjectJob *job = merge->job;
+  char path[VKR_PROJECT_PATH];
+  char folder[VKR_PROJECT_PATH];
+  String8 text = {0};
+  VKR_PROJECT_TRY(vkr_project_contained(job, output, relative, false_v, path));
+  if (!vkr_bakery_json_write(job->arena, value, VKR_BAKERY_JSON_COMPACT,
+                             &text)) {
+    return vkr_project_fail(job, "The merged edits could not be written");
+  }
+  if (text.length > VKR_PROJECT_MAX_OVERLAY_BYTES) {
+    vkr_merge_conflict(merge, "edits", NULL,
+                       "the merged edits are larger than the editor loads");
+    return true_v;
+  }
+  vkr_bakery_path_parent(folder, sizeof(folder), path);
+  VKR_PROJECT_TRY(vkr_project_make_dirs(job, folder));
+  if (!vkr_bakery_write_file_atomic(path, text.str, text.length)) {
+    return vkr_project_fail(job, "Cannot write %s", path);
+  }
+  vkr_bakery_json_append(written, vkr_bakery_json_cstr(job->arena, relative));
+  return true_v;
+}
+
 /* The scene unit: `scene.json`, its live inventory and its overlay. */
 vkr_internal bool8_t vkr_merge_scene(VkrMerge *merge, const char *roots[3],
                                      const char *output,
@@ -313,16 +850,26 @@ vkr_internal bool8_t vkr_merge_scene(VkrMerge *merge, const char *roots[3],
   VkrBakeryJson *scene =
       vkr_merge_fields(merge, "scene.json", scenes[0], scenes[1], scenes[2],
                        skip, ArrayCount(skip));
-  /* The overlay merges whole until scene edits merge per entity. */
+  /* One side's overlay when only it changed; else they merge per entity. */
   bool8_t overlay_conflict = false_v;
   bool8_t overlay_present = false_v;
   const VkrBakeryJson *overlay =
       vkr_merge_choose(overlays[0], overlays[1], overlays[2], &overlay_conflict,
                        &overlay_present);
+  VkrBakeryJson *merged_overlay = NULL;
   if (overlay_conflict) {
-    vkr_merge_conflict(merge, "edits", NULL,
-                       "both sides edited the scene; their edits merge per "
-                       "entity in a later depot version");
+    bool8_t whole = false_v;
+    merged_overlay = vkr_merge_overlay(
+        merge, overlays,
+        entities ? entities : vkr_bakery_json_get(scenes[1], "entities"),
+        &whole);
+    VKR_PROJECT_TRY(!job->failed);
+    if (whole) {
+      vkr_merge_conflict(merge, "edits", NULL,
+                         "both sides edited the scene, and an overlay does "
+                         "not merge per entity (an older version, a created "
+                         "entity without uuid, or one entity twice)");
+    }
   }
   if (merge->conflicts->count) {
     return true_v;
@@ -330,7 +877,18 @@ vkr_internal bool8_t vkr_merge_scene(VkrMerge *merge, const char *roots[3],
   if (entities) {
     vkr_bakery_json_set(arena, scene, "entities", entities);
   }
-  if (overlay_present) {
+  if (merged_overlay) {
+    char id[37];
+    vkr_project_uuid4(id);
+    const char *name = vkr_project_printf(job, "edits/%s.json", id);
+    VKR_PROJECT_TRY(
+        vkr_merge_write_overlay(merge, output, name, merged_overlay, written));
+    if (merge->conflicts->count) {
+      return true_v;
+    }
+    vkr_bakery_json_set(arena, scene, "edit_overlay",
+                        vkr_bakery_json_cstr(arena, name));
+  } else if (overlay_present) {
     const VkrBakeryJson *named =
         overlay == overlays[1] ? vkr_bakery_json_get(scenes[1], "edit_overlay")
                                : vkr_bakery_json_get(scenes[2], "edit_overlay");

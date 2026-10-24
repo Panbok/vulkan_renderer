@@ -263,4 +263,5 @@ repository end to end on a complete project.
 
 Source Control between two computers fails where loopback passes, users need
 a repository reachable while its editor is closed (the per-machine service),
-or scene merges need conflicts per entity.
+or a scene's conflicts need settling per entity in the window (Use
+theirs and Keep mine settle a unit whole).

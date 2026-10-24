@@ -14,10 +14,10 @@ exchange branches with named remotes, and branches that both sides moved are
 merged per file, with scene units sent to Bakery's merge operations
 (`merge_scene_unit`, `merge_project_document`, from the Windows track). The
 editor's Source Control works on this model
-([ADR-110](110-project-sharing-in-the-editor.md)). A scene whose edit
-overlay both sides changed stays one conflict until merge per entity (D5 of
-[the proposal](../proposals/depot-git-model.md)); self-contained projects
-(D4) remain too.
+([ADR-110](110-project-sharing-in-the-editor.md)). An edit overlay both
+sides changed merges per entity in Bakery's scene driver. The rest of
+self-contained projects (D4) and the merge evidence between two machines
+remain in [the proposal](../proposals/depot-git-model.md).
 
 ## Context
 
@@ -112,6 +112,32 @@ when origin is the working copy's server.
   and the driver's files then replace those it wrote, so both sides' new
   inventories stay beside a merged `scene.json`. A unit no driver merged is
   one conflict, listed by its anchor and settled whole.
+- Bakery's `merge_scene_unit`
+  ([vkr_project_merge.c](../../tools/bakery/project/vkr_project_merge.c))
+  merges the inventory by record ID, appended entities, and the fields of
+  `scene.json` one by one. An edit overlay only one side changed is taken
+  whole. When both changed it, it merges per entity:
+  - Each side's records are read in terms of entity IDs: a `scene_entity`
+    index through that file's `document_ids`, and a `{"created": n}`
+    parent through the created entity's `uuid`.
+  - Overrides and deletions merge by the entity and glTF node they name,
+    and created entities by `uuid`. An entity only one side changed takes
+    that side. When both changed one, its fields merge one by one, and its
+    components by type. A deletion against a change, or a change against a
+    removal, is a conflict for that entity.
+  - Each override record holds every field of its entity. So for an entity
+    the base did not edit, each field the two sides hold apart is a
+    conflict, even when one side left it as the document had it.
+  - The scene and collision settings each merge as one value.
+  - The merged file gets one `document_ids` list (the merged scene's
+    entity IDs, then any IDs its records name that the scene lost) and
+    keeps each created entity's id unless an earlier one took it. A
+    created entity whose id was taken gets one past every id any side
+    used, and the parents that name it follow.
+  - The merged file is written on one line, under a new name, and a merged
+    file larger than the editor loads is a conflict. An overlay before
+    version 4, a created entity without `uuid`, or one entity named twice
+    in one file makes the overlay one conflict, as before.
 - A driver name is a key into the caller's drivers. The Bakery driver runs
   `vkr_bakery project --request --result` for `scene` and `project`, and
   nothing for any other name, so a pulled file cannot run a command. Bakery
@@ -186,6 +212,30 @@ Mac M1, 2026-10-24:
   sides edited the scene; their edits merge per entity in a later depot
   version", kept through status checks; Keep mine merged and Sync pushed.
 
+Merge per entity, Windows desktop, Release, 2026-10-24:
+`python tools/checks/check_bakery_merge.py --bakery
+build_release/tools/bakery/vkr_bakery.exe` passes. Its cases cover:
+
+- entities each side moved or appended;
+- an entity whose name and position the two sides changed;
+- created entities with the same id on both sides, and a parent that names
+  one;
+- one position both sides changed apart, which is the only conflict.
+
+Two further runs on the same build:
+
+- The Level Design Test overlay (19.6 MB: 1,107 overrides and 48,045
+  created entities) merged with one override moved, one created entity
+  renamed, and a clashing id on each side, in 4.5 seconds. The other
+  48,044 created records and 1,106 overrides came out unchanged, and the
+  file stayed at 19.6 MB.
+- Two clones of an FPS Arena repository were served on loopback. One
+  editor moved Player Spawn, the other a glTF node of the arena, and each
+  ran Commit & Sync. The second sync merged them into one commit
+  (`Merge origin/main`) and reported "1 of 1 pulled scenes open". A
+  headless editor then opened the merged scene with both positions and no
+  overlay warning.
+
 Unverified: a scene merge in which one side changed only inventories
 (Bakery's check covers it, a depot run does not); merge of a sparse working
 copy.
@@ -193,4 +243,6 @@ copy.
 ## Revisit when
 
 Repositories need history rewriting (reset, revert, stash), the 4,096-commit
-walk bound is reached, or scene merges need conflicts per entity (D5).
+walk bound is reached, or an entity that both sides first edited in one
+merge should merge field by field (a base value for each field from the
+document and its models).
