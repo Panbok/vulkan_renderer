@@ -106,10 +106,13 @@ what only the command does:
   the installed binary (skipped with `--outbound-only`); on macOS a launchd
   agent `com.vkr.depot.service` kept alive, whose binary sits in an app
   bundle with an Info.plist that carries `NSLocalNetworkUsageDescription`,
-  signed ad hoc with the identifier `com.vkr.depot.service`. macOS refuses
-  local network connections of a bare binary that launchd starts, and keeps
-  the user's Local Network answer for the signing identifier across
-  installs. `--outbound-only` also writes the marker that makes this
+  signed ad hoc with the identifier `com.vkr.depot.service` and a
+  designated requirement on that identifier alone. macOS refuses local
+  network connections of a bare binary that launchd starts. An ad hoc
+  signature's default requirement is its code hash, so each reinstalled
+  build lost the user's Local Network answer; the identifier requirement
+  lets any build signed so keep it, which also lets any program that
+  claims the identifier use the grant. `--outbound-only` also writes the marker that makes this
   machine's clients say so in their HELLO.
 - `run` serves the listed stores (none is allowed: the first `add` serves
   one), rereads `service.conf` each second and applies a change with

@@ -102,8 +102,7 @@ static bool8_t service_exec(const char *executable,
 
 #if defined(__APPLE__)
 /* Gives the bundle around the copied binary its Info.plist and an ad hoc
-   signature. macOS keeps the user's Local Network answer for the signing
-   identifier, so a later install keeps it. */
+   signature whose designated requirement is its identifier. */
 static bool8_t service_bundle_seal(const VkrDepotServicePaths *paths) {
   char bundle[VKR_DEPOT_PATH_CAPACITY];
   char info[VKR_DEPOT_PATH_CAPACITY];
@@ -132,8 +131,17 @@ static bool8_t service_bundle_seal(const VkrDepotServicePaths *paths) {
   if (!vkr_bakery_write_file_atomic(info, text, sizeof(text) - 1u)) {
     return false_v;
   }
-  const char *sign[] = {
-      "-s", "-", "--force", "--identifier", SERVICE_LAUNCHD_LABEL, bundle};
+  /* An ad hoc signature names its code by hash, so each build would be a
+     new program to Local Network; a requirement on the identifier alone
+     lets a reinstalled build keep the user's answer. */
+  const char *sign[] = {"-s",
+                        "-",
+                        "--force",
+                        "--identifier",
+                        SERVICE_LAUNCHD_LABEL,
+                        "-r=designated => identifier \"" SERVICE_LAUNCHD_LABEL
+                        "\"",
+                        bundle};
   return service_exec("/usr/bin/codesign", sign, ArrayCount(sign), NULL);
 }
 #endif
