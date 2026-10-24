@@ -135,6 +135,12 @@ typedef struct DepotJob {
   bool8_t scripts_changed;
   /* A pull merged both sides, or fast-forwarded. */
   bool8_t merged;
+  /* Scenes whose files a pull or switch wrote, for Bakery's pull report;
+     an overflow reports every scene. */
+  uint32_t changed_scene_count;
+  char changed_scenes[DEPOT_LIST_MAX][40];
+  /* The first scene the pull report found that does not open. */
+  char scene_error[DEPOT_TEXT];
   uint32_t textures_cooked;
   uint32_t textures_failed;
   /* Cooked textures the side branch for this computer brought instead. */
@@ -961,12 +967,37 @@ typedef struct DepotPullVisit {
   DepotJob *job;
 } DepotPullVisit;
 
+/* Adds the scene id of `path`, `.vkreditor/projects/<id>/scenes/<id>/...`,
+   to the scenes the pull report checks. */
+static void depot_note_scene(DepotJob *job, const char *path) {
+  static const char prefix[] = ".vkreditor/projects/";
+  const size_t length = sizeof(prefix) - 1u;
+  if (!string_n_equals(path, prefix, length) ||
+      string_length(path) < length + 36u + 8u + 36u ||
+      !string_n_equals(path + length + 36u, "/scenes/", 8u)) {
+    return;
+  }
+  const char *scene = path + length + 36u + 8u;
+  for (uint32_t i = 0u; i < Min(job->changed_scene_count, DEPOT_LIST_MAX);
+       ++i) {
+    if (string_n_equals(job->changed_scenes[i], scene, 36u)) {
+      return;
+    }
+  }
+  if (job->changed_scene_count < DEPOT_LIST_MAX) {
+    string_format(job->changed_scenes[job->changed_scene_count], 40u, "%.36s",
+                  scene);
+  }
+  job->changed_scene_count++;
+}
+
 static bool8_t depot_pull_visit(void *context, const char *path,
                                 VkrDepotChange change) {
   DepotJob *job = context;
   (void)change;
   if (depot_scene_path(path)) {
     job->scene_files_changed = true_v;
+    depot_note_scene(job, path);
   }
   if (depot_ends_with(path, ".mt") || depot_ends_with(path, ".mtg")) {
     job->materials_changed = true_v;
@@ -977,7 +1008,8 @@ static bool8_t depot_pull_visit(void *context, const char *path,
   return true_v;
 }
 
-static void depot_job_recook(DepotJob *job, const char *folder);
+static void depot_job_recook(DepotJob *job, const char *folder,
+                             bool8_t every_scene);
 
 /* Writes the cooked textures this computer's side branch holds for the
    checked-out commit (ADR-123), so the cook that follows makes only the
@@ -1057,7 +1089,7 @@ static void depot_job_after_checkout(DepotWorker *worker,
     job->error[0] = '\0';
   }
   depot_job_cook(job, ws->root, &ws->index);
-  depot_job_recook(job, ws->root);
+  depot_job_recook(job, ws->root, false_v);
   if (job->textures_cooked && job->address[0]) {
     depot_job_publish_cooked(worker);
   }
@@ -1295,7 +1327,7 @@ static void depot_job_clone(DepotWorker *worker) {
     vkr_depot_disconnect(connection);
     job->error[0] = '\0';
     depot_job_cook(job, ws->root, &ws->index);
-    depot_job_recook(job, ws->root);
+    depot_job_recook(job, ws->root, true_v);
     if (job->textures_cooked) {
       depot_job_publish_cooked(worker);
     }
@@ -1380,17 +1412,19 @@ static bool8_t depot_project_job(DepotJob *job, const char *folder,
   return false_v;
 }
 
-/* Cooks, for this computer, the textures every scene's imported models and
-   the project's own assets name in their recipes but lack here: cooked
-   textures never travel, since each GPU family samples its own format
-   (recook_textures). Imported models cooked before recipes existed are
-   rebuilt once where they are shared, not here. */
-static void depot_job_recook(DepotJob *job, const char *folder) {
-  char projects[DEPOT_PATH];
-  string_format(projects, sizeof(projects), "%s/.vkreditor/projects", folder);
+/* Bakery's pull report for the scenes a pull changed (every scene with
+   `every_scene`, as after a clone): for each, it re-cooks for this computer
+   the textures its imported models' recipes name but lack here, then
+   prepares the scene and says whether it opens. Cooked textures never
+   travel, since each GPU family samples its own format. The project's own
+   assets re-cook after it. A scene that does not open is the step's
+   warning; the pull itself stands. */
+static void depot_job_recook(DepotJob *job, const char *folder,
+                             bool8_t every_scene) {
   char project_id[40];
   depot_first_project(folder, project_id);
-  if (!project_id[0]) {
+  if (!project_id[0] ||
+      (!every_scene && !job->changed_scene_count && !job->materials_changed)) {
     return;
   }
   Arena *arena = arena_create(MB(1), KB(256));
@@ -1398,76 +1432,73 @@ static void depot_job_recook(DepotJob *job, const char *folder) {
     return;
   }
   char project_path[DEPOT_PATH];
-  string_format(project_path, sizeof(project_path), "%s/%s/project.json",
-                projects, project_id);
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  const VkrBakeryJson *project =
-      vkr_bakery_read_file(project_path, MB(8), &bytes, &size)
-          ? vkr_bakery_json_parse(arena, bytes, size, 32u, NULL)
-          : NULL;
-  vkr_heap_free(bytes);
-  const VkrBakeryJson *scenes = vkr_bakery_json_get(project, "scenes");
-  const uint32_t total = (scenes ? scenes->count : 0u) + 1u;
-  vkr_atomic_uint32_store(&job->cook_total, total, VKR_MEMORY_ORDER_RELAXED);
-  uint32_t done = 0u;
-  for (const VkrBakeryJson *scene = scenes ? scenes->first : NULL;
-       scene && !vkr_depot_progress_canceled(&job->progress);
-       scene = scene->next) {
-    char scene_id[40] = {0};
-    char relative[DEPOT_PATH] = {0};
-    char scene_path[DEPOT_PATH] = {0};
-    if (depot_json_text(scene, "id", scene_id, sizeof(scene_id)) &&
-        depot_json_text(scene, "path", relative, sizeof(relative))) {
-      string_format(scene_path, sizeof(scene_path), "%s/%s/%s", projects,
-                    project_id, relative);
+  string_format(project_path, sizeof(project_path),
+                "%s/.vkreditor/projects/%s/project.json", folder, project_id);
+  vkr_atomic_uint32_store(&job->cook_total, 2u, VKR_MEMORY_ORDER_RELAXED);
+  VkrBakeryJson *request = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, request, "operation",
+                      vkr_bakery_json_cstr(arena, "pull_report"));
+  vkr_bakery_json_set(arena, request, "project_path",
+                      vkr_bakery_json_cstr(arena, project_path));
+  if (!every_scene && job->changed_scene_count <= DEPOT_LIST_MAX) {
+    VkrBakeryJson *scenes = vkr_bakery_json_array(arena);
+    for (uint32_t i = 0u; i < job->changed_scene_count; ++i) {
+      vkr_bakery_json_append(
+          scenes, vkr_bakery_json_cstr(arena, job->changed_scenes[i]));
     }
-    /* A project may list a scene it does not share; that scene has nothing
-       here to cook for. */
-    if (scene_path[0] && !vkr_bakery_is_file(scene_path)) {
-      log_info("Source control: scene %s is not in this copy; its textures "
-               "are not prepared",
-               scene_id);
-    } else if (scene_path[0]) {
-      VkrBakeryJson *request = vkr_bakery_json_object(arena);
-      vkr_bakery_json_set(arena, request, "operation",
-                          vkr_bakery_json_cstr(arena, "recook_textures"));
-      vkr_bakery_json_set(arena, request, "project_path",
-                          vkr_bakery_json_cstr(arena, project_path));
-      vkr_bakery_json_set(arena, request, "scene_id",
-                          vkr_bakery_json_cstr(arena, scene_id));
-      vkr_bakery_json_set(arena, request, "scene_path",
-                          vkr_bakery_json_cstr(arena, scene_path));
-      const VkrBakeryJson *result = NULL;
-      if (depot_project_job(job, folder, arena, request, "Preparing textures",
-                            &result)) {
+    vkr_bakery_json_set(arena, request, "scenes", scenes);
+  }
+  const VkrBakeryJson *result = NULL;
+  if ((every_scene || job->changed_scene_count) &&
+      !vkr_depot_progress_canceled(&job->progress)) {
+    if (depot_project_job(job, folder, arena, request, "Preparing scenes",
+                          &result)) {
+      const VkrBakeryJson *reports = vkr_bakery_json_get(result, "scenes");
+      int64_t open = 0;
+      (void)vkr_bakery_json_get_int(result, "scenes_open", &open);
+      log_info("Source control: %lld of %u pulled scenes open", (long long)open,
+               reports ? reports->count : 0u);
+      for (const VkrBakeryJson *report = reports ? reports->first : NULL;
+           report; report = report->next) {
         int64_t recooked = 0;
         int64_t skipped = 0;
-        (void)vkr_bakery_json_get_int(result, "recooked", &recooked);
-        (void)vkr_bakery_json_get_int(result, "skipped", &skipped);
+        bool8_t opens = true_v;
+        bool8_t present = true_v;
+        (void)vkr_bakery_json_get_int(report, "recooked", &recooked);
+        (void)vkr_bakery_json_get_int(report, "skipped", &skipped);
+        (void)vkr_bakery_json_get_bool(report, "opens", &opens);
+        (void)vkr_bakery_json_get_bool(report, "present", &present);
         job->textures_cooked += (uint32_t)recooked;
         /* Textures of a build whose mesh source snapshot is gone stay
            uncooked; the scene's other textures are ready. */
-        if (skipped > 0) {
-          job->textures_failed += (uint32_t)skipped;
-          log_warn("Source control: scene %s: %lld textures did not cook; "
-                   "their mesh source snapshot is missing",
-                   scene_id, (long long)skipped);
+        job->textures_failed += (uint32_t)skipped;
+        char scene_id[40] = {0};
+        char reason[DEPOT_TEXT] = {0};
+        (void)depot_json_text(report, "scene_id", scene_id, sizeof(scene_id));
+        if (present && !opens) {
+          (void)depot_json_text(report, "prepare_error", reason,
+                                sizeof(reason));
+          log_warn("Source control: scene %s does not open after the pull: "
+                   "%s",
+                   scene_id, reason);
+          if (!job->scene_error[0]) {
+            string_format(job->scene_error, sizeof(job->scene_error),
+                          "Scene %.8s does not open: %s", scene_id, reason);
+          }
         }
-      } else {
-        job->textures_failed++;
-        log_warn("Source control: %s", job->error);
-        job->error[0] = '\0';
       }
+    } else {
+      job->textures_failed++;
+      log_warn("Source control: %s", job->error);
+      job->error[0] = '\0';
     }
-    vkr_atomic_uint32_store(&job->cook_done, ++done, VKR_MEMORY_ORDER_RELAXED);
   }
-  VkrBakeryJson *request = vkr_bakery_json_object(arena);
+  vkr_atomic_uint32_store(&job->cook_done, 1u, VKR_MEMORY_ORDER_RELAXED);
+  request = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, request, "operation",
                       vkr_bakery_json_cstr(arena, "recook_textures"));
   vkr_bakery_json_set(arena, request, "project_path",
                       vkr_bakery_json_cstr(arena, project_path));
-  const VkrBakeryJson *result = NULL;
   if (!vkr_depot_progress_canceled(&job->progress) &&
       !depot_project_job(job, folder, arena, request, "Preparing textures",
                          &result)) {
@@ -1475,7 +1506,7 @@ static void depot_job_recook(DepotJob *job, const char *folder) {
     log_warn("Source control: %s", job->error);
     job->error[0] = '\0';
   }
-  vkr_atomic_uint32_store(&job->cook_done, total, VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint32_store(&job->cook_done, 2u, VKR_MEMORY_ORDER_RELAXED);
   arena_destroy(arena);
 }
 
@@ -1727,6 +1758,8 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   job->materials_changed = false_v;
   job->scripts_changed = false_v;
   job->merged = false_v;
+  job->changed_scene_count = 0u;
+  job->scene_error[0] = '\0';
   job->branch_count = 0u;
   job->outgoing_count = 0u;
   job->incoming_count = 0u;
@@ -2120,6 +2153,9 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   } else if (!job->ok && job->kind != DEPOT_JOB_STATUS &&
              !vkr_depot_progress_canceled(&job->progress)) {
     string_format(depot->error, sizeof(depot->error), "%s", job->error);
+  }
+  if (job->ok && job->scene_error[0]) {
+    string_format(depot->error, sizeof(depot->error), "%s", job->scene_error);
   }
   if (job->kind == DEPOT_JOB_PULL || job->kind == DEPOT_JOB_SYNC ||
       job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_SWITCH ||
