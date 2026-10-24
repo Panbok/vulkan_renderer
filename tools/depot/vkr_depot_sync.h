@@ -180,6 +180,11 @@ typedef struct VkrDepotLogEntry {
   /* Borrowed for the visit; not terminated. */
   const char *message;
   uint32_t message_size;
+  /* Every parent, borrowed for the visit. */
+  const VkrDepotId *parents;
+  uint32_t parent_count;
+  /* vkr_depot_log_graph: bit i set when tip i reaches the commit. */
+  uint32_t reach;
 } VkrDepotLogEntry;
 
 /* Returning false stops the walk. */
@@ -191,6 +196,26 @@ typedef bool8_t (*VkrDepotLogVisitor)(void *context,
    store lacks: a working copy holds the history it fetched. */
 uint32_t vkr_depot_log(const VkrDepotStore *store, const VkrDepotId *start,
                        uint32_t count, VkrDepotLogVisitor visit, void *context);
+
+/* Calls `visit` for each path commit `id` changed against its first parent;
+   every file of a first commit is added. False when the store lacks the
+   commit or one of the two trees. */
+bool8_t vkr_depot_commit_changes(const VkrDepotStore *store,
+                                 const VkrDepotId *id,
+                                 VkrDepotChangeVisitor visit, void *context);
+
+/* Tips one graph walk takes, such as a branch and its remote branch. */
+#define VKR_DEPOT_LOG_TIPS_MAX 4u
+
+/* Walks every commit reachable from `tips` (zero ones skipped), merged
+   lines included, each once and newest first by commit time, at most
+   `count`; returns how many it visited. A parent is visited after the
+   commit that names it was. Each entry's `reach` has bit i set when
+   tips[i] reaches it, so commits only one side holds stand out. A line
+   ends at a commit the store lacks. */
+uint32_t vkr_depot_log_graph(const VkrDepotStore *store, const VkrDepotId *tips,
+                             uint32_t tip_count, uint32_t count,
+                             VkrDepotLogVisitor visit, void *context);
 
 /* A commit made in the working copy's store and not pushed yet, with the
    snapshot's files, which become the index once it is pushed. */

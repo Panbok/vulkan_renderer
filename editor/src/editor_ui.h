@@ -58,7 +58,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_LIGHTS,
   /* The collaborative editing session (ADR-106). */
   VKR_EDITOR_WINDOW_SESSION,
-  /* Project sharing through the depot (editor_depot.h). */
+  /* Source control: the repository, its history and remotes
+     (editor_depot.h). */
   VKR_EDITOR_WINDOW_DEPOT,
   /* Session recordings (editor_recording.h). */
   VKR_EDITOR_WINDOW_RECORDINGS,
@@ -778,7 +779,8 @@ typedef struct VkrEditorUi {
   /* The collaborative editing session, idle until hosted or joined
      (editor_session.h). */
   struct VkrEditorSession *session;
-  /* Project sharing through the depot (editor_depot.h). */
+  /* Source control: the repository, its history and remotes
+     (editor_depot.h). */
   struct VkrEditorDepot *depot;
   /* View streaming: this editor's Scene served to another, or another's
      shown here (editor_remote_view.h). */

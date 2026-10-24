@@ -6,7 +6,9 @@
 #include "editor_project_store.h"
 #include "editor_projects.h"
 #include "editor_scripts.h"
+#include "editor_table.h"
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
@@ -35,7 +37,8 @@
 #define DEPOT_PEOPLE_MAX 64u
 /* Changed paths, conflicts and history rows the window lists. */
 #define DEPOT_LIST_MAX 64u
-#define DEPOT_HISTORY_MAX 12u
+/* Commits the History lists: both sides of the branch, newest first. */
+#define DEPOT_HISTORY_MAX 200u
 #define DEPOT_REQUESTS_MAX VKR_DEPOT_REQUESTS_MAX
 #define DEPOT_ACCESS_MAX 32u
 #define DEPOT_PATH 1024u
@@ -75,18 +78,34 @@ static const char *const depot_job_names[] = {"",
                                               "Switching branch",
                                               "Starting the depot service"};
 
-/* Branches and commit rows the window lists. */
+/* Branches the window lists. */
 #define DEPOT_BRANCHES_MAX 16u
-#define DEPOT_COMMITS_MAX 8u
 
 typedef struct DepotText {
   char text[DEPOT_TEXT];
 } DepotText;
 
+/* Where a listed commit stands against the branch and the remote's. */
+typedef enum DepotCommitFlag {
+  /* Only the branch has it: a push sends it. */
+  DEPOT_COMMIT_TO_PUSH = 1u << 0,
+  /* Only the remote's branch has it: a pull brings it. */
+  DEPOT_COMMIT_TO_PULL = 1u << 1,
+  /* The branch, or the remote's branch as last fetched, points at it. */
+  DEPOT_COMMIT_HEAD = 1u << 2,
+  DEPOT_COMMIT_REMOTE_HEAD = 1u << 3,
+  /* This user's identity made it. */
+  DEPOT_COMMIT_MINE = 1u << 4,
+} DepotCommitFlag;
+
 typedef struct DepotHistory {
   char id[VKR_DEPOT_ID_HEX];
-  char message[96];
+  /* The message's first line. */
+  char message[120];
   uint64_t time_us;
+  uint8_t author[32];
+  uint32_t parent_count;
+  uint32_t flags;
 } DepotHistory;
 
 typedef struct DepotBranch {
@@ -167,10 +186,10 @@ typedef struct DepotJob {
   uint32_t behind;
   uint32_t branch_count;
   DepotBranch branches[DEPOT_BRANCHES_MAX];
-  uint32_t outgoing_count;
-  DepotHistory outgoing[DEPOT_COMMITS_MAX];
-  uint32_t incoming_count;
-  DepotHistory incoming[DEPOT_COMMITS_MAX];
+  /* The store the working copy opened, for the History's details. */
+  char store_root[DEPOT_PATH];
+  /* The branch's commit, and the commits of both sides, newest first. */
+  VkrDepotId head;
   uint32_t history_count;
   DepotHistory history[DEPOT_HISTORY_MAX];
   char opened_project[40];
@@ -185,6 +204,41 @@ typedef struct DepotJob {
   VkrAtomicUint32 cook_done;
   VkrAtomicUint32 cook_total;
 } DepotJob;
+
+/* Changed files the details of one commit list, and its message. */
+#define DEPOT_DETAIL_FILES_MAX 512u
+#define DEPOT_DETAIL_MESSAGE 2048u
+
+typedef struct DepotDetailFile {
+  char path[DEPOT_TEXT];
+  VkrDepotChange change;
+} DepotDetailFile;
+
+/* The details of the commit the History selected, read on a thread of
+   their own, so a long step does not hold them up; commits are immutable,
+   so reading the store beside a step is safe. The UI thread fills the
+   inputs, starts it and reads the outputs once `done` is set. */
+typedef struct DepotInspect {
+  VkrThread thread;
+  bool8_t running;
+  VkrAtomicBool done;
+  /* Inputs. */
+  char store_root[DEPOT_PATH];
+  VkrDepotId commit;
+  /* Outputs: the whole message, the parents, and the files that differ
+     from the first parent (every file of a first commit). */
+  bool8_t ok;
+  char error[DEPOT_TEXT];
+  char message[DEPOT_DETAIL_MESSAGE];
+  VkrDepotId parents[VKR_DEPOT_PARENTS_MAX];
+  uint32_t parent_count;
+  uint32_t file_count;
+  uint32_t added;
+  uint32_t modified;
+  uint32_t deleted;
+  uint32_t listed;
+  DepotDetailFile files[DEPOT_DETAIL_FILES_MAX];
+} DepotInspect;
 
 typedef struct DepotKnown {
   char name[VKR_DEPOT_DISCOVERY_TEXT];
@@ -302,12 +356,9 @@ struct VkrEditorDepot {
   uint32_t behind;
   uint32_t branch_count;
   DepotBranch branches[DEPOT_BRANCHES_MAX];
-  uint32_t outgoing_count;
-  DepotHistory outgoing[DEPOT_COMMITS_MAX];
-  uint32_t incoming_count;
-  DepotHistory incoming[DEPOT_COMMITS_MAX];
   uint32_t history_count;
   DepotHistory history[DEPOT_HISTORY_MAX];
+  char store_root[DEPOT_PATH];
   char error[DEPOT_TEXT];
   char notice[DEPOT_TEXT];
   /* A scene reload the last pull asked for, sent once the scene is saved. */
@@ -346,6 +397,24 @@ struct VkrEditorDepot {
   bool8_t init_switch;
   float32_t window_scroll;
   float32_t window_height;
+  /* The window's tab, its tables, the History's split between commits and
+     details, and the commit whose details it shows. */
+  uint32_t tab;
+  VkrEditorTable changes_table;
+  /* One per column set the History's width picks (DEPOT_COMMIT_LAYOUTS). */
+  VkrEditorTable history_tables[3];
+  VkrEditorTable files_table;
+  VkrEditorSplit history_split;
+  char selected_commit[VKR_DEPOT_ID_HEX];
+  /* Made on the first selection. */
+  DepotInspect *inspect;
+  /* The toolbar's branch and remote lists are open. */
+  bool8_t branch_menu_open;
+  bool8_t remote_menu_open;
+  /* The height the lists and cards under the toolbar took last build. */
+  float32_t top_height;
+  /* Hover text the UI reads after the build. */
+  char remote_tip[DEPOT_TEXT];
 };
 
 // =============================================================================
@@ -816,34 +885,75 @@ typedef struct DepotHistoryVisit {
   DepotJob *job;
 } DepotHistoryVisit;
 
+/* The worker's view of a history walk: the user's key marks their own
+   commits. */
+typedef struct DepotHistoryWalk {
+  DepotJob *job;
+  uint8_t self_key[32];
+  bool8_t self_known;
+} DepotHistoryWalk;
+
 static bool8_t depot_history_visit(void *context,
                                    const VkrDepotLogEntry *entry) {
-  DepotJob *job = context;
+  DepotHistoryWalk *walk = context;
+  DepotJob *job = walk->job;
   if (job->history_count >= DEPOT_HISTORY_MAX) {
     return false_v;
   }
   DepotHistory *row = &job->history[job->history_count++];
   vkr_depot_id_hex(&entry->id, row->id);
-  const uint32_t length =
+  uint32_t length =
       Min(entry->message_size, (uint32_t)sizeof(row->message) - 1u);
-  MemCopy(row->message, entry->message, length);
-  row->message[length] = '\0';
-  for (char *c = row->message; *c; ++c) {
-    if (*c == '\n' || *c == '\r') {
-      *c = '\0';
+  for (uint32_t i = 0u; i < length; ++i) {
+    if (entry->message[i] == '\n' || entry->message[i] == '\r') {
+      length = i;
       break;
     }
   }
+  MemCopy(row->message, entry->message, length);
+  row->message[length] = '\0';
   row->time_us = entry->time_us;
+  MemCopy(row->author, entry->author, sizeof(row->author));
+  row->parent_count = entry->parent_count;
+  row->flags = 0u;
+  /* Bit 0: the branch reaches it; bit 1: the remote's branch does. */
+  if (job->remote_known && entry->reach == 1u) {
+    row->flags |= DEPOT_COMMIT_TO_PUSH;
+  }
+  if (job->remote_known && entry->reach == 2u) {
+    row->flags |= DEPOT_COMMIT_TO_PULL;
+  }
+  if (vkr_depot_id_equal(&entry->id, &job->head)) {
+    row->flags |= DEPOT_COMMIT_HEAD;
+  }
+  if (job->remote_known && vkr_depot_id_equal(&entry->id, &job->remote_head)) {
+    row->flags |= DEPOT_COMMIT_REMOTE_HEAD;
+  }
+  if (walk->self_known &&
+      MemCompare(entry->author, walk->self_key, sizeof(walk->self_key)) == 0) {
+    row->flags |= DEPOT_COMMIT_MINE;
+  }
   return true_v;
 }
 
+/* The commits of the branch and of the remote's branch as last fetched,
+   merged lines included, newest first. Without depot_job_summary before
+   it (a clone), the branch is the working copy's base. */
 static void depot_job_history(DepotJob *job, const VkrDepotWorkspace *ws) {
   job->history_count = 0u;
-  if (!vkr_depot_id_zero(&ws->base)) {
-    (void)vkr_depot_log(&ws->store, &ws->base, DEPOT_HISTORY_MAX,
-                        depot_history_visit, job);
+  if (vkr_depot_id_zero(&job->head)) {
+    job->head = ws->base;
   }
+  DepotHistoryWalk walk = {.job = job};
+  VkrNetKeyPair identity;
+  if (vkr_depot_identity(&identity, false_v)) {
+    MemCopy(walk.self_key, identity.public_key, sizeof(walk.self_key));
+    walk.self_known = true_v;
+    vkr_net_random(identity.secret_key, sizeof(identity.secret_key));
+  }
+  const VkrDepotId tips[] = {job->head, job->remote_head};
+  (void)vkr_depot_log_graph(&ws->store, tips, job->remote_known ? 2u : 1u,
+                            DEPOT_HISTORY_MAX, depot_history_visit, &walk);
 }
 
 static bool8_t depot_branch_visit(void *context, const char *branch) {
@@ -855,35 +965,8 @@ static bool8_t depot_branch_visit(void *context, const char *branch) {
   return true_v;
 }
 
-typedef struct DepotCommitRows {
-  DepotHistory *rows;
-  uint32_t *count;
-} DepotCommitRows;
-
-static bool8_t depot_commit_row_visit(void *context,
-                                      const VkrDepotLogEntry *entry) {
-  DepotCommitRows *rows = context;
-  if (*rows->count >= DEPOT_COMMITS_MAX) {
-    return false_v;
-  }
-  DepotHistory *row = &rows->rows[(*rows->count)++];
-  vkr_depot_id_hex(&entry->id, row->id);
-  const uint32_t length =
-      Min(entry->message_size, (uint32_t)sizeof(row->message) - 1u);
-  MemCopy(row->message, entry->message, length);
-  row->message[length] = '\0';
-  for (char *c = row->message; *c; ++c) {
-    if (*c == '\n' || *c == '\r') {
-      *c = '\0';
-      break;
-    }
-  }
-  row->time_us = entry->time_us;
-  return true_v;
-}
-
 /* The branch, the store's branches, and how the branch stands against the
-   remote's as last fetched: commits to push and to pull, newest first. */
+   remote's as last fetched: how many commits to push and to pull. */
 static void depot_job_summary(DepotJob *job, const VkrDepotWorkspace *ws) {
   string_format(job->current_branch, sizeof(job->current_branch), "%s",
                 ws->branch);
@@ -891,12 +974,9 @@ static void depot_job_summary(DepotJob *job, const VkrDepotWorkspace *ws) {
   (void)vkr_depot_ref_list(ws->store.root, depot_branch_visit, job);
   job->ahead = 0u;
   job->behind = 0u;
-  job->outgoing_count = 0u;
-  job->incoming_count = 0u;
   job->remote_known = false_v;
-  VkrDepotId local = {0};
-  if (!vkr_depot_ref_read(ws->store.root, ws->branch, &local)) {
-    local = ws->base;
+  if (!vkr_depot_ref_read(ws->store.root, ws->branch, &job->head)) {
+    job->head = ws->base;
   }
   if (!job->remote[0] ||
       !vkr_depot_tracking_read(ws->store.root, job->remote, ws->branch,
@@ -904,17 +984,8 @@ static void depot_job_summary(DepotJob *job, const VkrDepotWorkspace *ws) {
     return;
   }
   job->remote_known = true_v;
-  if (!vkr_depot_ahead_behind(&ws->store, &local, &job->remote_head,
-                              &job->ahead, &job->behind)) {
-    return;
-  }
-  DepotCommitRows outgoing = {job->outgoing, &job->outgoing_count};
-  DepotCommitRows incoming = {job->incoming, &job->incoming_count};
-  (void)vkr_depot_log(&ws->store, &local, Min(job->ahead, DEPOT_COMMITS_MAX),
-                      depot_commit_row_visit, &outgoing);
-  (void)vkr_depot_log(&ws->store, &job->remote_head,
-                      Min(job->behind, DEPOT_COMMITS_MAX),
-                      depot_commit_row_visit, &incoming);
+  (void)vkr_depot_ahead_behind(&ws->store, &job->head, &job->remote_head,
+                               &job->ahead, &job->behind);
 }
 
 /* Whether a path a pull wrote is part of a scene, its World or the
@@ -1893,6 +1964,67 @@ static void depot_job_service(DepotWorker *worker) {
   (void)vkr_bakery_remove_file(log);
 }
 
+// =============================================================================
+// Commit details
+// =============================================================================
+
+static bool8_t depot_inspect_visit(void *context, const char *path,
+                                   VkrDepotChange change) {
+  DepotInspect *inspect = context;
+  inspect->file_count += 1u;
+  inspect->added += change == VKR_DEPOT_CHANGE_ADDED;
+  inspect->modified += change == VKR_DEPOT_CHANGE_MODIFIED;
+  inspect->deleted += change == VKR_DEPOT_CHANGE_DELETED;
+  if (inspect->listed < DEPOT_DETAIL_FILES_MAX) {
+    DepotDetailFile *file = &inspect->files[inspect->listed++];
+    string_format(file->path, sizeof(file->path), "%s", path);
+    file->change = change;
+  }
+  return true_v;
+}
+
+/* The whole message and the parents of the one commit vkr_depot_log
+   visits. */
+static bool8_t depot_inspect_commit(void *context,
+                                    const VkrDepotLogEntry *entry) {
+  DepotInspect *inspect = context;
+  const uint32_t length =
+      Min(entry->message_size, (uint32_t)sizeof(inspect->message) - 1u);
+  MemCopy(inspect->message, entry->message, length);
+  inspect->message[length] = '\0';
+  inspect->parent_count = Min(entry->parent_count, VKR_DEPOT_PARENTS_MAX);
+  MemCopy(inspect->parents, entry->parents,
+          inspect->parent_count * sizeof(VkrDepotId));
+  return false_v;
+}
+
+static void *depot_inspect_worker(void *argument) {
+  DepotInspect *inspect = argument;
+  inspect->ok = false_v;
+  inspect->error[0] = '\0';
+  inspect->message[0] = '\0';
+  inspect->parent_count = 0u;
+  inspect->file_count = 0u;
+  inspect->added = inspect->modified = inspect->deleted = 0u;
+  inspect->listed = 0u;
+  VkrDepotStore store;
+  if (!vkr_depot_store_open(&store, inspect->store_root,
+                            vkr_depot_zstd_codec()) ||
+      vkr_depot_log(&store, &inspect->commit, 1u, depot_inspect_commit,
+                    inspect) != 1u) {
+    string_format(inspect->error, sizeof(inspect->error),
+                  "This repository does not hold the commit");
+  } else if (!vkr_depot_commit_changes(&store, &inspect->commit,
+                                       depot_inspect_visit, inspect)) {
+    string_format(inspect->error, sizeof(inspect->error),
+                  "This repository does not hold the commit's files");
+  } else {
+    inspect->ok = true_v;
+  }
+  vkr_atomic_bool_store(&inspect->done, true_v, VKR_MEMORY_ORDER_RELEASE);
+  return NULL;
+}
+
 static void *depot_worker(void *argument) {
   DepotWorker worker = {.job = argument};
   DepotJob *job = worker.job;
@@ -1920,6 +2052,8 @@ static void *depot_worker(void *argument) {
   } else {
     VkrDepotWorkspace *ws = worker.workspace;
     ws->progress = &job->progress;
+    string_format(job->store_root, sizeof(job->store_root), "%s",
+                  ws->store.root);
     switch (job->kind) {
     case DEPOT_JOB_STATUS:
       depot_job_status(&worker);
@@ -2000,14 +2134,14 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   job->untracked_count = 0u;
   job->untracked_bytes = 0u;
   job->branch_count = 0u;
-  job->outgoing_count = 0u;
-  job->incoming_count = 0u;
+  MemZero(&job->head, sizeof(job->head));
   job->ahead = 0u;
   job->behind = 0u;
   job->textures_cooked = 0u;
   job->textures_failed = 0u;
   job->textures_fetched = 0u;
   job->opened_project[0] = '\0';
+  job->store_root[0] = '\0';
   MemZero(&job->remote_head, sizeof(job->remote_head));
   vkr_depot_progress_reset(&job->progress);
   vkr_atomic_uint32_store(&job->cook_done, 0u, VKR_MEMORY_ORDER_RELAXED);
@@ -2274,10 +2408,10 @@ static void depot_reset_status(VkrEditorDepot *depot) {
   depot->ahead = 0u;
   depot->behind = 0u;
   depot->branch_count = 0u;
-  depot->outgoing_count = 0u;
-  depot->incoming_count = 0u;
   depot->branch[0] = '\0';
   depot->error[0] = '\0';
+  depot->store_root[0] = '\0';
+  depot->selected_commit[0] = '\0';
   depot->waiting_kind = DEPOT_JOB_NONE;
   MemZero(depot->remote_tried, sizeof(depot->remote_tried));
   MemZero(&depot->base, sizeof(depot->base));
@@ -2420,6 +2554,13 @@ void vkr_editor_depot_destroy(VkrEditorDepot *depot) {
     vkr_depot_progress_cancel(&depot->job->progress);
     depot_job_join(depot);
   }
+  if (depot->inspect) {
+    if (depot->inspect->running) {
+      (void)vkr_thread_join(depot->inspect->thread);
+      (void)vkr_thread_destroy(depot->allocator, &depot->inspect->thread);
+    }
+    vkr_heap_free(depot->inspect);
+  }
   if (depot->browser_open) {
     vkr_depot_browser_close(&depot->browser);
   }
@@ -2476,6 +2617,10 @@ static void depot_take_results(VkrEditorDepot *depot) {
   if (!vkr_depot_id_zero(&job->base)) {
     depot->base = job->base;
   }
+  if (job->store_root[0]) {
+    string_format(depot->store_root, sizeof(depot->store_root), "%s",
+                  job->store_root);
+  }
   if (job->history_count) {
     depot->history_count = job->history_count;
     MemCopy(depot->history, job->history,
@@ -2491,12 +2636,6 @@ static void depot_take_results(VkrEditorDepot *depot) {
     depot->remote_head = job->remote_head;
     depot->ahead = job->ahead;
     depot->behind = job->behind;
-    depot->outgoing_count = job->outgoing_count;
-    MemCopy(depot->outgoing, job->outgoing,
-            job->outgoing_count * sizeof(DepotHistory));
-    depot->incoming_count = job->incoming_count;
-    MemCopy(depot->incoming, job->incoming,
-            job->incoming_count * sizeof(DepotHistory));
   }
   const uint32_t remote = depot_remote_index(depot, job->remote);
   if (remote != UINT32_MAX && job->kind != DEPOT_JOB_COMMIT) {
@@ -3625,6 +3764,360 @@ static void depot_window_not_repository(VkrEditorDepot *depot,
   *y += 40;
 }
 
+/* The window's parts, top down: the toolbar, the branch and remote lists
+   while open, the cards that need the user (a running step, an error,
+   conflicts, files from outside the project, access requests, held
+   scripts), the tabs, and the shown tab, which fills the rest. */
+#define DEPOT_PAD 12.0f
+#define DEPOT_TOOLBAR_PT 44.0f
+#define DEPOT_TABS_PT 34.0f
+#define DEPOT_COMMIT_BOX_PT 84.0f
+/* The History lays its details beside the commits from this width, else
+   under them. */
+#define DEPOT_SIDE_BY_SIDE_PT 640.0f
+
+typedef enum DepotTab {
+  DEPOT_TAB_CHANGES = 0,
+  DEPOT_TAB_HISTORY,
+  DEPOT_TAB_REMOTES,
+  DEPOT_TAB_SHARING,
+  DEPOT_TAB_COUNT,
+} DepotTab;
+
+static VkrUiPlacement depot_cell(uint32_t column, uint32_t row) {
+  return (VkrUiPlacement){
+      .column = column, .row = row, .column_span = 1u, .row_span = 1u};
+}
+
+/* A clipped panel filling `placement`, whose children place themselves by
+   margin from its top left, as depot_widget does. */
+static bool8_t depot_pane_begin(VkrUiSystem *ui, const char *id,
+                                VkrUiPlacement placement, Vec4 background) {
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig pane = vkr_ui_panel_config_default();
+  pane.placement = placement;
+  pane.columns = &fill;
+  pane.column_count = 1u;
+  pane.rows = &fill;
+  pane.row_count = 1u;
+  pane.style.gap_pt = 0.0f;
+  pane.style.background_color = background;
+  pane.clip_children = true_v;
+  return vkr_ui_panel_begin(ui, depot_string(id), &pane);
+}
+
+/* The width a one-line button needs for `text`, with an icon when asked. */
+static float32_t depot_text_pt(const char *text, bool8_t icon) {
+  return 24.0f + 7.0f * (float32_t)string_length(text) + (icon ? 20.0f : 0.0f);
+}
+
+static bool8_t depot_icon_button(VkrEditorUi *editor, VkrUiSystem *ui,
+                                 const char *id, const char *text,
+                                 VkrUiIcon icon, float32_t x, float32_t y,
+                                 float32_t width, bool8_t primary,
+                                 bool8_t disabled, const char *tooltip) {
+  VkrUiWidgetConfig c = depot_widget(x, y, width, 28);
+  if (primary) {
+    vkr_editor_primary_style(&c, editor->heading_font);
+  } else {
+    vkr_editor_action_style(&c, editor->heading_font);
+  }
+  c.icon = icon;
+  c.icon_size_pt = 14.0f;
+  c.disabled = disabled;
+  if (tooltip) {
+    c.tooltip = depot_string(tooltip);
+  }
+  return vkr_ui_button(ui, depot_string(id), depot_string(text), &c);
+}
+
+/* A small rounded tag, such as a branch a commit heads; returns its
+   width. */
+static float32_t depot_badge(VkrUiSystem *ui, const char *id, const char *text,
+                             float32_t x, float32_t y, Vec4 color) {
+  const float32_t width = 14.0f + 6.4f * (float32_t)string_length(text);
+  VkrUiWidgetConfig c = depot_widget(x, y, width, 18);
+  c.style.font_size_pt = vkr_ui_theme()->font_caption;
+  c.style.text_color = color;
+  c.style.background_color = vkr_ui_color_alpha(color, 0.14f);
+  c.style.corner_radius_pt = (Vec4){9.0f, 9.0f, 9.0f, 9.0f};
+  c.style.padding_pt = (VkrUiEdges){1.0f, 7.0f, 1.0f, 7.0f};
+  vkr_ui_label(ui, depot_string(id), depot_string(text), &c);
+  return width;
+}
+
+/* A card behind an alert, marked on its left by `accent`. */
+static void depot_alert_card(VkrUiSystem *ui, const char *id, float32_t y,
+                             float32_t width, float32_t height, Vec4 accent) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig card =
+      depot_widget(DEPOT_PAD, y, width - 2 * DEPOT_PAD, height);
+  card.style.padding_pt = (VkrUiEdges){0};
+  card.style.background_color = vkr_ui_color_mix(theme->raised, accent, 0.08f);
+  card.style.corner_radius_pt = (Vec4){6.0f, 6.0f, 6.0f, 6.0f};
+  vkr_ui_label(ui, depot_string(id), (String8){0}, &card);
+  VkrUiWidgetConfig mark = depot_widget(DEPOT_PAD, y, 3.0f, height);
+  mark.style.padding_pt = (VkrUiEdges){0};
+  mark.style.background_color = accent;
+  mark.style.corner_radius_pt = (Vec4){1.5f, 1.5f, 1.5f, 1.5f};
+  char mark_id[64];
+  string_format(mark_id, sizeof(mark_id), "%s.mark", id);
+  vkr_ui_label(ui, depot_string(mark_id), (String8){0}, &mark);
+}
+
+/* A path's last `shown` characters: a scene's id and file name, not the
+   projects folder every path shares. */
+static void depot_path_tail(const char *path, size_t shown, char *out,
+                            uint32_t capacity) {
+  const size_t length = string_length(path);
+  if (length > shown && shown > 1u) {
+    string_format(out, capacity, "\xe2\x80\xa6%s", path + length - shown + 1u);
+  } else {
+    string_format(out, capacity, "%s", path);
+  }
+}
+
+/* "24 Oct 2026, 22:30" in this computer's time zone as it stands now. */
+static void depot_format_date(uint64_t time_us, bool8_t with_time, char *out,
+                              uint32_t capacity) {
+  static const char *const months[] = {"Jan", "Feb", "Mar", "Apr",
+                                       "May", "Jun", "Jul", "Aug",
+                                       "Sep", "Oct", "Nov", "Dec"};
+  const VkrTime now = vkr_platform_get_local_time();
+  const int64_t local = (int64_t)(time_us / 1000000ull) + now.gmtoff;
+  const int64_t days = local >= 0 ? local / 86400 : (local - 86399) / 86400;
+  const int64_t seconds = local - days * 86400;
+  /* Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm). */
+  const int64_t z = days + 719468;
+  const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+  const int64_t doe = z - era * 146097;
+  const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const int64_t mp = (5 * doy + 2) / 153;
+  const int64_t day = doy - (153 * mp + 2) / 5 + 1;
+  const int64_t month = mp < 10 ? mp + 3 : mp - 9;
+  const int64_t year = yoe + era * 400 + (month <= 2);
+  if (with_time) {
+    string_format(out, capacity, "%lld %s %lld, %02lld:%02lld", (long long)day,
+                  months[month - 1], (long long)year,
+                  (long long)(seconds / 3600), (long long)(seconds / 60 % 60));
+  } else {
+    string_format(out, capacity, "%lld %s %lld", (long long)day,
+                  months[month - 1], (long long)year);
+  }
+}
+
+/* A commit's time as the History lists it: how long ago within a week,
+   else its date. */
+static void depot_format_when(uint64_t now_us, uint64_t time_us, char *out,
+                              uint32_t capacity) {
+  if (now_us > time_us && now_us - time_us >= 7ull * 86400ull * 1000000ull) {
+    depot_format_date(time_us, false_v, out, capacity);
+  } else {
+    depot_format_age(now_us, time_us, out, capacity);
+  }
+}
+
+static void depot_author_text(const VkrEditorDepot *depot,
+                              const DepotHistory *row, char *out,
+                              uint32_t capacity) {
+  if (row->flags & DEPOT_COMMIT_MINE) {
+    string_format(out, capacity, "You");
+  } else {
+    depot_person_text(depot, row->author, NULL, out, capacity);
+  }
+}
+
+/* The table key of a commit: its id's first 16 digits. */
+static uint64_t depot_commit_key(const char *id) {
+  char head[17];
+  string_format(head, sizeof(head), "%.16s", id);
+  return string_parse_u64_hex(head, NULL);
+}
+
+static const DepotHistory *depot_history_find(const VkrEditorDepot *depot,
+                                              const char *id) {
+  for (uint32_t i = 0u; i < depot->history_count; ++i) {
+    if (string_equals(depot->history[i].id, id)) {
+      return &depot->history[i];
+    }
+  }
+  return NULL;
+}
+
+/* Starts reading the selected commit's details when they are neither shown
+   nor being read, and takes finished ones. */
+static void depot_inspect_update(VkrEditorDepot *depot) {
+  DepotInspect *inspect = depot->inspect;
+  if (inspect && inspect->running &&
+      vkr_atomic_bool_load(&inspect->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+    (void)vkr_thread_join(inspect->thread);
+    (void)vkr_thread_destroy(depot->allocator, &inspect->thread);
+    inspect->running = false_v;
+  }
+  VkrDepotId wanted;
+  if (!depot->selected_commit[0] || !depot->store_root[0] ||
+      !vkr_depot_id_parse(depot->selected_commit, &wanted)) {
+    return;
+  }
+  if (!inspect) {
+    inspect = depot->inspect = vkr_heap_alloc_zeroed(1u, sizeof(*inspect));
+    if (!inspect) {
+      return;
+    }
+  }
+  if (inspect->running ||
+      (vkr_depot_id_equal(&inspect->commit, &wanted) &&
+       string_equals(inspect->store_root, depot->store_root))) {
+    return;
+  }
+  inspect->commit = wanted;
+  string_format(inspect->store_root, sizeof(inspect->store_root), "%s",
+                depot->store_root);
+  inspect->ok = false_v;
+  inspect->error[0] = '\0';
+  vkr_atomic_bool_store(&inspect->done, false_v, VKR_MEMORY_ORDER_RELAXED);
+  inspect->running = vkr_thread_create(depot->allocator, &inspect->thread,
+                                       depot_inspect_worker, inspect);
+}
+
+/* The details shown for the selected commit; NULL while they are read. */
+static const DepotInspect *depot_inspected(const VkrEditorDepot *depot) {
+  const DepotInspect *inspect = depot->inspect;
+  VkrDepotId wanted;
+  if (!inspect || inspect->running || !depot->selected_commit[0] ||
+      !vkr_depot_id_parse(depot->selected_commit, &wanted) ||
+      !vkr_depot_id_equal(&inspect->commit, &wanted)) {
+    return NULL;
+  }
+  return inspect;
+}
+
+// -----------------------------------------------------------------------------
+// Toolbar
+// -----------------------------------------------------------------------------
+
+/* The colour of a remote's state: reachable, waiting or failing. */
+static Vec4 depot_remote_color(const VkrEditorDepot *depot, uint32_t index) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  if (depot_remote_outbound(depot, index)) {
+    return theme->info;
+  }
+  if (!depot->remote_tried[index]) {
+    return theme->text_disabled;
+  }
+  return depot->remote_connect[index] == VKR_DEPOT_CONNECT_OK ? theme->success
+         : depot->remote_connect[index] == VKR_DEPOT_CONNECT_DENIED
+             ? theme->warning
+             : theme->error;
+}
+
+static void depot_toolbar(VkrEditorDepot *depot, VkrEditorUi *editor,
+                          VkrUiSystem *ui, float32_t width, bool8_t busy) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t y = 8.0f;
+  float32_t x = DEPOT_PAD;
+  char error[DEPOT_TEXT] = {0};
+  /* The branch, opening its list. */
+  const char *branch = depot->branch[0] ? depot->branch : DEPOT_BRANCH;
+  const float32_t branch_pt =
+      Min(depot_text_pt(branch, true_v) + 16.0f, 200.0f);
+  VkrUiWidgetConfig picker = depot_widget(x, y, branch_pt, 28);
+  vkr_editor_action_style(&picker, editor->heading_font);
+  picker.icon = VKR_UI_ICON_GIT_BRANCH;
+  picker.icon_size_pt = 14.0f;
+  picker.icon_color = theme->accent_hover;
+  picker.trailing_icon = depot->branch_menu_open ? VKR_UI_ICON_CHEVRON_UP
+                                                 : VKR_UI_ICON_CHEVRON_DOWN;
+  picker.trailing_icon_size_pt = 11.0f;
+  picker.tooltip = string8_lit("The branch: switch to another or make one");
+  if (vkr_ui_button(ui, string8_lit("bar.branch"), depot_string(branch),
+                    &picker)) {
+    depot->branch_menu_open = !depot->branch_menu_open;
+    depot->remote_menu_open = false_v;
+  }
+  x += branch_pt + 8.0f;
+  if (!depot->remote_count) {
+    if (depot_icon_button(editor, ui, "bar.add", "Add a remote to sync",
+                          VKR_UI_ICON_ADD, width - DEPOT_PAD - 190.0f, y,
+                          190.0f, false_v, false_v,
+                          "A remote is another computer's repository of this "
+                          "project")) {
+      depot->tab = DEPOT_TAB_REMOTES;
+      depot->remote_form_open = true_v;
+    }
+    return;
+  }
+  /* The remote steps use, its state as a coloured cloud. */
+  const VkrDepotRemoteEntry *remote = depot_selected(depot);
+  const uint32_t selected = depot->selected_remote;
+  const float32_t remote_pt =
+      Min(depot_text_pt(remote->name, true_v) + 16.0f, 180.0f);
+  VkrUiWidgetConfig chooser = depot_widget(x, y, remote_pt, 28);
+  vkr_editor_action_style(&chooser, editor->heading_font);
+  chooser.icon = VKR_UI_ICON_CLOUD;
+  chooser.icon_size_pt = 14.0f;
+  chooser.icon_color = depot_remote_color(depot, selected);
+  chooser.trailing_icon = depot->remote_menu_open ? VKR_UI_ICON_CHEVRON_UP
+                                                  : VKR_UI_ICON_CHEVRON_DOWN;
+  chooser.trailing_icon_size_pt = 11.0f;
+  string_format(depot->remote_tip, sizeof(depot->remote_tip), "%s at %s: %s",
+                remote->name, remote->address,
+                depot_remote_state(depot, selected));
+  chooser.tooltip = depot_string(depot->remote_tip);
+  if (vkr_ui_button(ui, string8_lit("bar.remote"), depot_string(remote->name),
+                    &chooser)) {
+    depot->remote_menu_open = !depot->remote_menu_open;
+    depot->branch_menu_open = false_v;
+  }
+  x += remote_pt + 8.0f;
+  /* Sync, Push, Pull and Fetch from the right; Fetch keeps only its icon
+     when the row is short of room. */
+  char pull[32];
+  char push[32];
+  string_format(pull, sizeof(pull), depot->behind ? "Pull %u" : "Pull",
+                depot->behind);
+  string_format(push, sizeof(push), depot->ahead ? "Push %u" : "Push",
+                depot->ahead);
+  const float32_t sync_pt = depot_text_pt("Sync", false_v) + 8.0f;
+  const float32_t push_pt = depot_text_pt(push, true_v);
+  const float32_t pull_pt = depot_text_pt(pull, true_v);
+  const float32_t room = width - DEPOT_PAD - x - sync_pt - push_pt - pull_pt;
+  const bool8_t fetch_text = room > depot_text_pt("Fetch", true_v) + 24.0f;
+  const float32_t fetch_pt =
+      fetch_text ? depot_text_pt("Fetch", true_v) : 34.0f;
+  float32_t right = width - DEPOT_PAD - sync_pt;
+  if (depot_icon_button(editor, ui, "bar.sync", "Sync", VKR_UI_ICON_NONE, right,
+                        y, sync_pt, true_v, busy,
+                        "Pull, then push the branch") &&
+      !vkr_editor_depot_sync(depot, NULL, error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  right -= push_pt + 6.0f;
+  if (depot_icon_button(editor, ui, "bar.push", push, VKR_UI_ICON_ARROW_UP,
+                        right, y, push_pt, false_v, busy || !depot->ahead,
+                        "Send this branch's commits to the remote") &&
+      !vkr_editor_depot_push(depot, NULL, error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  right -= pull_pt + 6.0f;
+  if (depot_icon_button(editor, ui, "bar.pull", pull, VKR_UI_ICON_ARROW_DOWN,
+                        right, y, pull_pt, false_v, busy,
+                        "Bring the remote's commits into this branch") &&
+      !vkr_editor_depot_pull(depot, NULL, "fail", error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  right -= fetch_pt + 6.0f;
+  if (right > x &&
+      depot_icon_button(editor, ui, "bar.fetch", fetch_text ? "Fetch" : "",
+                        VKR_UI_ICON_REFRESH, right, y, fetch_pt, false_v, busy,
+                        "Look for the remote's new commits without taking "
+                        "them") &&
+      !vkr_editor_depot_fetch(depot, error, sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+}
+
 /* A row of small toggle buttons, one per item, the chosen one primary;
    returns the index clicked, or UINT32_MAX. */
 static uint32_t depot_choice_row(VkrEditorUi *editor, VkrUiSystem *ui,
@@ -3635,8 +4128,7 @@ static uint32_t depot_choice_row(VkrEditorUi *editor, VkrUiSystem *ui,
   uint32_t clicked = UINT32_MAX;
   float32_t cursor = x;
   for (uint32_t i = 0u; i < count; ++i) {
-    const float32_t button =
-        Min(160.0f, 24.0f + 7.0f * (float32_t)string_length(names[i]));
+    const float32_t button = Min(180.0f, depot_text_pt(names[i], false_v));
     if (cursor + button > x + width && cursor > x) {
       cursor = x;
       *y += 32;
@@ -3648,80 +4140,92 @@ static uint32_t depot_choice_row(VkrEditorUi *editor, VkrUiSystem *ui,
       clicked = i;
     }
     (void)vkr_ui_pop_id(ui);
-    cursor += button + 8;
+    cursor += button + 6;
   }
   *y += 32;
   return clicked;
 }
 
-static void depot_window_branch(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                VkrUiSystem *ui, float32_t *y, float32_t width,
-                                bool8_t busy) {
-  char text[DEPOT_TEXT];
-  depot_heading(editor, ui, "repo.title", depot->project_name,
-                VKR_UI_ICON_GIT_BRANCH, 12, *y, width - 24);
-  *y += 28;
-  const VkrDepotRemoteEntry *remote = depot_selected(depot);
-  if (remote && depot->remote_known) {
-    string_format(text, sizeof(text),
-                  "On %s  \xc2\xb7  %u to push, %u to pull against %s/%s",
-                  depot->branch, depot->ahead, depot->behind, remote->name,
-                  depot->branch);
-  } else if (remote) {
-    string_format(text, sizeof(text), "On %s  \xc2\xb7  %s has no %s yet",
-                  depot->branch, remote->name, depot->branch);
-  } else {
-    string_format(text, sizeof(text), "On %s  \xc2\xb7  no remote",
-                  depot->branch);
+/* The open branch list: the branches to switch to and a field for a new
+   one. */
+static void depot_branch_strip(VkrEditorDepot *depot, VkrEditorUi *editor,
+                               VkrUiSystem *ui, float32_t *y, float32_t width,
+                               bool8_t busy) {
+  char error[DEPOT_TEXT] = {0};
+  const float32_t top = *y;
+  float32_t row = top + 10.0f;
+  const char *names[DEPOT_BRANCHES_MAX];
+  uint32_t chosen = UINT32_MAX;
+  for (uint32_t i = 0u; i < depot->branch_count; ++i) {
+    names[i] = depot->branches[i].name;
+    if (string_equals(names[i], depot->branch)) {
+      chosen = i;
+    }
   }
-  depot_caption(ui, "repo.branch", text, 12, *y, width - 24);
-  *y += 24;
-  if (depot->branch_count > 1u) {
-    const char *names[DEPOT_BRANCHES_MAX];
-    uint32_t chosen = UINT32_MAX;
-    for (uint32_t i = 0u; i < depot->branch_count; ++i) {
-      names[i] = depot->branches[i].name;
-      if (string_equals(names[i], depot->branch)) {
-        chosen = i;
+  /* The card goes first, under the rows, so its height counts the rows
+     depot_choice_row wraps the branches into. */
+  float32_t wrapped = 0.0f;
+  float32_t cursor = DEPOT_PAD + 12.0f;
+  for (uint32_t i = 0u; i < depot->branch_count; ++i) {
+    const float32_t button = Min(180.0f, depot_text_pt(names[i], false_v));
+    if (cursor + button > width - DEPOT_PAD - 12.0f &&
+        cursor > DEPOT_PAD + 12.0f) {
+      cursor = DEPOT_PAD + 12.0f;
+      wrapped += 32.0f;
+    }
+    cursor += button + 6.0f;
+  }
+  const float32_t height =
+      10.0f + (depot->branch_count ? wrapped + 32.0f : 0.0f) + 38.0f;
+  depot_alert_card(ui, "branches.card", top, width, height,
+                   vkr_ui_theme()->accent);
+  if (depot->branch_count) {
+    const uint32_t clicked = depot_choice_row(
+        editor, ui, "branch", names, depot->branch_count, chosen,
+        DEPOT_PAD + 12.0f, &row, width - 2 * DEPOT_PAD - 24.0f, busy);
+    if (clicked != UINT32_MAX) {
+      if (vkr_editor_depot_switch(depot, names[clicked], false_v, error,
+                                  sizeof(error))) {
+        depot->branch_menu_open = false_v;
+      } else {
+        string_format(depot->error, sizeof(depot->error), "%s", error);
       }
     }
-    const uint32_t clicked =
-        depot_choice_row(editor, ui, "branch", names, depot->branch_count,
-                         chosen, 12, y, width - 24, busy);
-    char error[DEPOT_TEXT] = {0};
-    if (clicked != UINT32_MAX &&
-        !vkr_editor_depot_switch(depot, names[clicked], false_v, error,
-                                 sizeof(error))) {
+  }
+  const float32_t field = Min(width - 2 * DEPOT_PAD - 160.0f, 280.0f);
+  depot_field(ui, "branch.new", depot->new_branch, sizeof(depot->new_branch),
+              DEPOT_PAD + 12.0f, row, field);
+  if (!depot->new_branch[0]) {
+    VkrUiWidgetConfig hint =
+        depot_widget(DEPOT_PAD + 18.0f, row + 3, field - 12, 20);
+    hint.style.text_color = vkr_ui_theme()->text_disabled;
+    hint.style.font_size_pt = vkr_ui_theme()->font_caption;
+    vkr_ui_label(ui, string8_lit("branch.hint"),
+                 string8_lit("New branch from this one"), &hint);
+  }
+  if (depot_button(editor, ui, "branch.create", "Make branch",
+                   DEPOT_PAD + 20.0f + field, row, 120, false_v,
+                   busy || !depot->new_branch[0])) {
+    if (vkr_editor_depot_switch(depot, depot->new_branch, true_v, error,
+                                sizeof(error))) {
+      depot->branch_menu_open = false_v;
+    } else {
       string_format(depot->error, sizeof(depot->error), "%s", error);
     }
   }
-  const float32_t field = Min(width - 160.0f, 260.0f);
-  depot_field(ui, "branch.new", depot->new_branch, sizeof(depot->new_branch),
-              12, *y, field);
-  if (!depot->new_branch[0]) {
-    VkrUiWidgetConfig hint = depot_widget(18, *y + 3, field - 12, 20);
-    hint.style.text_color = vkr_ui_theme()->text_disabled;
-    hint.style.font_size_pt = vkr_ui_theme()->font_caption;
-    vkr_ui_label(ui, string8_lit("branch.hint"), string8_lit("New branch name"),
-                 &hint);
-  }
-  char error[DEPOT_TEXT] = {0};
-  if (depot_button(editor, ui, "branch.create", "New branch", 20 + field, *y,
-                   120, false_v, busy || !depot->new_branch[0]) &&
-      !vkr_editor_depot_switch(depot, depot->new_branch, true_v, error,
-                               sizeof(error))) {
-    string_format(depot->error, sizeof(depot->error), "%s", error);
-  }
-  *y += 38;
+  *y = top + height + 8.0f;
 }
 
-static void depot_window_sync(VkrEditorDepot *depot, VkrEditorUi *editor,
-                              VkrUiSystem *ui, float32_t *y, float32_t width,
-                              bool8_t busy) {
-  const VkrUiTheme *theme = vkr_ui_theme();
-  if (!depot->remote_count) {
-    return;
-  }
+/* The open remote list: the remote steps use, its state, and the way to
+   the Remotes tab. */
+static void depot_remote_strip(VkrEditorDepot *depot, VkrEditorUi *editor,
+                               VkrUiSystem *ui, float32_t *y, float32_t width,
+                               bool8_t busy) {
+  const float32_t top = *y;
+  const float32_t height = depot->remote_count > 1u ? 92.0f : 60.0f;
+  depot_alert_card(ui, "remotes.card", top, width, height,
+                   vkr_ui_theme()->accent);
+  float32_t row = top + 10.0f;
   if (depot->remote_count > 1u) {
     const char *names[VKR_DEPOT_REMOTES_MAX];
     for (uint32_t i = 0u; i < depot->remote_count; ++i) {
@@ -3729,308 +4233,1258 @@ static void depot_window_sync(VkrEditorDepot *depot, VkrEditorUi *editor,
     }
     const uint32_t clicked =
         depot_choice_row(editor, ui, "remote.pick", names, depot->remote_count,
-                         depot->selected_remote, 12, y, width - 24, busy);
+                         depot->selected_remote, DEPOT_PAD + 12.0f, &row,
+                         width - 2 * DEPOT_PAD - 24.0f, busy);
     if (clicked != UINT32_MAX) {
       depot->selected_remote = clicked;
       depot->next_status = 0.0;
     }
   }
-  char text[DEPOT_TEXT];
   const VkrDepotRemoteEntry *remote = depot_selected(depot);
   const uint32_t selected = depot->selected_remote;
-  const bool8_t outbound = depot_remote_outbound(depot, selected);
+  char text[DEPOT_TEXT];
   char seen[48] = {0};
-  if (outbound) {
-    const uint64_t now_s = (uint64_t)vkr_bakery_unix_seconds();
+  if (depot_remote_outbound(depot, selected)) {
+    const uint64_t now_s = (uint64_t)vkr_platform_get_unix_time();
     const uint64_t seen_s = depot->remote_seen_us[selected] / 1000000u;
-    const uint64_t minutes = now_s > seen_s ? (now_s - seen_s) / 60u : 0u;
-    string_format(seen, sizeof(seen), ", last %llu min ago",
-                  (unsigned long long)minutes);
+    string_format(
+        seen, sizeof(seen), ", last %llu min ago",
+        (unsigned long long)(now_s > seen_s ? (now_s - seen_s) / 60u : 0u));
   }
-  string_format(text, sizeof(text), "%s  \xc2\xb7  %s  \xc2\xb7  %s%s",
-                remote->name, remote->address,
-                depot_remote_state(depot, selected), seen);
-  VkrUiWidgetConfig state = depot_widget(12, *y, width - 24, 18);
-  state.style.font_size_pt = theme->font_caption;
-  state.style.text_color =
-      depot->remote_tried[selected] && !outbound &&
-              depot->remote_connect[selected] != VKR_DEPOT_CONNECT_OK
-          ? theme->warning
-          : theme->text_secondary;
+  if (depot->remote_known) {
+    string_format(text, sizeof(text),
+                  "%s  \xc2\xb7  %s%s  \xc2\xb7  %u to push, %u to pull",
+                  remote->address, depot_remote_state(depot, selected), seen,
+                  depot->ahead, depot->behind);
+  } else {
+    string_format(text, sizeof(text), "%s  \xc2\xb7  %s%s  \xc2\xb7  no %s yet",
+                  remote->address, depot_remote_state(depot, selected), seen,
+                  depot->branch);
+  }
+  VkrUiWidgetConfig state = depot_widget(DEPOT_PAD + 12.0f, row + 5,
+                                         width - 2 * DEPOT_PAD - 160.0f, 18);
+  state.style.font_size_pt = vkr_ui_theme()->font_caption;
+  state.style.text_color = depot_remote_color(depot, selected);
   vkr_ui_label(ui, string8_lit("remote.state"), depot_string(text), &state);
-  *y += 24;
-  char error[DEPOT_TEXT] = {0};
-  const float32_t button = Min(96.0f, (width - 48) / 4.0f);
-  if (depot_button(editor, ui, "sync.go", "Sync", 12, *y, button, true_v,
-                   busy) &&
-      !vkr_editor_depot_sync(depot, NULL, error, sizeof(error))) {
-    string_format(depot->error, sizeof(depot->error), "%s", error);
+  if (depot_button(editor, ui, "remote.manage", "Manage remotes",
+                   width - DEPOT_PAD - 140.0f, row, 128, false_v, false_v)) {
+    depot->tab = DEPOT_TAB_REMOTES;
+    depot->remote_menu_open = false_v;
   }
-  if (depot_button(editor, ui, "sync.pull", "Pull", 20 + button, *y, button,
-                   false_v, busy) &&
-      !vkr_editor_depot_pull(depot, NULL, "fail", error, sizeof(error))) {
-    string_format(depot->error, sizeof(depot->error), "%s", error);
-  }
-  if (depot_button(editor, ui, "sync.push", "Push", 28 + button * 2, *y, button,
-                   false_v, busy || !depot->ahead) &&
-      !vkr_editor_depot_push(depot, NULL, error, sizeof(error))) {
-    string_format(depot->error, sizeof(depot->error), "%s", error);
-  }
-  if (depot_button(editor, ui, "sync.fetch", "Fetch", 36 + button * 3, *y,
-                   button, false_v, busy) &&
-      !vkr_editor_depot_fetch(depot, error, sizeof(error))) {
-    string_format(depot->error, sizeof(depot->error), "%s", error);
-  }
-  *y += 38;
+  *y = top + height + 8.0f;
 }
 
-static void depot_window_conflicts(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                   VkrUiSystem *ui, float32_t *y,
-                                   float32_t width, bool8_t busy) {
-  if (!depot->conflict_count) {
-    return;
-  }
+// -----------------------------------------------------------------------------
+// Alerts
+// -----------------------------------------------------------------------------
+
+static void depot_alert_progress(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                 VkrUiSystem *ui, float32_t *y,
+                                 float32_t width) {
   const VkrUiTheme *theme = vkr_ui_theme();
+  char text[DEPOT_TEXT];
+  const float32_t fraction = depot_job_text(depot, text, sizeof(text));
+  depot_alert_card(ui, "job.card", *y, width, 54.0f, theme->accent);
+  VkrUiWidgetConfig label = depot_widget(DEPOT_PAD + 12.0f, *y + 7,
+                                         width - 2 * DEPOT_PAD - 130.0f, 22);
+  label.icon = VKR_UI_ICON_SPINNER;
+  label.icon_size_pt = 13.0f;
+  label.icon_color = theme->accent_hover;
+  vkr_ui_label(ui, string8_lit("job.text"), depot_string(text), &label);
+  if (depot_button(editor, ui, "job.cancel", "Cancel",
+                   width - DEPOT_PAD - 100.0f, *y + 6, 88, false_v, false_v)) {
+    vkr_editor_depot_cancel(depot);
+  }
+  depot_progress_bar(ui, "job.bar", DEPOT_PAD + 14.0f, *y + 38,
+                     width - 2 * DEPOT_PAD - 28.0f, fraction);
+  *y += 62.0f;
+}
+
+static void depot_alert_error(VkrEditorDepot *depot, VkrUiSystem *ui,
+                              float32_t *y, float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t text_pt = width - 2 * DEPOT_PAD - 70.0f;
+  const float32_t lines =
+      (float32_t)((uint32_t)((float32_t)string_length(depot->error) /
+                             Max(16.0f, text_pt / 6.8f)) +
+                  1u);
+  const float32_t height = Max(36.0f, lines * 18.0f + 16.0f);
+  depot_alert_card(ui, "error.card", *y, width, height, theme->warning);
+  VkrUiWidgetConfig c =
+      depot_widget(DEPOT_PAD + 12.0f, *y + 7, text_pt, height - 12.0f);
+  c.style.text_color = theme->text;
+  c.text.layout.word_wrap = true_v;
+  c.text.layout.max_width = text_pt - 26.0f;
+  c.icon = VKR_UI_ICON_WARNING_FILL;
+  c.icon_size_pt = 13.0f;
+  c.icon_color = theme->warning;
+  vkr_ui_label(ui, string8_lit("error"), depot_string(depot->error), &c);
+  VkrUiWidgetConfig close =
+      depot_widget(width - DEPOT_PAD - 34.0f, *y + 5, 26, 26);
+  vkr_editor_ghost_style(&close);
+  close.icon = VKR_UI_ICON_CLOSE;
+  close.icon_size_pt = 12.0f;
+  close.icon_color = theme->text_secondary;
+  close.tooltip = string8_lit("Dismiss");
+  if (vkr_ui_button(ui, string8_lit("error.close"), (String8){0}, &close)) {
+    depot->error[0] = '\0';
+  }
+  *y += height + 8.0f;
+}
+
+/* Paths under a title, at most four, then "and N more". */
+static float32_t depot_alert_paths(VkrUiSystem *ui, const char *id,
+                                   const DepotText *paths, uint32_t count,
+                                   float32_t y, float32_t width) {
+  const size_t shown =
+      (size_t)Max(16.0f, (width - 2 * DEPOT_PAD - 40.0f) / 6.4f);
+  const uint32_t rows = Min(count, 4u);
+  (void)vkr_ui_push_id_u64(ui, (uint64_t)(uintptr_t)id);
+  for (uint32_t i = 0u; i < rows; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    char tail[DEPOT_TEXT];
+    depot_path_tail(paths[i].text, shown, tail, sizeof(tail));
+    depot_caption(ui, "path", tail, DEPOT_PAD + 24.0f, y,
+                  width - 2 * DEPOT_PAD - 36.0f);
+    (void)vkr_ui_pop_id(ui);
+    y += 18.0f;
+  }
+  if (count > rows) {
+    char text[64];
+    string_format(text, sizeof(text), "and %u more", count - rows);
+    depot_caption(ui, "more", text, DEPOT_PAD + 24.0f, y,
+                  width - 2 * DEPOT_PAD - 36.0f);
+    y += 18.0f;
+  }
+  (void)vkr_ui_pop_id(ui);
+  return y;
+}
+
+static float32_t depot_paths_pt(uint32_t count) {
+  return 18.0f * (float32_t)(Min(count, 4u) + (count > 4u ? 1u : 0u));
+}
+
+static void depot_alert_conflicts(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                  VkrUiSystem *ui, float32_t *y,
+                                  float32_t width, bool8_t busy) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t height =
+      30.0f + depot_paths_pt(depot->conflict_count) + 26.0f + 40.0f;
+  depot_alert_card(ui, "conflict.card", *y, width, height, theme->warning);
   char text[DEPOT_TEXT];
   string_format(text, sizeof(text), "%u file%s changed here and on the remote",
                 depot->conflict_count, depot->conflict_count == 1u ? "" : "s");
-  depot_label(ui, "conflict.title", text, 12, *y, width - 24, theme->warning);
-  *y += 24;
-  /* The end of a path names it: a scene's id and file, not the projects
-     folder every path shares. */
-  const size_t shown = (size_t)Max(16.0f, (width - 48.0f) / 6.4f);
-  for (uint32_t i = 0u; i < Min(depot->conflict_count, 6u); ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    const char *path = depot->conflicts[i].text;
-    char tail[DEPOT_TEXT];
-    const size_t length = string_length(path);
-    if (length > shown) {
-      string_format(tail, sizeof(tail), "\xe2\x80\xa6%s",
-                    path + length - shown + 1u);
-    } else {
-      string_format(tail, sizeof(tail), "%s", path);
-    }
-    depot_caption(ui, "conflict", tail, 24, *y, width - 36);
-    (void)vkr_ui_pop_id(ui);
-    *y += 18;
-  }
-  *y += 4;
-  *y += depot_paragraph(ui, "conflict.text",
-                        "A scene both sides changed is listed by its scene "
-                        "file and settled whole.",
-                        12, *y, width - 24);
-  *y += 4;
+  VkrUiWidgetConfig title = depot_widget(DEPOT_PAD + 12.0f, *y + 6,
+                                         width - 2 * DEPOT_PAD - 24.0f, 22);
+  title.text.font = editor->heading_font;
+  title.icon = VKR_UI_ICON_WARNING_FILL;
+  title.icon_size_pt = 13.0f;
+  title.icon_color = theme->warning;
+  vkr_ui_label(ui, string8_lit("conflict.title"), depot_string(text), &title);
+  float32_t row = depot_alert_paths(ui, "conflicts", depot->conflicts,
+                                    depot->conflict_count, *y + 30.0f, width);
+  depot_caption(ui, "conflict.text",
+                "A scene both sides changed is settled whole: pick a side.",
+                DEPOT_PAD + 12.0f, row + 4.0f, width - 2 * DEPOT_PAD - 24.0f);
+  row += 26.0f;
   char error[DEPOT_TEXT] = {0};
-  if (depot_button(editor, ui, "conflict.theirs", "Use theirs", 12, *y, 120,
-                   false_v, busy) &&
+  if (depot_button(editor, ui, "conflict.theirs", "Use theirs",
+                   DEPOT_PAD + 12.0f, row, 120, false_v, busy) &&
       !vkr_editor_depot_pull(depot, NULL, "theirs", error, sizeof(error))) {
     string_format(depot->error, sizeof(depot->error), "%s", error);
   }
-  if (depot_button(editor, ui, "conflict.mine", "Keep mine", 140, *y, 120,
-                   false_v, busy) &&
+  if (depot_button(editor, ui, "conflict.mine", "Keep mine", DEPOT_PAD + 140.0f,
+                   row, 120, false_v, busy) &&
       !vkr_editor_depot_pull(depot, NULL, "mine", error, sizeof(error))) {
     string_format(depot->error, sizeof(depot->error), "%s", error);
   }
-  *y += 38;
+  *y += height + 8.0f;
 }
 
 /* Files the project reads from outside itself, which the last commit
    stopped for: copy them in and commit, or commit without them. */
-static void depot_window_untracked(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                   VkrUiSystem *ui, float32_t *y,
-                                   float32_t width, bool8_t busy) {
-  if (!depot->untracked_count) {
-    return;
-  }
+static void depot_alert_untracked(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                  VkrUiSystem *ui, float32_t *y,
+                                  float32_t width, bool8_t busy) {
   const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t height =
+      30.0f + depot_paths_pt(depot->untracked_count) + 26.0f + 40.0f;
+  depot_alert_card(ui, "untracked.card", *y, width, height, theme->warning);
   char text[DEPOT_TEXT];
   char size[32];
   depot_format_size(depot->untracked_bytes, size, sizeof(size));
   string_format(text, sizeof(text), "%u file%s from outside the project (%s)",
                 depot->untracked_count, depot->untracked_count == 1u ? "" : "s",
                 size);
-  depot_label(ui, "untracked.title", text, 12, *y, width - 24, theme->warning);
-  *y += 24;
-  for (uint32_t i = 0u; i < Min(depot->untracked_count, 6u); ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    depot_caption(ui, "untracked", depot->untracked[i].text, 24, *y,
-                  width - 36);
-    (void)vkr_ui_pop_id(ui);
-    *y += 18;
-  }
-  if (depot->untracked_count > 6u) {
-    string_format(text, sizeof(text), "and %u more",
-                  depot->untracked_count - 6u);
-    depot_caption(ui, "untracked.more", text, 24, *y, width - 36);
-    *y += 18;
-  }
-  *y += 4;
-  *y += depot_paragraph(ui, "untracked.text",
-                        "The project reads them from the engine's folder, so "
-                        "a clone on another computer would miss them.",
-                        12, *y, width - 24);
-  *y += 4;
+  VkrUiWidgetConfig title = depot_widget(DEPOT_PAD + 12.0f, *y + 6,
+                                         width - 2 * DEPOT_PAD - 24.0f, 22);
+  title.text.font = editor->heading_font;
+  title.icon = VKR_UI_ICON_WARNING_FILL;
+  title.icon_size_pt = 13.0f;
+  title.icon_color = theme->warning;
+  vkr_ui_label(ui, string8_lit("untracked.title"), depot_string(text), &title);
+  float32_t row = depot_alert_paths(ui, "untracked", depot->untracked,
+                                    depot->untracked_count, *y + 30.0f, width);
+  depot_caption(ui, "untracked.text",
+                "The project reads them from the engine's folder, so a clone "
+                "on another computer would miss them.",
+                DEPOT_PAD + 12.0f, row + 4.0f, width - 2 * DEPOT_PAD - 24.0f);
+  row += 26.0f;
   char error[DEPOT_TEXT] = {0};
-  if (depot_button(editor, ui, "untracked.adopt", "Copy in and commit", 12, *y,
-                   170, true_v, busy) &&
+  if (depot_button(editor, ui, "untracked.adopt", "Copy in and commit",
+                   DEPOT_PAD + 12.0f, row, 170, true_v, busy) &&
       !vkr_editor_depot_commit(depot, depot->message, false_v,
                                VKR_EDITOR_DEPOT_UNTRACKED_ADOPT, error,
                                sizeof(error))) {
     string_format(depot->error, sizeof(depot->error), "%s", error);
   }
-  if (depot_button(editor, ui, "untracked.ignore", "Commit without them", 190,
-                   *y, 170, false_v, busy) &&
+  if (depot_button(editor, ui, "untracked.ignore", "Commit without them",
+                   DEPOT_PAD + 190.0f, row, 170, false_v, busy) &&
       !vkr_editor_depot_commit(depot, depot->message, false_v,
                                VKR_EDITOR_DEPOT_UNTRACKED_IGNORE, error,
                                sizeof(error))) {
     string_format(depot->error, sizeof(depot->error), "%s", error);
   }
-  *y += 38;
+  *y += height + 8.0f;
 }
 
-static void depot_window_changes(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                 const VkrSampleUiFrame *frame, VkrUiSystem *ui,
-                                 float32_t *y, float32_t width, bool8_t busy) {
+static void depot_alert_requests(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                 VkrUiSystem *ui, float32_t *y,
+                                 float32_t width) {
   const VkrUiTheme *theme = vkr_ui_theme();
-  char text[DEPOT_TEXT];
-  char error[DEPOT_TEXT] = {0};
-  if (!depot->status_known && depot_busy(depot)) {
-    depot_caption(ui, "changes.reading", "Looking for changes...", 12, *y,
-                  width - 24);
-    *y += 26;
-    return;
-  }
-  if (!depot->change_count) {
-    depot_label(ui, "changes.none", "No changes to commit", 12, *y, width - 24,
-                theme->text_secondary);
-    *y += 30;
-    return;
-  }
-  string_format(text, sizeof(text), "%u change%s", depot->change_count,
-                depot->change_count == 1u ? "" : "s");
-  depot_heading(editor, ui, "changes.title", text, VKR_UI_ICON_PLUS_CIRCLE, 12,
-                *y, width - 24);
-  *y += 28;
-  const uint32_t rows = Min(depot->change_count, 8u);
-  for (uint32_t i = 0u; i < rows; ++i) {
+  for (uint32_t i = 0u; i < depot->request_count; ++i) {
+    const VkrDepotAccessRequest *request = &depot->requests[i];
     (void)vkr_ui_push_id_u64(ui, i);
-    depot_caption(ui, "change", depot->changes[i].text, 24, *y, width - 36);
+    depot_alert_card(ui, "request.card", *y, width, 84.0f, theme->accent);
+    char who[VKR_DEPOT_DISPLAY_NAME + 16];
+    depot_person_text(depot, request->key, request->name, who, sizeof(who));
+    char text[160];
+    string_format(text, sizeof(text), "%s asks to fetch and push", who);
+    VkrUiWidgetConfig title = depot_widget(DEPOT_PAD + 12.0f, *y + 6,
+                                           width - 2 * DEPOT_PAD - 24.0f, 22);
+    title.text.font = editor->heading_font;
+    title.icon = VKR_UI_ICON_BELL;
+    title.icon_size_pt = 13.0f;
+    title.icon_color = theme->accent_hover;
+    vkr_ui_label(ui, string8_lit("request"), depot_string(text), &title);
+    char print[16];
+    depot_fingerprint(request->key, print);
+    string_format(text, sizeof(text),
+                  "Its key starts %s; that computer shows the same while it "
+                  "waits",
+                  print);
+    depot_caption(ui, "request.key", text, DEPOT_PAD + 12.0f, *y + 28,
+                  width - 2 * DEPOT_PAD - 24.0f);
+    char key[VKR_DEPOT_ID_HEX];
+    depot_key_hex(request->key, key);
+    char error[DEPOT_TEXT] = {0};
+    const float32_t row = *y + 50.0f;
+    if (depot_button(editor, ui, "allow", "Allow", DEPOT_PAD + 12.0f, row, 96,
+                     true_v, false_v)) {
+      (void)vkr_editor_depot_allow(depot, key, "write", error, sizeof(error));
+    }
+    if (depot_button(editor, ui, "read", "Fetch only", DEPOT_PAD + 116.0f, row,
+                     104, false_v, false_v)) {
+      (void)vkr_editor_depot_allow(depot, key, "read", error, sizeof(error));
+    }
+    if (depot_button(editor, ui, "deny", "Deny", DEPOT_PAD + 228.0f, row, 80,
+                     false_v, false_v)) {
+      (void)vkr_editor_depot_allow(depot, key, "none", error, sizeof(error));
+    }
+    if (error[0]) {
+      string_format(depot->error, sizeof(depot->error), "%s", error);
+    }
     (void)vkr_ui_pop_id(ui);
-    *y += 18;
+    *y += 92.0f;
   }
-  if (depot->change_count > rows) {
-    string_format(text, sizeof(text), "and %u more",
-                  depot->change_count - rows);
-    depot_caption(ui, "changes.more", text, 24, *y, width - 36);
-    *y += 18;
-  }
-  *y += 8;
-  depot_field(ui, "message", depot->message, sizeof(depot->message), 12, *y,
-              width - 24);
-  if (!depot->message[0]) {
-    VkrUiWidgetConfig hint = depot_widget(18, *y + 3, width - 40, 20);
-    hint.style.text_color = theme->text_disabled;
-    hint.style.font_size_pt = theme->font_caption;
-    vkr_ui_label(ui, string8_lit("message.hint"),
-                 string8_lit("Describe your changes"), &hint);
-  }
-  *y += 36;
-  const bool8_t unsaved = !depot_journals_saved(frame);
-  if (depot_button(editor, ui, "commit", "Commit", 12, *y, 120, true_v,
-                   busy || unsaved) &&
-      !vkr_editor_depot_commit(depot, depot->message, false_v,
-                               VKR_EDITOR_DEPOT_UNTRACKED_STOP, error,
-                               sizeof(error))) {
-    string_format(depot->error, sizeof(depot->error), "%s", error);
-  }
-  if (depot->remote_count &&
-      depot_button(editor, ui, "commit.sync", "Commit & Sync", 140, *y, 140,
-                   false_v, busy || unsaved) &&
-      !vkr_editor_depot_commit(depot, depot->message, true_v,
-                               VKR_EDITOR_DEPOT_UNTRACKED_STOP, error,
-                               sizeof(error))) {
-    string_format(depot->error, sizeof(depot->error), "%s", error);
-  }
-  if (unsaved) {
-    depot_caption(ui, "commit.unsaved", "Save the scene to commit its edits",
-                  12, *y + 30, width - 24);
-    *y += 20;
-  }
-  *y += 40;
 }
 
-static void depot_commit_rows(VkrUiSystem *ui, const char *id,
-                              const char *title, const DepotHistory *rows,
-                              uint32_t count, uint32_t total, float32_t *y,
-                              float32_t width) {
-  if (!total) {
+static void depot_alert_line(VkrEditorUi *editor, VkrUiSystem *ui,
+                             const char *id, const char *text, VkrUiIcon icon,
+                             const char *action, float32_t *y, float32_t width,
+                             bool8_t *out_clicked) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  depot_alert_card(ui, id, *y, width, 40.0f, theme->warning);
+  VkrUiWidgetConfig label = depot_widget(DEPOT_PAD + 12.0f, *y + 9,
+                                         width - 2 * DEPOT_PAD - 170.0f, 22);
+  label.icon = icon;
+  label.icon_size_pt = 13.0f;
+  label.icon_color = theme->warning;
+  char label_id[64];
+  string_format(label_id, sizeof(label_id), "%s.text", id);
+  vkr_ui_label(ui, depot_string(label_id), depot_string(text), &label);
+  if (action) {
+    char button_id[64];
+    string_format(button_id, sizeof(button_id), "%s.go", id);
+    *out_clicked =
+        depot_button(editor, ui, button_id, action, width - DEPOT_PAD - 136.0f,
+                     *y + 6, 124, false_v, false_v);
+  }
+  *y += 48.0f;
+}
+
+/* The lists the toolbar opened and the cards that need the user, from
+   `*y` down; `*y` ends below them. */
+static void depot_top(VkrEditorDepot *depot, VkrEditorUi *editor,
+                      VkrUiSystem *ui, float32_t *y, float32_t width,
+                      bool8_t busy) {
+  if (depot->branch_menu_open) {
+    depot_branch_strip(depot, editor, ui, y, width, busy);
+  }
+  if (depot->remote_menu_open && depot->remote_count) {
+    depot_remote_strip(depot, editor, ui, y, width, busy);
+  }
+  if (busy) {
+    depot_alert_progress(depot, editor, ui, y, width);
+  }
+  if (depot->error[0]) {
+    depot_alert_error(depot, ui, y, width);
+  }
+  if (depot->conflict_count) {
+    depot_alert_conflicts(depot, editor, ui, y, width, busy);
+  }
+  if (depot->untracked_count) {
+    depot_alert_untracked(depot, editor, ui, y, width, busy);
+  }
+  depot_alert_requests(depot, editor, ui, y, width);
+  if (depot->waiting_kind != DEPOT_JOB_NONE) {
+    const VkrDepotRemoteEntry *remote = depot_selected(depot);
+    char text[DEPOT_TEXT];
+    string_format(text, sizeof(text),
+                  "Waiting for %s's owner to allow this computer",
+                  remote ? remote->name : "the remote");
+    depot_alert_line(editor, ui, "waiting", text, VKR_UI_ICON_CLOCK, NULL, y,
+                     width, NULL);
+  }
+  if (vkr_editor_scripts_held(editor->scripts)) {
+    bool8_t trust = false_v;
+    depot_alert_line(editor, ui, "scripts",
+                     "Scripts from others are not running", VKR_UI_ICON_LOCK,
+                     "Run scripts", y, width, &trust);
+    if (trust) {
+      vkr_editor_depot_trust_scripts(depot, editor);
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Tabs
+// -----------------------------------------------------------------------------
+
+/* The tab row: each tab an icon, a name and a count, the shown one in the
+   heading font over an accent underline, on a rule across the window. */
+static void depot_tabs(VkrEditorDepot *depot, VkrEditorUi *editor,
+                       VkrUiSystem *ui, float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig rule = depot_widget(0, DEPOT_TABS_PT - 1.0f, width, 1);
+  rule.style.padding_pt = (VkrUiEdges){0};
+  rule.style.background_color = theme->separator;
+  vkr_ui_label(ui, string8_lit("tabs.rule"), (String8){0}, &rule);
+  uint32_t access = 0u;
+  for (uint32_t i = 0u; i < depot->access_count; ++i) {
+    access += depot->access[i].role != VKR_DEPOT_ROLE_ADMIN;
+  }
+  char labels[DEPOT_TAB_COUNT][48];
+  string_format(labels[DEPOT_TAB_CHANGES], sizeof(labels[0]),
+                depot->change_count ? "Changes  %u" : "Changes",
+                depot->change_count);
+  string_format(labels[DEPOT_TAB_HISTORY], sizeof(labels[0]), "History");
+  string_format(labels[DEPOT_TAB_REMOTES], sizeof(labels[0]),
+                depot->remote_count ? "Remotes  %u" : "Remotes",
+                depot->remote_count);
+  string_format(labels[DEPOT_TAB_SHARING], sizeof(labels[0]),
+                depot->serving && access ? "Sharing  %u" : "Sharing", access);
+  static const VkrUiIcon icons[] = {VKR_UI_ICON_PENCIL_LINE, VKR_UI_ICON_CLOCK,
+                                    VKR_UI_ICON_CLOUD, VKR_UI_ICON_WORLD};
+  static const char *const tips[] = {
+      "Local changes to commit", "The commits of this branch and its remote",
+      "Other computers' repositories to sync with",
+      "Let other computers fetch from and push to this repository"};
+  float32_t x = DEPOT_PAD - 4.0f;
+  for (uint32_t i = 0u; i < DEPOT_TAB_COUNT; ++i) {
+    const bool8_t active = depot->tab == i;
+    const float32_t tab_pt = depot_text_pt(labels[i], true_v);
+    VkrUiWidgetConfig tab = depot_widget(x, 2.0f, tab_pt, DEPOT_TABS_PT - 3.0f);
+    tab.style.font_size_pt = theme->font_body;
+    tab.text.font = active ? editor->heading_font : VKR_FONT_HANDLE_INVALID;
+    tab.style.padding_pt = (VkrUiEdges){4.0f, 12.0f, 4.0f, 10.0f};
+    tab.style.corner_radius_pt =
+        (Vec4){theme->radius, theme->radius, 0.0f, 0.0f};
+    tab.style.background_color = theme->panel;
+    tab.style.hover_background_color =
+        active ? theme->panel
+               : vkr_ui_color_mix(theme->panel, theme->raised, 0.6f);
+    tab.style.text_color = active ? theme->text : theme->text_secondary;
+    tab.style.border_pt =
+        active ? (VkrUiEdges){0.0f, 0.0f, 2.0f, 0.0f} : (VkrUiEdges){0};
+    tab.style.border_color = theme->accent;
+    tab.icon = icons[i];
+    tab.icon_size_pt = 14.0f;
+    tab.icon_color = active ? theme->accent_hover : theme->text_secondary;
+    if (i == DEPOT_TAB_SHARING && depot->request_count) {
+      tab.icon = VKR_UI_ICON_BELL;
+      tab.icon_color = theme->warning;
+    }
+    tab.tooltip = depot_string(tips[i]);
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("tab"), depot_string(labels[i]), &tab) &&
+        depot->tab != i) {
+      depot->tab = i;
+      depot->window_scroll = 0.0f;
+    }
+    (void)vkr_ui_pop_id(ui);
+    x += tab_pt + 2.0f;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// File tables
+// -----------------------------------------------------------------------------
+
+typedef struct DepotFileView {
+  const char *path;
+  VkrDepotChange change;
+} DepotFileView;
+
+/* A row the file table sorts: its texts by column and its place. */
+typedef struct DepotFileSort {
+  const char *text;
+  const char *then;
+  uint32_t index;
+} DepotFileSort;
+
+static int32_t depot_file_sort_compare(const void *lhs, const void *rhs) {
+  const DepotFileSort *a = lhs;
+  const DepotFileSort *b = rhs;
+  int32_t order = string_compare(a->text, b->text);
+  if (!order) {
+    order = string_compare(a->then, b->then);
+  }
+  return order ? order : (a->index < b->index ? -1 : a->index > b->index);
+}
+
+static const char *depot_change_name(VkrDepotChange change) {
+  return change == VKR_DEPOT_CHANGE_ADDED     ? "Added"
+         : change == VKR_DEPOT_CHANGE_DELETED ? "Deleted"
+                                              : "Modified";
+}
+
+/* Changed files: what changed, the file's name and its folder; sortable by
+   each. A `compact` table, for a narrow pane, shows the change as its icon
+   and the folder after the name in one column. */
+static void depot_files_table(VkrUiSystem *ui, const char *id,
+                              VkrEditorTable *table, const DepotFileView *files,
+                              uint32_t count, VkrUiPlacement placement,
+                              bool8_t compact) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  static const VkrEditorTableColumn wide[] = {
+      {.title = "Change", .width_pt = 92.0f, .min_pt = 70.0f},
+      {.title = "File", .width_pt = 220.0f, .min_pt = 80.0f},
+      {.title = "Folder", .width_pt = 0.0f, .min_pt = 80.0f}};
+  static const VkrEditorTableColumn narrow[] = {
+      {.title = "",
+       .width_pt = 30.0f,
+       .min_pt = 30.0f,
+       .tooltip = "Added, modified or deleted"},
+      {.title = "File", .width_pt = 0.0f, .min_pt = 80.0f}};
+  const VkrEditorTableColumn *columns = compact ? narrow : wide;
+  const uint32_t column_count = compact ? ArrayCount(narrow) : ArrayCount(wide);
+  bool8_t sorted = false_v;
+  uint32_t first = 0u;
+  uint32_t end = 0u;
+  if (!vkr_editor_table_begin(ui, id, table, columns, column_count, count,
+                              placement, &sorted, &first, &end)) {
     return;
   }
-  char text[DEPOT_TEXT];
-  string_format(text, sizeof(text), "%s (%u)", title, total);
-  (void)vkr_ui_push_id_u64(ui, (uint64_t)(uintptr_t)id);
-  depot_caption(ui, "title", text, 12, *y, width - 24);
-  *y += 22;
-  const uint64_t now_us = depot_unix_us();
+  /* Rows in the table's order: the given one, or by the sorted column. */
+  DepotFileSort order[DEPOT_DETAIL_FILES_MAX];
+  count = Min(count, DEPOT_DETAIL_FILES_MAX);
   for (uint32_t i = 0u; i < count; ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    depot_label(ui, "row",
-                rows[i].message[0] ? rows[i].message : "(no message)", 24, *y,
-                width - 140, vkr_ui_theme()->text);
-    char when[32];
-    depot_format_age(now_us, rows[i].time_us, when, sizeof(when));
-    VkrUiWidgetConfig age = depot_widget(width - 112, *y, 100, 22);
-    age.style.font_size_pt = vkr_ui_theme()->font_caption;
-    age.style.text_color = vkr_ui_theme()->text_secondary;
-    vkr_ui_label(ui, string8_lit("age"), depot_string(when), &age);
-    (void)vkr_ui_pop_id(ui);
-    *y += 22;
+    const char *slash = string_get_last_char_occurrence(files[i].path, '/');
+    const char *name = slash ? slash + 1 : files[i].path;
+    order[i] = (DepotFileSort){.text = files[i].path, .then = "", .index = i};
+    if (table->sort_column == 0u) {
+      order[i].text = depot_change_name(files[i].change);
+      order[i].then = files[i].path;
+    } else if (table->sort_column == 1u) {
+      order[i].text = name;
+      order[i].then = files[i].path;
+    }
   }
-  (void)vkr_ui_pop_id(ui);
-  *y += 8;
+  if (table->sort_column != VKR_EDITOR_TABLE_NONE) {
+    vkr_sort(order, count, sizeof(order[0]), depot_file_sort_compare);
+    if (table->sort_descending) {
+      for (uint32_t i = 0u; i < count / 2u; ++i) {
+        const DepotFileSort swap = order[i];
+        order[i] = order[count - 1u - i];
+        order[count - 1u - i] = swap;
+      }
+    }
+  }
+  for (uint32_t r = first; r < end && r < count; ++r) {
+    const DepotFileView *file = &files[order[r].index];
+    const char *slash = string_get_last_char_occurrence(file->path, '/');
+    const char *name = slash ? slash + 1 : file->path;
+    char folder[DEPOT_TEXT];
+    if (slash) {
+      string_format(folder, sizeof(folder), "%.*s", (int)(slash - file->path),
+                    file->path);
+    } else {
+      folder[0] = '\0';
+    }
+    char both[DEPOT_TEXT * 2];
+    string_format(both, sizeof(both), folder[0] ? "%s   %s" : "%s", name,
+                  folder);
+    const Vec4 color = file->change == VKR_DEPOT_CHANGE_ADDED ? theme->success
+                       : file->change == VKR_DEPOT_CHANGE_DELETED
+                           ? theme->error
+                           : theme->warning;
+    const VkrUiIcon change =
+        file->change == VKR_DEPOT_CHANGE_ADDED     ? VKR_UI_ICON_PLUS_CIRCLE
+        : file->change == VKR_DEPOT_CHANGE_DELETED ? VKR_UI_ICON_MINUS
+                                                   : VKR_UI_ICON_PENCIL_LINE;
+    const String8 wide_cells[] = {depot_string(depot_change_name(file->change)),
+                                  depot_string(name), depot_string(folder)};
+    const String8 narrow_cells[] = {(String8){0}, depot_string(both)};
+    const Vec4 colors[] = {color, {0}, theme->text_secondary};
+    const VkrUiIcon icons[] = {change, VKR_UI_ICON_FILE, VKR_UI_ICON_NONE};
+    /* The path lives past the build, as the hover text must. */
+    const VkrEditorTableRow row = {.key = order[r].index,
+                                   .cells = compact ? narrow_cells : wide_cells,
+                                   .cell_colors = colors,
+                                   .cell_icons = icons,
+                                   .tooltip = depot_string(file->path)};
+    (void)vkr_editor_table_row(ui, table, columns, column_count, r, &row);
+  }
+  vkr_editor_table_end(ui);
 }
 
-static void depot_window_remotes(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                 VkrUiSystem *ui, float32_t *y, float32_t width,
-                                 bool8_t busy) {
+/* An empty tab's message, centred in its pane. */
+static void depot_empty(VkrUiSystem *ui, const char *id, VkrUiIcon icon,
+                        const char *title, const char *text, float32_t y,
+                        float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig mark = depot_widget(width / 2.0f - 16.0f, y, 32, 32);
+  mark.icon = icon;
+  mark.icon_size_pt = 26.0f;
+  mark.icon_color = theme->text_disabled;
+  char mark_id[64];
+  string_format(mark_id, sizeof(mark_id), "%s.icon", id);
+  vkr_ui_label(ui, depot_string(mark_id), (String8){0}, &mark);
+  VkrUiWidgetConfig heading = depot_widget(DEPOT_PAD, y + 40, width - 24, 22);
+  heading.center = true_v;
+  heading.style.text_color = theme->text_secondary;
+  vkr_ui_label(ui, depot_string(id), depot_string(title), &heading);
+  if (text) {
+    VkrUiWidgetConfig body = depot_widget(DEPOT_PAD, y + 64, width - 24, 18);
+    body.center = true_v;
+    body.style.font_size_pt = theme->font_caption;
+    body.style.text_color = theme->text_disabled;
+    char body_id[64];
+    string_format(body_id, sizeof(body_id), "%s.text", id);
+    vkr_ui_label(ui, depot_string(body_id), depot_string(text), &body);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Changes
+// -----------------------------------------------------------------------------
+
+static void depot_tab_changes(VkrEditorDepot *depot, VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame, VkrUiSystem *ui,
+                              VkrUiPlacement placement, float32_t width,
+                              bool8_t busy) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const bool8_t any = depot->change_count > 0u;
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {
+      fill,
+      {.value = any ? DEPOT_COMMIT_BOX_PT : 0.0f, .unit = VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig pane = vkr_ui_panel_config_default();
+  pane.placement = placement;
+  pane.columns = &fill;
+  pane.column_count = 1u;
+  pane.rows = rows;
+  pane.row_count = ArrayCount(rows);
+  pane.style.gap_pt = 0.0f;
+  pane.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("changes"), &pane)) {
+    return;
+  }
+  if (!any) {
+    if (depot_pane_begin(ui, "changes.empty", depot_cell(0u, 0u), (Vec4){0})) {
+      if (!depot->status_known && depot_busy(depot)) {
+        depot_empty(ui, "changes.reading", VKR_UI_ICON_SPINNER,
+                    "Looking for changes\xe2\x80\xa6", NULL, 40.0f, width);
+      } else {
+        depot_empty(
+            ui, "changes.none", VKR_UI_ICON_CHECK_CIRCLE, "No local changes",
+            "Saved edits to the project's files show here", 40.0f, width);
+      }
+      (void)vkr_ui_panel_end(ui);
+    }
+    (void)vkr_ui_panel_end(ui);
+    return;
+  }
+  DepotFileView files[DEPOT_LIST_MAX];
+  const uint32_t count = Min(depot->change_count, DEPOT_LIST_MAX);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const char *text = depot->changes[i].text;
+    files[i].change = text[0] == '+'   ? VKR_DEPOT_CHANGE_ADDED
+                      : text[0] == '-' ? VKR_DEPOT_CHANGE_DELETED
+                                       : VKR_DEPOT_CHANGE_MODIFIED;
+    files[i].path = text[0] && text[1] ? text + 2 : text;
+  }
+  VkrUiPlacement table = depot_cell(0u, 0u);
+  table.margin_pt = (VkrUiEdges){8.0f, DEPOT_PAD, 4.0f, DEPOT_PAD};
+  depot_files_table(ui, "changes.files", &depot->changes_table, files, count,
+                    table, false_v);
+  if (depot_pane_begin(ui, "commit.box", depot_cell(0u, 1u), theme->panel)) {
+    float32_t y = 6.0f;
+    if (depot->change_count > count) {
+      char more[64];
+      string_format(more, sizeof(more), "Showing %u of %u changed files", count,
+                    depot->change_count);
+      depot_caption(ui, "changes.more", more, DEPOT_PAD, y - 4.0f,
+                    width - 2 * DEPOT_PAD);
+    }
+    y += 10.0f;
+    depot_field(ui, "message", depot->message, sizeof(depot->message),
+                DEPOT_PAD, y, width - 2 * DEPOT_PAD);
+    if (!depot->message[0]) {
+      VkrUiWidgetConfig hint =
+          depot_widget(DEPOT_PAD + 6.0f, y + 3, width - 40, 20);
+      hint.style.text_color = theme->text_disabled;
+      hint.style.font_size_pt = theme->font_caption;
+      vkr_ui_label(ui, string8_lit("message.hint"),
+                   string8_lit("Describe your changes"), &hint);
+    }
+    y += 34.0f;
+    char error[DEPOT_TEXT] = {0};
+    const bool8_t unsaved = !depot_journals_saved(frame);
+    if (depot_button(editor, ui, "commit", "Commit", DEPOT_PAD, y, 110, true_v,
+                     busy || unsaved) &&
+        !vkr_editor_depot_commit(depot, depot->message, false_v,
+                                 VKR_EDITOR_DEPOT_UNTRACKED_STOP, error,
+                                 sizeof(error))) {
+      string_format(depot->error, sizeof(depot->error), "%s", error);
+    }
+    float32_t x = DEPOT_PAD + 118.0f;
+    if (depot->remote_count) {
+      if (depot_button(editor, ui, "commit.sync", "Commit & Sync", x, y, 130,
+                       false_v, busy || unsaved) &&
+          !vkr_editor_depot_commit(depot, depot->message, true_v,
+                                   VKR_EDITOR_DEPOT_UNTRACKED_STOP, error,
+                                   sizeof(error))) {
+        string_format(depot->error, sizeof(depot->error), "%s", error);
+      }
+      x += 138.0f;
+    }
+    if (unsaved) {
+      VkrUiWidgetConfig note =
+          depot_widget(x + 6.0f, y + 4, width - x - DEPOT_PAD - 6.0f, 20);
+      note.style.font_size_pt = theme->font_caption;
+      note.style.text_color = theme->warning;
+      note.icon = VKR_UI_ICON_SAVE;
+      note.icon_size_pt = 12.0f;
+      note.icon_color = theme->warning;
+      vkr_ui_label(ui, string8_lit("commit.unsaved"),
+                   string8_lit("Save the scene to commit its edits"), &note);
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
+// -----------------------------------------------------------------------------
+// History
+// -----------------------------------------------------------------------------
+
+/* A commit row the History sorts: one text or number by column. */
+typedef struct DepotCommitSort {
+  char text[VKR_DEPOT_DISPLAY_NAME + 16];
+  uint64_t number;
+  uint32_t index;
+} DepotCommitSort;
+
+static int32_t depot_commit_sort_compare(const void *lhs, const void *rhs) {
+  const DepotCommitSort *a = lhs;
+  const DepotCommitSort *b = rhs;
+  if (a->number != b->number) {
+    return a->number < b->number ? -1 : 1;
+  }
+  const int32_t order = string_compare(a->text, b->text);
+  return order ? order : (a->index < b->index ? -1 : a->index > b->index);
+}
+
+enum {
+  DEPOT_COMMIT_COLUMN_MARK = 0,
+  DEPOT_COMMIT_COLUMN_MESSAGE,
+  DEPOT_COMMIT_COLUMN_AUTHOR,
+  DEPOT_COMMIT_COLUMN_DATE,
+  DEPOT_COMMIT_COLUMN_ID,
+  DEPOT_COMMIT_COLUMN_COUNT,
+};
+
+/* The History's columns by the room it has: every column from 600
+   points, without the id from 460, and without the author below that, so
+   the message keeps its room. */
+static const VkrEditorTableColumn depot_commit_columns[] = {
+    {.title = "",
+     .width_pt = 30.0f,
+     .min_pt = 30.0f,
+     .tooltip = "Up: to push. Down: to pull. Branch: a merge"},
+    {.title = "Message", .width_pt = 0.0f, .min_pt = 120.0f},
+    {.title = "Author", .width_pt = 130.0f, .min_pt = 60.0f},
+    {.title = "Date", .width_pt = 96.0f, .min_pt = 60.0f, .numeric = true_v},
+    {.title = "Commit", .width_pt = 76.0f, .min_pt = 60.0f}};
+static const struct {
+  float32_t min_pt;
+  uint32_t count;
+  uint32_t columns[DEPOT_COMMIT_COLUMN_COUNT];
+} DEPOT_COMMIT_LAYOUTS[] = {
+    {600.0f,
+     5u,
+     {DEPOT_COMMIT_COLUMN_MARK, DEPOT_COMMIT_COLUMN_MESSAGE,
+      DEPOT_COMMIT_COLUMN_AUTHOR, DEPOT_COMMIT_COLUMN_DATE,
+      DEPOT_COMMIT_COLUMN_ID}},
+    {460.0f,
+     4u,
+     {DEPOT_COMMIT_COLUMN_MARK, DEPOT_COMMIT_COLUMN_MESSAGE,
+      DEPOT_COMMIT_COLUMN_AUTHOR, DEPOT_COMMIT_COLUMN_DATE}},
+    {0.0f,
+     3u,
+     {DEPOT_COMMIT_COLUMN_MARK, DEPOT_COMMIT_COLUMN_MESSAGE,
+      DEPOT_COMMIT_COLUMN_DATE}}};
+
+/* The commits of the branch and of its remote, newest first: a mark for
+   those to push, to pull and merges, the message, the author, when, and
+   the short id; a click shows the commit's details. */
+static void depot_commit_table(VkrEditorDepot *depot, VkrUiSystem *ui,
+                               VkrUiPlacement placement, float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  uint32_t layout = 0u;
+  while (layout + 1u < ArrayCount(DEPOT_COMMIT_LAYOUTS) &&
+         width < DEPOT_COMMIT_LAYOUTS[layout].min_pt) {
+    ++layout;
+  }
+  const uint32_t *shown = DEPOT_COMMIT_LAYOUTS[layout].columns;
+  const uint32_t column_count = DEPOT_COMMIT_LAYOUTS[layout].count;
+  VkrEditorTableColumn columns[DEPOT_COMMIT_COLUMN_COUNT];
+  for (uint32_t c = 0u; c < column_count; ++c) {
+    columns[c] = depot_commit_columns[shown[c]];
+  }
+  VkrEditorTable *table = &depot->history_tables[layout];
+  table->selected_key = depot_commit_key(depot->selected_commit);
+  const uint32_t count = depot->history_count;
+  bool8_t sorted = false_v;
+  uint32_t first = 0u;
+  uint32_t end = 0u;
+  if (!vkr_editor_table_begin(ui, "history.commits", table, columns,
+                              column_count, count, placement, &sorted, &first,
+                              &end)) {
+    return;
+  }
+  /* The walk's order is newest first; another column sorts a copy. */
+  const uint32_t sort = table->sort_column < column_count
+                            ? shown[table->sort_column]
+                            : VKR_EDITOR_TABLE_NONE;
+  DepotCommitSort order[DEPOT_HISTORY_MAX];
+  for (uint32_t i = 0u; i < count; ++i) {
+    const DepotHistory *row = &depot->history[i];
+    order[i] = (DepotCommitSort){.index = i};
+    switch (sort) {
+    case DEPOT_COMMIT_COLUMN_MESSAGE:
+      string_format(order[i].text, sizeof(order[i].text), "%s", row->message);
+      break;
+    case DEPOT_COMMIT_COLUMN_AUTHOR:
+      depot_author_text(depot, row, order[i].text, sizeof(order[i].text));
+      break;
+    case DEPOT_COMMIT_COLUMN_DATE:
+      order[i].number = row->time_us;
+      break;
+    case DEPOT_COMMIT_COLUMN_ID:
+      string_format(order[i].text, sizeof(order[i].text), "%s", row->id);
+      break;
+    case DEPOT_COMMIT_COLUMN_MARK:
+      order[i].number =
+          row->flags & (DEPOT_COMMIT_TO_PUSH | DEPOT_COMMIT_TO_PULL);
+      break;
+    default:
+      break;
+    }
+  }
+  if (sort != VKR_EDITOR_TABLE_NONE) {
+    vkr_sort(order, count, sizeof(order[0]), depot_commit_sort_compare);
+    if (table->sort_descending) {
+      for (uint32_t i = 0u; i < count / 2u; ++i) {
+        const DepotCommitSort swap = order[i];
+        order[i] = order[count - 1u - i];
+        order[count - 1u - i] = swap;
+      }
+    }
+  }
+  const uint64_t now_us = depot_unix_us();
+  for (uint32_t r = first; r < end && r < count; ++r) {
+    const DepotHistory *row = &depot->history[order[r].index];
+    char author[VKR_DEPOT_DISPLAY_NAME + 16];
+    char when[32];
+    char id[9];
+    depot_author_text(depot, row, author, sizeof(author));
+    depot_format_when(now_us, row->time_us, when, sizeof(when));
+    string_format(id, sizeof(id), "%.8s", row->id);
+    VkrUiIcon mark =
+        row->parent_count > 1u ? VKR_UI_ICON_GIT_BRANCH : VKR_UI_ICON_DOT;
+    Vec4 mark_color =
+        row->parent_count > 1u ? theme->text_secondary : theme->text_disabled;
+    if (row->flags & DEPOT_COMMIT_TO_PUSH) {
+      mark = VKR_UI_ICON_ARROW_UP;
+      mark_color = theme->success;
+    } else if (row->flags & DEPOT_COMMIT_TO_PULL) {
+      mark = VKR_UI_ICON_ARROW_DOWN;
+      mark_color = theme->accent_hover;
+    }
+    String8 cells[DEPOT_COMMIT_COLUMN_COUNT];
+    Vec4 colors[DEPOT_COMMIT_COLUMN_COUNT];
+    VkrUiIcon icons[DEPOT_COMMIT_COLUMN_COUNT];
+    for (uint32_t c = 0u; c < column_count; ++c) {
+      icons[c] = VKR_UI_ICON_NONE;
+      colors[c] = theme->text_secondary;
+      switch (shown[c]) {
+      case DEPOT_COMMIT_COLUMN_MARK:
+        cells[c] = (String8){0};
+        icons[c] = mark;
+        colors[c] = mark_color;
+        break;
+      case DEPOT_COMMIT_COLUMN_MESSAGE:
+        cells[c] =
+            depot_string(row->message[0] ? row->message : "(no message)");
+        colors[c] = (Vec4){0};
+        break;
+      case DEPOT_COMMIT_COLUMN_AUTHOR:
+        cells[c] = depot_string(author);
+        break;
+      case DEPOT_COMMIT_COLUMN_DATE:
+        cells[c] = depot_string(when);
+        break;
+      default:
+        cells[c] = depot_string(id);
+        colors[c] = theme->text_disabled;
+        break;
+      }
+    }
+    /* The hover text lives past the build: the stored message. */
+    VkrEditorTableRow view = {.key = depot_commit_key(row->id),
+                              .cells = cells,
+                              .cell_colors = colors,
+                              .cell_icons = icons,
+                              .tooltip = depot_string(row->message)};
+    /* Commits only the remote has are not here yet. */
+    if (row->flags & DEPOT_COMMIT_TO_PULL) {
+      view.text_color = theme->text_secondary;
+    }
+    if (vkr_editor_table_row(ui, table, columns, column_count, r, &view)) {
+      string_format(depot->selected_commit, sizeof(depot->selected_commit),
+                    "%s", row->id);
+    }
+  }
+  vkr_editor_table_end(ui);
+}
+
+/* One labelled line of the details: the label in a column of its own. */
+static void depot_detail_line(VkrUiSystem *ui, const char *id,
+                              const char *label, const char *value, float32_t y,
+                              float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  char label_id[64];
+  string_format(label_id, sizeof(label_id), "%s.label", id);
+  depot_caption(ui, label_id, label, DEPOT_PAD, y + 2, 64);
+  VkrUiWidgetConfig c = depot_widget(DEPOT_PAD + 66.0f, y, width - 90.0f, 22);
+  c.style.font_size_pt = theme->font_caption;
+  c.style.text_color = theme->text;
+  vkr_ui_label(ui, depot_string(id), depot_string(value), &c);
+}
+
+/* The selected commit: its message, branches, author, date, id, parents
+   and the files it changed against its first parent. */
+static void depot_commit_details(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                 VkrUiSystem *ui, VkrUiPlacement placement,
+                                 float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const DepotHistory *row = depot_history_find(depot, depot->selected_commit);
+  const DepotInspect *inspect = depot_inspected(depot);
+  /* The body of the message: what follows its first line. */
+  const char *body = NULL;
+  if (inspect && inspect->ok) {
+    body = string_find_char(inspect->message, '\n');
+    while (body && (*body == '\n' || *body == '\r')) {
+      ++body;
+    }
+    if (body && !body[0]) {
+      body = NULL;
+    }
+  }
+  const float32_t chars_per_line = Max(16.0f, (width - 2 * DEPOT_PAD) / 6.4f);
+  const float32_t body_pt =
+      body ? (float32_t)((uint32_t)((float32_t)string_length(body) /
+                                    chars_per_line) +
+                         1u) *
+                     17.0f +
+                 8.0f
+           : 0.0f;
+  /* The title wraps to at most three lines; the badges take a row only
+     when there are any. */
+  const char *title_text =
+      row && row->message[0] ? row->message : "(no message)";
+  const float32_t title_lines = Min(
+      3.0f, (float32_t)((uint32_t)((float32_t)string_length(title_text) /
+                                   Max(12.0f, (width - 2 * DEPOT_PAD) / 7.8f)) +
+                        1u));
+  const float32_t title_pt = title_lines * 20.0f + 6.0f;
+  const uint32_t badge_flags = DEPOT_COMMIT_HEAD | DEPOT_COMMIT_REMOTE_HEAD |
+                               DEPOT_COMMIT_TO_PUSH | DEPOT_COMMIT_TO_PULL;
+  const bool8_t badges =
+      row && ((row->flags & badge_flags) || row->parent_count > 1u);
+  const float32_t meta_pt = row ? 10.0f + title_pt + body_pt +
+                                      (badges ? 28.0f : 4.0f) + 4.0f * 24.0f +
+                                      30.0f
+                                : 0.0f;
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {{.value = meta_pt, .unit = VKR_UI_TRACK_PX}, fill};
+  VkrUiPanelConfig pane = vkr_ui_panel_config_default();
+  pane.placement = placement;
+  pane.columns = &fill;
+  pane.column_count = 1u;
+  pane.rows = rows;
+  pane.row_count = ArrayCount(rows);
+  pane.style.gap_pt = 0.0f;
+  pane.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("history.details"), &pane)) {
+    return;
+  }
+  if (!row) {
+    if (depot_pane_begin(ui, "details.none", depot_cell(0u, 1u), (Vec4){0})) {
+      depot_empty(ui, "details.empty", VKR_UI_ICON_GIT_BRANCH,
+                  "Select a commit", "Its message, author and files show here",
+                  40.0f, width);
+      (void)vkr_ui_panel_end(ui);
+    }
+    (void)vkr_ui_panel_end(ui);
+    return;
+  }
+  if (depot_pane_begin(ui, "details.meta", depot_cell(0u, 0u), (Vec4){0})) {
+    float32_t y = 10.0f;
+    VkrUiWidgetConfig title =
+        depot_widget(DEPOT_PAD, y, width - 2 * DEPOT_PAD, title_pt - 4.0f);
+    title.text.font = editor->heading_font;
+    title.style.font_size_pt = theme->font_emphasis;
+    title.text.layout.word_wrap = true_v;
+    title.text.layout.max_width = width - 2 * DEPOT_PAD - 8.0f;
+    vkr_ui_label(ui, string8_lit("details.title"), depot_string(title_text),
+                 &title);
+    y += title_pt;
+    if (body) {
+      y += depot_paragraph(ui, "details.body", body, DEPOT_PAD, y,
+                           width - 2 * DEPOT_PAD);
+      y += 4.0f;
+    }
+    /* Where it stands: the branches at it, and what a push or pull does. */
+    float32_t x = DEPOT_PAD;
+    const VkrDepotRemoteEntry *remote = depot_selected(depot);
+    char text[DEPOT_TEXT];
+    if (row->flags & DEPOT_COMMIT_HEAD) {
+      x += depot_badge(ui, "badge.head", depot->branch, x, y + 2,
+                       theme->accent_hover) +
+           6.0f;
+    }
+    if ((row->flags & DEPOT_COMMIT_REMOTE_HEAD) && remote) {
+      string_format(text, sizeof(text), "%s/%s", remote->name, depot->branch);
+      x += depot_badge(ui, "badge.remote", text, x, y + 2, theme->info) + 6.0f;
+    }
+    if (row->flags & DEPOT_COMMIT_TO_PUSH) {
+      x += depot_badge(ui, "badge.push", "to push", x, y + 2, theme->success) +
+           6.0f;
+    }
+    if (row->flags & DEPOT_COMMIT_TO_PULL) {
+      x += depot_badge(ui, "badge.pull", "to pull", x, y + 2,
+                       theme->accent_hover) +
+           6.0f;
+    }
+    if (row->parent_count > 1u) {
+      x += depot_badge(ui, "badge.merge", "merge", x, y + 2,
+                       theme->text_secondary) +
+           6.0f;
+    }
+    y += badges ? 28.0f : 4.0f;
+    /* A computer without a name shows its key already. */
+    char author[VKR_DEPOT_DISPLAY_NAME + 16];
+    char print[16];
+    depot_author_text(depot, row, author, sizeof(author));
+    depot_fingerprint(row->author, print);
+    if (string_find(author, "Computer ") == author) {
+      string_format(text, sizeof(text), "%s", author);
+    } else {
+      string_format(text, sizeof(text), "%s  \xc2\xb7  key %s", author, print);
+    }
+    depot_detail_line(ui, "details.author", "Author", text, y, width);
+    y += 24.0f;
+    char date[48];
+    char age[32];
+    depot_format_date(row->time_us, true_v, date, sizeof(date));
+    depot_format_age(depot_unix_us(), row->time_us, age, sizeof(age));
+    /* The age goes where the date leaves room for it. */
+    string_format(text, sizeof(text), "%s  \xc2\xb7  %s", date, age);
+    if (90.0f + 6.6f * (float32_t)string_length(text) > width) {
+      string_format(text, sizeof(text), "%s", date);
+    }
+    depot_detail_line(ui, "details.date", "Date", text, y, width);
+    y += 24.0f;
+    string_format(text, sizeof(text), "%.16s", row->id);
+    depot_detail_line(ui, "details.id", "Commit", text, y, width);
+    VkrUiWidgetConfig copy =
+        depot_widget(DEPOT_PAD + 66.0f + 150.0f, y - 2, 26, 24);
+    vkr_editor_ghost_style(&copy);
+    copy.icon = VKR_UI_ICON_COPY;
+    copy.icon_size_pt = 12.0f;
+    copy.icon_color = theme->text_secondary;
+    copy.tooltip = string8_lit("Copy the whole id");
+    if (vkr_ui_button(ui, string8_lit("details.copy"), (String8){0}, &copy)) {
+      (void)vkr_platform_clipboard_write_text((const uint8_t *)row->id,
+                                              (uint32_t)string_length(row->id));
+    }
+    y += 24.0f;
+    /* Parents, each a link to it when the History lists it. */
+    depot_caption(ui, "details.parents.label",
+                  row->parent_count > 1u ? "Parents" : "Parent", DEPOT_PAD,
+                  y + 2, 64);
+    if (!inspect) {
+      depot_caption(ui, "details.parents", "\xe2\x80\xa6", DEPOT_PAD + 66.0f,
+                    y + 2, 60);
+    } else if (!inspect->parent_count) {
+      depot_caption(ui, "details.parents", "none: the first commit",
+                    DEPOT_PAD + 66.0f, y + 2, width - 90.0f);
+    }
+    x = DEPOT_PAD + 66.0f;
+    for (uint32_t i = 0u; inspect && i < inspect->parent_count; ++i) {
+      char hex[VKR_DEPOT_ID_HEX];
+      vkr_depot_id_hex(&inspect->parents[i], hex);
+      char short_id[9];
+      string_format(short_id, sizeof(short_id), "%.8s", hex);
+      const bool8_t listed = depot_history_find(depot, hex) != NULL;
+      VkrUiWidgetConfig link = depot_widget(x - 4.0f, y, 78, 22);
+      vkr_editor_ghost_style(&link);
+      link.leading = true_v;
+      link.style.padding_pt = (VkrUiEdges){2.0f, 4.0f, 2.0f, 4.0f};
+      link.style.font_size_pt = theme->font_caption;
+      link.style.text_color =
+          listed ? theme->accent_hover : theme->text_secondary;
+      link.disabled = !listed;
+      link.tooltip = listed ? string8_lit("Show this commit")
+                            : string8_lit("Older than the commits listed");
+      (void)vkr_ui_push_id_u64(ui, i);
+      if (vkr_ui_button(ui, string8_lit("details.parent"),
+                        depot_string(short_id), &link)) {
+        string_format(depot->selected_commit, sizeof(depot->selected_commit),
+                      "%s", hex);
+      }
+      (void)vkr_ui_pop_id(ui);
+      x += 82.0f;
+    }
+    y += 30.0f;
+    /* The files' summary over their table. */
+    if (!inspect) {
+      depot_caption(ui, "details.files", "Reading the commit\xe2\x80\xa6",
+                    DEPOT_PAD, y, width - 2 * DEPOT_PAD);
+    } else if (!inspect->ok) {
+      depot_label(ui, "details.files", inspect->error, DEPOT_PAD, y - 2,
+                  width - 2 * DEPOT_PAD, theme->warning);
+    } else {
+      string_format(text, sizeof(text), "%u file%s changed",
+                    inspect->file_count, inspect->file_count == 1u ? "" : "s");
+      const float32_t files_pt = 20.0f + 7.6f * (float32_t)string_length(text);
+      VkrUiWidgetConfig files = depot_widget(DEPOT_PAD, y - 2, files_pt, 22);
+      files.text.font = editor->heading_font;
+      vkr_ui_label(ui, string8_lit("details.files"), depot_string(text),
+                   &files);
+      x = DEPOT_PAD + files_pt + 4.0f;
+      /* The counts by kind, in words where they fit. */
+      const bool8_t words = width - x > 250.0f;
+      const struct {
+        uint32_t count;
+        const char *format;
+        Vec4 color;
+      } parts[] = {
+          {inspect->added, words ? "+%u added" : "+%u", theme->success},
+          {inspect->modified, words ? "~%u modified" : "~%u", theme->warning},
+          {inspect->deleted, words ? "-%u deleted" : "-%u", theme->error}};
+      for (uint32_t i = 0u; i < ArrayCount(parts); ++i) {
+        if (!parts[i].count) {
+          continue;
+        }
+        string_format(text, sizeof(text), parts[i].format, parts[i].count);
+        const float32_t part_pt = 12.0f + 6.6f * (float32_t)string_length(text);
+        if (x + part_pt > width - DEPOT_PAD) {
+          break;
+        }
+        VkrUiWidgetConfig part = depot_widget(x, y, part_pt, 18);
+        part.style.font_size_pt = theme->font_caption;
+        part.style.text_color = parts[i].color;
+        (void)vkr_ui_push_id_u64(ui, i);
+        vkr_ui_label(ui, string8_lit("details.part"), depot_string(text),
+                     &part);
+        (void)vkr_ui_pop_id(ui);
+        x += part_pt + 2.0f;
+      }
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+  if (inspect && inspect->ok && inspect->listed) {
+    DepotFileView files[DEPOT_DETAIL_FILES_MAX];
+    for (uint32_t i = 0u; i < inspect->listed; ++i) {
+      files[i] = (DepotFileView){.path = inspect->files[i].path,
+                                 .change = inspect->files[i].change};
+    }
+    VkrUiPlacement table = depot_cell(0u, 1u);
+    table.margin_pt = (VkrUiEdges){0.0f, DEPOT_PAD, 10.0f, DEPOT_PAD};
+    depot_files_table(ui, "details.table", &depot->files_table, files,
+                      inspect->listed, table, true_v);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
+static void depot_tab_history(VkrEditorDepot *depot, VkrEditorUi *editor,
+                              VkrUiSystem *ui, VkrUiPlacement placement,
+                              float32_t width, float32_t height) {
+  if (!depot->history_count) {
+    if (depot_pane_begin(ui, "history.empty", placement, (Vec4){0})) {
+      depot_empty(ui, "history.none", VKR_UI_ICON_CLOCK, "No commits yet",
+                  "Commit your changes to start the history", 40.0f, width);
+      (void)vkr_ui_panel_end(ui);
+    }
+    return;
+  }
+  /* The newest commit is shown until another is chosen; a selection the
+     history lost (a switch, a pull) goes back to it. */
+  if (!depot_history_find(depot, depot->selected_commit)) {
+    string_format(depot->selected_commit, sizeof(depot->selected_commit), "%s",
+                  depot->history[0].id);
+  }
+  VkrEditorSplit *split = &depot->history_split;
+  if (split->max_ratio <= 0.0f) {
+    *split =
+        (VkrEditorSplit){.ratio = 0.6f, .min_ratio = 0.35f, .max_ratio = 0.78f};
+  }
+  const bool8_t side = width >= DEPOT_SIDE_BY_SIDE_PT;
+  const VkrUiTrack tracks[] = {
+      {.value = split->ratio, .unit = VKR_UI_TRACK_FR},
+      {.value = 6.0f, .unit = VKR_UI_TRACK_PX},
+      {.value = 1.0f - split->ratio, .unit = VKR_UI_TRACK_FR}};
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig pane = vkr_ui_panel_config_default();
+  pane.placement = placement;
+  pane.columns = side ? tracks : &fill;
+  pane.column_count = side ? ArrayCount(tracks) : 1u;
+  pane.rows = side ? &fill : tracks;
+  pane.row_count = side ? 1u : ArrayCount(tracks);
+  pane.style.gap_pt = 0.0f;
+  pane.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("history"), &pane)) {
+    return;
+  }
+  VkrUiPlacement commits = depot_cell(0u, 0u);
+  commits.margin_pt = side ? (VkrUiEdges){8.0f, 0.0f, 10.0f, DEPOT_PAD}
+                           : (VkrUiEdges){8.0f, DEPOT_PAD, 0.0f, DEPOT_PAD};
+  depot_commit_table(depot, ui, commits,
+                     (side ? width * split->ratio : width) - 2 * DEPOT_PAD);
+  vkr_editor_split_bar(ui, "history.split", split,
+                       side ? depot_cell(1u, 0u) : depot_cell(0u, 1u), !side,
+                       side ? width : height);
+  const float32_t details_pt =
+      side ? width * (1.0f - split->ratio) - 6.0f : width;
+  depot_commit_details(depot, editor, ui,
+                       side ? depot_cell(2u, 0u) : depot_cell(0u, 2u),
+                       details_pt);
+  (void)vkr_ui_panel_end(ui);
+}
+
+// -----------------------------------------------------------------------------
+// Remotes
+// -----------------------------------------------------------------------------
+
+static void depot_tab_remotes(VkrEditorDepot *depot, VkrEditorUi *editor,
+                              VkrUiSystem *ui, float32_t *y, float32_t width,
+                              bool8_t busy) {
   const VkrUiTheme *theme = vkr_ui_theme();
   char error[DEPOT_TEXT] = {0};
-  depot_caption(ui, "remotes.title", "Remotes", 12, *y, width - 160);
-  if (depot_button(editor, ui, "remotes.add", "Add remote", width - 136, *y - 4,
-                   124, !depot->remote_count, false_v)) {
-    depot->remote_form_open = !depot->remote_form_open;
+  *y += 4.0f;
+  if (!depot->remote_count && !depot->remote_form_open) {
+    depot_empty(ui, "remotes.none", VKR_UI_ICON_CLOUD, "No remotes yet",
+                "A remote is another computer's repository of this project",
+                *y + 20.0f, width);
+    *y += 110.0f;
+    if (depot_button(editor, ui, "remotes.add", "Add remote",
+                     width / 2.0f - 60.0f, *y, 120, true_v, false_v)) {
+      depot->remote_form_open = true_v;
+    }
+    *y += 40.0f;
+    return;
   }
-  *y += 28;
   for (uint32_t i = 0u; i < depot->remote_count; ++i) {
     const VkrDepotRemoteEntry *remote = &depot->remotes[i];
+    const bool8_t chosen = i == depot->selected_remote;
     (void)vkr_ui_push_id_u64(ui, i);
+    depot_alert_card(ui, "card", *y, width, 56.0f,
+                     chosen ? theme->accent : theme->border);
+    VkrUiWidgetConfig name = depot_widget(DEPOT_PAD + 12.0f, *y + 7, 260, 22);
+    name.text.font = editor->heading_font;
+    name.icon = VKR_UI_ICON_CLOUD;
+    name.icon_size_pt = 14.0f;
+    name.icon_color = depot_remote_color(depot, i);
+    vkr_ui_label(ui, string8_lit("name"), depot_string(remote->name), &name);
+    if (chosen) {
+      depot_badge(ui, "chosen", "syncs",
+                  DEPOT_PAD + 26.0f +
+                      7.4f * (float32_t)string_length(remote->name) + 24.0f,
+                  *y + 9, theme->accent_hover);
+    }
     char text[DEPOT_TEXT];
     char print[16];
     depot_fingerprint(remote->key, print);
-    string_format(text, sizeof(text), "%s  \xc2\xb7  %s  \xc2\xb7  key %s",
-                  remote->name, remote->address, print);
-    depot_label(ui, "row", text, 24, *y, width - 150, theme->text);
-    if (depot_button(editor, ui, "remove", "Remove", width - 112, *y - 2, 100,
-                     false_v, busy) &&
+    string_format(text, sizeof(text), "%s  \xc2\xb7  key %s  \xc2\xb7  %s",
+                  remote->address, print, depot_remote_state(depot, i));
+    depot_caption(ui, "detail", text, DEPOT_PAD + 12.0f, *y + 31,
+                  width - 2 * DEPOT_PAD - 220.0f);
+    if (!chosen &&
+        depot_button(editor, ui, "use", "Sync with it",
+                     width - DEPOT_PAD - 220.0f, *y + 14, 112, false_v, busy)) {
+      depot->selected_remote = i;
+      depot->next_status = 0.0;
+    }
+    if (depot_button(editor, ui, "remove", "Remove", width - DEPOT_PAD - 100.0f,
+                     *y + 14, 88, false_v, busy) &&
         !vkr_editor_depot_remote(depot, remote->name, NULL, NULL, error,
                                  sizeof(error))) {
       string_format(depot->error, sizeof(depot->error), "%s", error);
     }
     (void)vkr_ui_pop_id(ui);
-    *y += 28;
-  }
-  if (!depot->remote_count && !depot->remote_form_open) {
-    *y += depot_paragraph(
-        ui, "remotes.none",
-        "A remote is another computer's repository of this project. Add "
-        "one to push to it and pull from it.",
-        12, *y, width - 24);
-    *y += 6;
+    *y += 64.0f;
   }
   if (!depot->remote_form_open) {
+    if (depot_icon_button(editor, ui, "remotes.add", "Add remote",
+                          VKR_UI_ICON_ADD, DEPOT_PAD, *y + 4.0f, 130, false_v,
+                          false_v, NULL)) {
+      depot->remote_form_open = true_v;
+    }
+    *y += 40.0f;
     return;
   }
   depot->browse_wanted = true_v;
+  *y += 6.0f;
+  VkrUiWidgetConfig heading = depot_widget(DEPOT_PAD, *y, 300, 22);
+  heading.text.font = editor->heading_font;
+  vkr_ui_label(ui, string8_lit("remote.form"), string8_lit("Add a remote"),
+               &heading);
+  *y += 28.0f;
   /* Services found on the network fill the form with one click; their key
      comes from an answer anyone could send, so the owner checks its first
      digits on the other computer. */
@@ -4048,9 +5502,15 @@ static void depot_window_remotes(VkrEditorDepot *depot, VkrEditorUi *editor,
     depot_fingerprint(found->server_key, print);
     string_format(text, sizeof(text), "%s on %s  \xc2\xb7  key %s", found->name,
                   found->host, print);
-    depot_caption(ui, "found", text, 24, *y + 4, width - 150);
-    if (depot_button(editor, ui, "use", "Use", width - 112, *y, 100, false_v,
-                     false_v)) {
+    VkrUiWidgetConfig row = depot_widget(DEPOT_PAD, *y + 3, width - 150, 22);
+    row.style.font_size_pt = theme->font_caption;
+    row.style.text_color = theme->text;
+    row.icon = VKR_UI_ICON_WORLD;
+    row.icon_size_pt = 12.0f;
+    row.icon_color = theme->text_secondary;
+    vkr_ui_label(ui, string8_lit("found"), depot_string(text), &row);
+    if (depot_button(editor, ui, "use", "Use", width - DEPOT_PAD - 88.0f, *y,
+                     88, false_v, false_v)) {
       string_format(depot->remote_address, sizeof(depot->remote_address), "%s",
                     address);
       depot_key_hex(found->server_key, depot->remote_key);
@@ -4060,7 +5520,7 @@ static void depot_window_remotes(VkrEditorDepot *depot, VkrEditorUi *editor,
       }
     }
     (void)vkr_ui_pop_id(ui);
-    *y += 30;
+    *y += 32.0f;
   }
   if (!depot->remote_name[0]) {
     string_format(depot->remote_name, sizeof(depot->remote_name), "%s",
@@ -4075,11 +5535,13 @@ static void depot_window_remotes(VkrEditorDepot *depot, VkrEditorUi *editor,
   static const char *const ids[] = {"remote.name", "remote.address",
                                     "remote.key"};
   for (uint32_t i = 0u; i < ArrayCount(labels); ++i) {
-    depot_caption(ui, labels[i], labels[i], 12, *y + 4, 70);
-    depot_field(ui, ids[i], fields[i], sizes[i], 84, *y, width - 96);
-    *y += 32;
+    depot_caption(ui, labels[i], labels[i], DEPOT_PAD, *y + 4, 70);
+    depot_field(ui, ids[i], fields[i], sizes[i], DEPOT_PAD + 72.0f, *y,
+                width - 2 * DEPOT_PAD - 72.0f);
+    *y += 32.0f;
   }
-  if (depot_button(editor, ui, "remote.save", "Add", 12, *y, 100, true_v,
+  if (depot_button(editor, ui, "remote.save", "Add", DEPOT_PAD + 72.0f, *y, 100,
+                   true_v,
                    !depot->remote_address[0] || !depot->remote_key[0])) {
     if (vkr_editor_depot_remote(depot, depot->remote_name,
                                 depot->remote_address, depot->remote_key, error,
@@ -4092,20 +5554,25 @@ static void depot_window_remotes(VkrEditorDepot *depot, VkrEditorUi *editor,
       string_format(depot->error, sizeof(depot->error), "%s", error);
     }
   }
-  if (depot_button(editor, ui, "remote.cancel", "Cancel", 120, *y, 100, false_v,
-                   false_v)) {
+  if (depot_button(editor, ui, "remote.cancel", "Cancel", DEPOT_PAD + 180.0f,
+                   *y, 100, false_v, false_v)) {
     depot->remote_form_open = false_v;
   }
-  *y += 40;
+  *y += 40.0f;
 }
 
-static void depot_window_server(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                VkrUiSystem *ui, float32_t *y, float32_t width,
-                                bool8_t busy) {
+// -----------------------------------------------------------------------------
+// Sharing
+// -----------------------------------------------------------------------------
+
+static void depot_tab_sharing(VkrEditorDepot *depot, VkrEditorUi *editor,
+                              VkrUiSystem *ui, float32_t *y, float32_t width,
+                              bool8_t busy) {
   const VkrUiTheme *theme = vkr_ui_theme();
   char text[DEPOT_TEXT];
+  *y += 8.0f;
   bool8_t serve = depot->serving;
-  VkrUiWidgetConfig toggle = depot_widget(12, *y, width - 24, 22);
+  VkrUiWidgetConfig toggle = depot_widget(DEPOT_PAD, *y, width - 24, 22);
   toggle.tooltip = string8_lit(
       "This computer's depot service serves the repository, so other "
       "computers on your network can clone it and push to it, also while "
@@ -4119,120 +5586,79 @@ static void depot_window_server(VkrEditorDepot *depot, VkrEditorUi *editor,
       string_format(depot->error, sizeof(depot->error), "%s", error);
     }
   }
-  *y += 28;
+  *y += 30.0f;
   if (!depot->serving) {
-    if (depot->served_before) {
-      *y += depot_paragraph(
-          ui, "server.before",
-          "An older editor served this repository while it ran. Turn this "
-          "on to serve it from this computer's depot service.",
-          24, *y, width - 36);
-      *y += 4;
-    }
+    *y += depot_paragraph(
+        ui, "server.off",
+        depot->served_before
+            ? "An older editor served this repository while it ran. Turn "
+              "this on to serve it from this computer's depot service."
+            : "Other computers can clone this repository and push to it "
+              "while this computer's depot service serves it.",
+        DEPOT_PAD + 26.0f, *y, width - 2 * DEPOT_PAD - 26.0f);
     return;
   }
   if (!depot->machine_known) {
     depot_caption(ui, "server.checking",
-                  "Checking this computer's depot "
-                  "service",
-                  24, *y, width - 36);
-    *y += 26;
+                  "Checking this computer's depot service\xe2\x80\xa6",
+                  DEPOT_PAD + 26.0f, *y, width - 60);
+    *y += 26.0f;
     return;
   }
   if (!depot->machine_running) {
     depot_label(ui, "server.stopped",
-                "This computer's depot service is not running", 24, *y,
-                width - 160, theme->warning);
-    if (depot_button(editor, ui, "server.start", "Start", width - 112, *y - 4,
-                     100, false_v, busy)) {
+                "This computer's depot service is not running",
+                DEPOT_PAD + 26.0f, *y, width - 180, theme->warning);
+    if (depot_button(editor, ui, "server.start", "Start",
+                     width - DEPOT_PAD - 100.0f, *y - 4, 88, false_v, busy)) {
       char error[DEPOT_TEXT] = {0};
       if (!vkr_editor_depot_start_service(depot, error, sizeof(error))) {
         string_format(depot->error, sizeof(depot->error), "%s", error);
       }
     }
-    *y += 30;
+    *y += 32.0f;
     return;
   }
   char host[VKR_DEPOT_DISCOVERY_TEXT];
   char print[16];
   vkr_depot_host_name(host, sizeof(host));
   depot_fingerprint(depot->machine_key, print);
-  string_format(text, sizeof(text),
-                "Served by this computer's depot service on %s, UDP %u  "
-                "\xc2\xb7  key %s  \xc2\xb7  %u connected",
-                host, (uint32_t)depot->machine_port, print,
+  depot_detail_line(ui, "server.host", "Served by", host, *y, width);
+  *y += 24.0f;
+  string_format(text, sizeof(text), "%u", (uint32_t)depot->machine_port);
+  depot_detail_line(ui, "server.port", "Port", text, *y, width);
+  *y += 24.0f;
+  depot_detail_line(ui, "server.key", "Key", print, *y, width);
+  *y += 24.0f;
+  string_format(text, sizeof(text), "%u connected now",
                 depot->machine_connected);
-  *y += depot_paragraph(ui, "server.peers", text, 24, *y, width - 36);
+  depot_detail_line(ui, "server.peers", "Others", text, *y, width);
+  *y += 28.0f;
   if (depot->machine_outbound_only) {
     *y += depot_paragraph(
         ui, "server.outbound",
         "This computer takes no connections from others. Its service "
         "fetches and pushes through the remotes that have an interval, and "
         "others reach it only while it is connected to them.",
-        24, *y, width - 36);
+        DEPOT_PAD, *y, width - 2 * DEPOT_PAD);
+    *y += 6.0f;
   }
-  *y += 4;
-}
-
-static void depot_window_requests(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                  VkrUiSystem *ui, float32_t *y,
-                                  float32_t width) {
-  const VkrUiTheme *theme = vkr_ui_theme();
-  for (uint32_t i = 0u; i < depot->request_count; ++i) {
-    const VkrDepotAccessRequest *request = &depot->requests[i];
-    (void)vkr_ui_push_id_u64(ui, i);
-    char who[VKR_DEPOT_DISPLAY_NAME + 16];
-    depot_person_text(depot, request->key, request->name, who, sizeof(who));
-    char text[160];
-    string_format(text, sizeof(text), "%s asks to fetch and push", who);
-    depot_label(ui, "request", text, 12, *y, width - 24, theme->warning);
-    *y += 22;
-    char print[16];
-    depot_fingerprint(request->key, print);
-    string_format(
-        text, sizeof(text),
-        "Its key starts %s; that computer shows the same while it waits",
-        print);
-    depot_caption(ui, "request.key", text, 12, *y, width - 24);
-    *y += 24;
-    char key[VKR_DEPOT_ID_HEX];
-    depot_key_hex(request->key, key);
-    char error[DEPOT_TEXT] = {0};
-    if (depot_button(editor, ui, "allow", "Allow", 12, *y, 96, true_v,
-                     false_v)) {
-      (void)vkr_editor_depot_allow(depot, key, "write", error, sizeof(error));
-    }
-    if (depot_button(editor, ui, "read", "Fetch only", 116, *y, 96, false_v,
-                     false_v)) {
-      (void)vkr_editor_depot_allow(depot, key, "read", error, sizeof(error));
-    }
-    if (depot_button(editor, ui, "deny", "Deny", 220, *y, 80, false_v,
-                     false_v)) {
-      (void)vkr_editor_depot_allow(depot, key, "none", error, sizeof(error));
-    }
-    if (error[0]) {
-      string_format(depot->error, sizeof(depot->error), "%s", error);
-    }
-    (void)vkr_ui_pop_id(ui);
-    *y += 34;
-  }
-}
-
-static void depot_window_access(VkrEditorDepot *depot, VkrEditorUi *editor,
-                                VkrUiSystem *ui, float32_t *y,
-                                float32_t width) {
   uint32_t shown = 0u;
   for (uint32_t i = 0u; i < depot->access_count; ++i) {
-    if (depot->access[i].role != VKR_DEPOT_ROLE_ADMIN) {
-      ++shown;
-    }
+    shown += depot->access[i].role != VKR_DEPOT_ROLE_ADMIN;
   }
+  VkrUiWidgetConfig heading = depot_widget(DEPOT_PAD, *y + 4, 300, 22);
+  heading.text.font = editor->heading_font;
+  vkr_ui_label(ui, string8_lit("access.title"),
+               string8_lit("Computers with access"), &heading);
+  *y += 32.0f;
   if (!shown) {
+    depot_caption(ui, "access.none",
+                  "None yet: a computer that asks shows a card above",
+                  DEPOT_PAD, *y, width - 2 * DEPOT_PAD);
+    *y += 26.0f;
     return;
   }
-  depot_caption(ui, "access.title", "Computers with access", 12, *y,
-                width - 24);
-  *y += 22;
   for (uint32_t i = 0u; i < depot->access_count; ++i) {
     const VkrDepotAccessEntry *entry = &depot->access[i];
     if (entry->role == VKR_DEPOT_ROLE_ADMIN) {
@@ -4241,27 +5667,59 @@ static void depot_window_access(VkrEditorDepot *depot, VkrEditorUi *editor,
     (void)vkr_ui_push_id_u64(ui, i);
     char key[VKR_DEPOT_ID_HEX];
     depot_key_hex(entry->key, key);
-    char text[160];
     char who[VKR_DEPOT_DISPLAY_NAME + 16];
     depot_person_text(depot, entry->key, NULL, who, sizeof(who));
-    string_format(text, sizeof(text), "%s  \xc2\xb7  %s", who,
-                  depot_role_name(entry->role));
-    depot_label(ui, "entry", text, 24, *y, width - 150, vkr_ui_theme()->text);
+    depot_alert_card(ui, "entry.card", *y, width, 40.0f, theme->border);
+    depot_label(ui, "entry", who, DEPOT_PAD + 12.0f, *y + 9, width - 260,
+                theme->text);
+    depot_badge(ui, "role", depot_role_name(entry->role),
+                width - DEPOT_PAD - 200.0f, *y + 11, theme->text_secondary);
     char error[DEPOT_TEXT] = {0};
-    if (depot_button(editor, ui, "remove", "Remove", width - 112, *y - 2, 100,
-                     false_v, false_v)) {
+    if (depot_button(editor, ui, "remove", "Remove", width - DEPOT_PAD - 100.0f,
+                     *y + 6, 88, false_v, false_v)) {
       (void)vkr_editor_depot_allow(depot, key, "none", error, sizeof(error));
     }
     (void)vkr_ui_pop_id(ui);
-    *y += 28;
+    *y += 48.0f;
   }
-  *y += 6;
 }
 
-static void depot_window_history(VkrEditorDepot *depot, VkrUiSystem *ui,
-                                 float32_t *y, float32_t width) {
-  depot_commit_rows(ui, "history", "History", depot->history,
-                    depot->history_count, depot->history_count, y, width);
+// -----------------------------------------------------------------------------
+// Window
+// -----------------------------------------------------------------------------
+
+/* A tab whose content is a column of rows that scrolls as one. */
+static void depot_scroll_tab(VkrEditorDepot *depot, VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame,
+                             VkrUiPlacement placement, VkrUiRect bounds,
+                             float32_t width, float32_t height, bool8_t busy) {
+  VkrUiSystem *ui = frame->ui;
+  if (ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
+      ui->mouse_y >= bounds.y && ui->mouse_y < bounds.y + bounds.height &&
+      !ui->mouse_captured) {
+    depot->window_scroll -= ui->mouse_wheel * 40;
+  }
+  depot->window_scroll = vkr_clamp_f32(
+      depot->window_scroll, 0, Max(0.0f, depot->window_height - height));
+  VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
+  const VkrUiTrack track = {.value = Max(height, depot->window_height),
+                            .unit = VKR_UI_TRACK_PX};
+  scroll.placement = placement;
+  scroll.rows = &track;
+  scroll.row_count = 1;
+  scroll.clip_children = true_v;
+  if (!vkr_ui_scroll_area_begin(ui, string8_lit("depot.scroll"), &scroll)) {
+    return;
+  }
+  (void)vkr_ui_scroll_area_offset(ui, &depot->window_scroll);
+  float32_t y = 0.0f;
+  if (depot->tab == DEPOT_TAB_REMOTES) {
+    depot_tab_remotes(depot, editor, ui, &y, width, busy);
+  } else {
+    depot_tab_sharing(depot, editor, ui, &y, width, busy);
+  }
+  depot->window_height = y + 12.0f;
+  (void)vkr_ui_scroll_area_end(ui);
 }
 
 void vkr_editor_depot_window_build(VkrEditorUi *editor,
@@ -4277,82 +5735,81 @@ void vkr_editor_depot_window_build(VkrEditorUi *editor,
   }
   /* Discovery follows a remote that moved to another address. */
   depot->browse_wanted = depot->browse_wanted || depot->remote_count > 0u;
-  if (ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
-      ui->mouse_y >= bounds.y && ui->mouse_y < bounds.y + bounds.height &&
-      !ui->mouse_captured) {
-    depot->window_scroll -= ui->mouse_wheel * 40;
-  }
-  depot->window_scroll = vkr_clamp_f32(
-      depot->window_scroll, 0, Max(0.0f, depot->window_height - height));
-  VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
-  const VkrUiTrack track = {.value = Max(height, depot->window_height),
-                            .unit = VKR_UI_TRACK_PX};
-  scroll.rows = &track;
-  scroll.row_count = 1;
-  scroll.clip_children = true_v;
-  if (!vkr_ui_scroll_area_begin(ui, string8_lit("depot.layout"), &scroll)) {
-    return;
-  }
-  (void)vkr_ui_scroll_area_offset(ui, &depot->window_scroll);
-  float32_t y = 10;
+  depot_inspect_update(depot);
   const bool8_t busy =
       depot_busy(depot) && depot->job->kind != DEPOT_JOB_STATUS;
-  if (!depot->project_id[0]) {
-    depot_label(ui, "none", "Open a project to use source control.", 12, y,
-                width - 24, theme->text_secondary);
-    y += 30;
-  } else if (!depot->repository && !depot_busy(depot)) {
-    depot_window_not_repository(depot, editor, frame, ui, &y, width);
-  } else if (depot->repository) {
-    depot_window_branch(depot, editor, ui, &y, width, busy);
-    depot_window_sync(depot, editor, ui, &y, width, busy);
-    depot_window_conflicts(depot, editor, ui, &y, width, busy);
-    depot_window_untracked(depot, editor, ui, &y, width, busy);
-    depot_window_changes(depot, editor, frame, ui, &y, width, busy);
-    depot_commit_rows(ui, "outgoing", "To push", depot->outgoing,
-                      depot->outgoing_count, depot->ahead, &y, width);
-    depot_commit_rows(ui, "incoming", "To pull", depot->incoming,
-                      depot->incoming_count, depot->behind, &y, width);
-    depot_window_remotes(depot, editor, ui, &y, width, busy);
-    depot_window_server(depot, editor, ui, &y, width, busy);
-    depot_window_requests(depot, editor, ui, &y, width);
-    if (depot->serving) {
-      depot_window_access(depot, editor, ui, &y, width);
+  if (!depot->project_id[0] || !depot->repository) {
+    /* No repository yet: the form that makes one, or what is under way. */
+    if (!depot_pane_begin(ui, "depot.layout", depot_cell(0u, 0u), (Vec4){0})) {
+      return;
     }
-    if (vkr_editor_scripts_held(editor->scripts)) {
-      depot_label(ui, "scripts.held", "Scripts from others are not running", 12,
-                  y, width - 160, theme->warning);
-      if (depot_button(editor, ui, "scripts.trust", "Run scripts", width - 136,
-                       y - 2, 124, false_v, false_v)) {
-        vkr_editor_depot_trust_scripts(depot, editor);
-      }
-      y += 34;
+    float32_t y = 10;
+    if (!depot->project_id[0]) {
+      depot_empty(ui, "none", VKR_UI_ICON_PROJECT, "No project open",
+                  "Open a project to use source control", 40.0f, width);
+    } else if (!depot_busy(depot)) {
+      depot_window_not_repository(depot, editor, frame, ui, &y, width);
+    } else if (busy) {
+      depot_alert_progress(depot, editor, ui, &y, width);
     }
-    depot_window_history(depot, ui, &y, width);
-  }
-  if (busy) {
-    char text[DEPOT_TEXT];
-    const float32_t fraction = depot_job_text(depot, text, sizeof(text));
-    depot_label(ui, "job.text", text, 12, y, width - 120, theme->text);
-    if (depot_button(editor, ui, "job.cancel", "Cancel", width - 100, y - 2, 88,
-                     false_v, false_v)) {
-      vkr_editor_depot_cancel(depot);
+    if (depot->error[0]) {
+      depot_alert_error(depot, ui, &y, width);
     }
-    y += 28;
-    depot_progress_bar(ui, "job.bar", 12, y, width - 24, fraction);
-    y += 18;
+    (void)vkr_ui_panel_end(ui);
+    return;
   }
-  if (depot->error[0]) {
-    VkrUiWidgetConfig c = depot_widget(12, y, width - 24, 40);
-    c.style.text_color = theme->warning;
-    c.style.max_size_pt.y = 60;
-    c.text.layout.word_wrap = true_v;
-    c.text.layout.max_width = width - 32;
-    vkr_ui_label(ui, string8_lit("error"), depot_string(depot->error), &c);
-    y += 46;
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {
+      {.value = DEPOT_TOOLBAR_PT, .unit = VKR_UI_TRACK_PX},
+      {.value = depot->top_height, .unit = VKR_UI_TRACK_PX},
+      {.value = DEPOT_TABS_PT, .unit = VKR_UI_TRACK_PX},
+      fill};
+  VkrUiPanelConfig body = vkr_ui_panel_config_default();
+  body.columns = &fill;
+  body.column_count = 1u;
+  body.rows = rows;
+  body.row_count = ArrayCount(rows);
+  body.style.gap_pt = 0.0f;
+  body.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("depot.layout"), &body)) {
+    return;
   }
-  depot->window_height = y + 12;
-  (void)vkr_ui_scroll_area_end(ui);
+  if (depot_pane_begin(ui, "depot.toolbar", depot_cell(0u, 0u),
+                       theme->header)) {
+    depot_toolbar(depot, editor, ui, width, busy);
+    (void)vkr_ui_panel_end(ui);
+  }
+  if (depot_pane_begin(ui, "depot.top", depot_cell(0u, 1u), (Vec4){0})) {
+    float32_t y = 8.0f;
+    depot_top(depot, editor, ui, &y, width, busy);
+    /* The row takes this height from the next build. */
+    depot->top_height = y > 8.0f ? y : 0.0f;
+    (void)vkr_ui_panel_end(ui);
+  }
+  if (depot_pane_begin(ui, "depot.tabs", depot_cell(0u, 2u), (Vec4){0})) {
+    depot_tabs(depot, editor, ui, width);
+    (void)vkr_ui_panel_end(ui);
+  }
+  const float32_t content_pt =
+      Max(80.0f, height - DEPOT_TOOLBAR_PT - depot->top_height - DEPOT_TABS_PT);
+  VkrUiRect content = bounds;
+  content.y += (DEPOT_TOOLBAR_PT + depot->top_height + DEPOT_TABS_PT) *
+               ui->content_scale;
+  content.height = content_pt * ui->content_scale;
+  switch (depot->tab) {
+  case DEPOT_TAB_CHANGES:
+    depot_tab_changes(depot, editor, frame, ui, depot_cell(0u, 3u), width,
+                      busy);
+    break;
+  case DEPOT_TAB_HISTORY:
+    depot_tab_history(depot, editor, ui, depot_cell(0u, 3u), width, content_pt);
+    break;
+  default:
+    depot_scroll_tab(depot, editor, frame, depot_cell(0u, 3u), content, width,
+                     content_pt, busy);
+    break;
+  }
+  (void)vkr_ui_panel_end(ui);
 }
 
 // =============================================================================
@@ -5102,6 +6559,34 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
         untracked, vkr_bakery_json_cstr(arena, depot->untracked[i].text));
   }
   vkr_bakery_json_set(arena, result, "untracked", untracked);
+  /* The History's newest commits, as the window lists them. */
+  VkrBakeryJson *history = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < Min(depot->history_count, 20u); ++i) {
+    const DepotHistory *commit = &depot->history[i];
+    VkrBakeryJson *row = vkr_bakery_json_object(arena);
+    char author[VKR_DEPOT_ID_HEX];
+    depot_key_hex(commit->author, author);
+    vkr_bakery_json_set(arena, row, "id",
+                        vkr_bakery_json_cstr(arena, commit->id));
+    vkr_bakery_json_set(arena, row, "message",
+                        vkr_bakery_json_cstr(arena, commit->message));
+    vkr_bakery_json_set(arena, row, "author",
+                        vkr_bakery_json_cstr(arena, author));
+    vkr_bakery_json_set(arena, row, "time_us",
+                        vkr_bakery_json_int(arena, (int64_t)commit->time_us));
+    vkr_bakery_json_set(arena, row, "parents",
+                        vkr_bakery_json_int(arena, commit->parent_count));
+    vkr_bakery_json_set(
+        arena, row, "to_push",
+        vkr_bakery_json_bool(arena,
+                             (commit->flags & DEPOT_COMMIT_TO_PUSH) != 0u));
+    vkr_bakery_json_set(
+        arena, row, "to_pull",
+        vkr_bakery_json_bool(arena,
+                             (commit->flags & DEPOT_COMMIT_TO_PULL) != 0u));
+    vkr_bakery_json_append(history, row);
+  }
+  vkr_bakery_json_set(arena, result, "history", history);
   VkrBakeryJson *job = vkr_bakery_json_object(arena);
   const bool8_t busy = depot_busy(depot);
   vkr_bakery_json_set(arena, job, "running", vkr_bakery_json_bool(arena, busy));

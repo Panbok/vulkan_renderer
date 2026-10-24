@@ -764,6 +764,8 @@ uint32_t vkr_depot_log(const VkrDepotStore *store, const VkrDepotId *start,
     if (parsed.parent_count) {
       entry.parent = parsed.parents[0];
     }
+    entry.parents = parsed.parents;
+    entry.parent_count = parsed.parent_count;
     MemCopy(entry.author, parsed.author, 32u);
     visited += 1u;
     const bool8_t more = visit(context, &entry);
@@ -882,22 +884,26 @@ static bool8_t depot_cooked_base(const VkrDepotCommit *commit,
   return vkr_depot_id_parse(hex, out_base);
 }
 
-/* The files of `commit`'s tree, when the store holds them; empty
-   otherwise. */
-static void depot_commit_files(const VkrDepotStore *store,
-                               const VkrDepotId *commit,
-                               VkrDepotFileList *out_files) {
+/* The files of `commit`'s tree, none for a zero commit; false, with none,
+   when the store lacks the commit or its tree. */
+static bool8_t depot_commit_files(const VkrDepotStore *store,
+                                  const VkrDepotId *commit,
+                                  VkrDepotFileList *out_files) {
   MemZero(out_files, sizeof(*out_files));
+  if (vkr_depot_id_zero(commit)) {
+    return true_v;
+  }
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   VkrDepotCommit parsed;
-  if (!vkr_depot_id_zero(commit) &&
-      vkr_depot_store_get(store, commit, &bytes, &size) &&
-      vkr_depot_commit_parse(bytes, size, &parsed) &&
-      !vkr_depot_tree_files(store, &parsed.tree, out_files)) {
+  const bool8_t ok = vkr_depot_store_get(store, commit, &bytes, &size) &&
+                     vkr_depot_commit_parse(bytes, size, &parsed) &&
+                     vkr_depot_tree_files(store, &parsed.tree, out_files);
+  if (!ok) {
     vkr_depot_file_list_free(out_files);
   }
   free(bytes);
+  return ok;
 }
 
 bool8_t vkr_depot_fetch_cooked(VkrDepotWorkspace *workspace,
@@ -945,7 +951,7 @@ bool8_t vkr_depot_fetch_cooked(VkrDepotWorkspace *workspace,
      commit; another source cooks here instead. Build textures belong to a
      build revision that does not change. A file already here stays. */
   VkrDepotFileList then = {0};
-  depot_commit_files(&workspace->store, &base, &then);
+  (void)depot_commit_files(&workspace->store, &base, &then);
   VkrDepotFileList cache = {0};
   (void)vkr_depot_cooked_cache_load(workspace, &cache);
   uint32_t *wanted = calloc(cooked.count + 1u, sizeof(uint32_t));
@@ -1678,6 +1684,135 @@ bool8_t vkr_depot_ahead_behind(const VkrDepotStore *store,
   depot_set_free(&mine);
   depot_set_free(&theirs);
   return true_v;
+}
+
+bool8_t vkr_depot_commit_changes(const VkrDepotStore *store,
+                                 const VkrDepotId *id,
+                                 VkrDepotChangeVisitor visit, void *context) {
+  VkrDepotId parents[VKR_DEPOT_PARENTS_MAX];
+  uint32_t parent_count = 0u;
+  VkrDepotFileList before = {0};
+  VkrDepotFileList after = {0};
+  const VkrDepotId none = {0};
+  const bool8_t ok =
+      depot_commit_parents(store, id, parents, &parent_count) &&
+      depot_commit_files(store, id, &after) &&
+      depot_commit_files(store, parent_count ? &parents[0] : &none, &before) &&
+      vkr_depot_file_list_diff(&before, &after, visit, context);
+  vkr_depot_file_list_free(&before);
+  vkr_depot_file_list_free(&after);
+  return ok;
+}
+
+/* A commit the graph walk queued: its bytes stay until it is visited. */
+typedef struct DepotGraphNode {
+  VkrDepotId id;
+  uint8_t *bytes;
+  VkrDepotCommit commit;
+} DepotGraphNode;
+
+typedef struct DepotGraphWalk {
+  const VkrDepotStore *store;
+  DepotGraphNode *frontier;
+  uint32_t frontier_count;
+  /* Every commit queued so far, so each is visited once. */
+  VkrDepotId *queued;
+  uint32_t queued_count;
+  uint32_t capacity;
+} DepotGraphWalk;
+
+/* Queues commit `id` once; one the store lacks ends its line. */
+static void depot_graph_queue(DepotGraphWalk *walk, const VkrDepotId *id) {
+  for (uint32_t i = 0u; i < walk->queued_count; ++i) {
+    if (vkr_depot_id_equal(&walk->queued[i], id)) {
+      return;
+    }
+  }
+  if (walk->queued_count == walk->capacity) {
+    return;
+  }
+  walk->queued[walk->queued_count++] = *id;
+  DepotGraphNode *node = &walk->frontier[walk->frontier_count];
+  uint64_t size = 0u;
+  node->id = *id;
+  node->bytes = NULL;
+  if (!vkr_depot_store_has(walk->store, id) ||
+      !vkr_depot_store_get(walk->store, id, &node->bytes, &size) ||
+      !vkr_depot_commit_parse(node->bytes, size, &node->commit)) {
+    free(node->bytes);
+    return;
+  }
+  walk->frontier_count += 1u;
+}
+
+uint32_t vkr_depot_log_graph(const VkrDepotStore *store, const VkrDepotId *tips,
+                             uint32_t tip_count, uint32_t count,
+                             VkrDepotLogVisitor visit, void *context) {
+  tip_count = Min(tip_count, VKR_DEPOT_LOG_TIPS_MAX);
+  /* Each tip's whole history, for the reach bits; a history past the
+     bound reaches only what its walk met. */
+  DepotCommitSet reach[VKR_DEPOT_LOG_TIPS_MAX] = {0};
+  for (uint32_t t = 0u; t < tip_count; ++t) {
+    (void)depot_ancestors(store, NULL, &tips[t], NULL, &reach[t]);
+  }
+  /* A visited commit queues at most its parents. */
+  DepotGraphWalk walk = {.store = store,
+                         .capacity = tip_count + count * VKR_DEPOT_PARENTS_MAX};
+  walk.frontier = malloc(walk.capacity * sizeof(*walk.frontier));
+  walk.queued = malloc(walk.capacity * sizeof(*walk.queued));
+  uint32_t visited = 0u;
+  if (walk.frontier && walk.queued) {
+    for (uint32_t t = 0u; t < tip_count; ++t) {
+      if (!vkr_depot_id_zero(&tips[t])) {
+        depot_graph_queue(&walk, &tips[t]);
+      }
+    }
+  }
+  bool8_t more = true_v;
+  while (more && visited < count && walk.frontier_count) {
+    /* The newest queued commit; the first queued wins a tie. */
+    uint32_t newest = 0u;
+    for (uint32_t i = 1u; i < walk.frontier_count; ++i) {
+      if (walk.frontier[i].commit.time_us >
+          walk.frontier[newest].commit.time_us) {
+        newest = i;
+      }
+    }
+    DepotGraphNode node = walk.frontier[newest];
+    MemCopy(&walk.frontier[newest], &walk.frontier[newest + 1u],
+            (walk.frontier_count - newest - 1u) * sizeof(*walk.frontier));
+    walk.frontier_count -= 1u;
+    VkrDepotLogEntry entry = {.id = node.id,
+                              .time_us = node.commit.time_us,
+                              .message = node.commit.message,
+                              .message_size = node.commit.message_size,
+                              .parents = node.commit.parents,
+                              .parent_count = node.commit.parent_count};
+    if (node.commit.parent_count) {
+      entry.parent = node.commit.parents[0];
+    }
+    MemCopy(entry.author, node.commit.author, 32u);
+    for (uint32_t t = 0u; t < tip_count; ++t) {
+      if (depot_set_has(&reach[t], &node.id)) {
+        entry.reach |= 1u << t;
+      }
+    }
+    visited += 1u;
+    more = visit(context, &entry);
+    for (uint32_t p = 0u; more && p < node.commit.parent_count; ++p) {
+      depot_graph_queue(&walk, &node.commit.parents[p]);
+    }
+    free(node.bytes);
+  }
+  for (uint32_t i = 0u; i < walk.frontier_count; ++i) {
+    free(walk.frontier[i].bytes);
+  }
+  free(walk.frontier);
+  free(walk.queued);
+  for (uint32_t t = 0u; t < tip_count; ++t) {
+    depot_set_free(&reach[t]);
+  }
+  return visited;
 }
 
 bool8_t vkr_depot_merge_base(const VkrDepotStore *store, const VkrDepotId *a,

@@ -348,6 +348,11 @@ bool8_t vkr_editor_table_row(VkrUiSystem *ui, VkrEditorTable *table,
       if (row->cell_colors && row->cell_colors[c].w > 0.0f) {
         cell.style.text_color = row->cell_colors[c];
       }
+      if (row->cell_icons && row->cell_icons[c] != VKR_UI_ICON_NONE) {
+        cell.icon = row->cell_icons[c];
+        cell.icon_size_pt = 12.0f;
+        cell.icon_color = cell.style.text_color;
+      }
       EditorTableCellLook look = {0};
       if (row->cell_fills) {
         look.fill = row->cell_fills[c];

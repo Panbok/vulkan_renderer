@@ -21024,7 +21024,8 @@ static const OpsDef s_ops[] = {
     {"depot.status",
      "Source control: whether the open project is a repository, its branch "
      "and branches, how far it is ahead of and behind the selected remote, "
-     "the remotes with their state, local changes and conflicts, whether "
+     "the remotes with their state, local changes and conflicts, the newest "
+     "commits of both sides (to_push, to_pull), whether "
      "this editor serves it with its access requests and list, the running "
      "step with its progress, the textures the last pull cooked or took "
      "from the cooked side branch, the last error and the servers found on "

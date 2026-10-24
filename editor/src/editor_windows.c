@@ -42,6 +42,8 @@ static Vec2 editor_window_min_size(VkrEditorWindowKind kind) {
     return (Vec2){640.0f, 320.0f};
   case VKR_EDITOR_WINDOW_RENDER_GRAPH:
     return (Vec2){640.0f, 400.0f};
+  case VKR_EDITOR_WINDOW_DEPOT:
+    return (Vec2){640.0f, 440.0f};
   default:
     return (Vec2){EDITOR_WINDOW_MIN_WIDTH_PT, EDITOR_WINDOW_MIN_HEIGHT_PT};
   }

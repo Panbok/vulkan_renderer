@@ -148,14 +148,35 @@ writes no ignored path (ADR-105).
   push and to pull. The top bar button shows the branch and its most
   pressing state: `conflicts`, `waiting for access`, `N asking`, `N to
   pull`, `N changes` or `N to push`; it opens the Source Control window.
-- The window lists, top down: the branch with its counts against the
-  remote branch, the branches to switch to and a New branch field; the
-  remotes to choose from with the selected one's state and Sync, Pull, Push
-  and Fetch; conflicts with Use theirs and Keep mine; the changes with a
-  message, Commit and Commit & Sync; the commits to push and to pull; the
-  remotes with Add remote (filled by one click from a service found on the
-  network) and Remove; Let others fetch and push with the server's state,
-  the access requests and the access list; and the history.
+- The window ([editor_depot.c](../../editor/src/editor_depot.c)), at least
+  640 by 440 points, has a toolbar, cards, tabs and the shown tab:
+  - **Toolbar:** the branch and the remote steps use, each opening a list
+    under it (branches to switch to and a field for a new one; remotes
+    with the selected one's address, state and counts), then Fetch,
+    `Pull N`, `Push N` and Sync. The remote's cloud icon shows its state
+    by colour.
+  - **Cards** for what needs the user: the running step with its progress
+    and Cancel, the last error (dismissable), conflicts with Use theirs and
+    Keep mine, files from outside the project, each access request with
+    Allow, Fetch only and Deny, waiting for a remote's Allow, and held
+    scripts.
+  - **Changes:** a table of changed files (change, name, folder; sortable),
+    the message, Commit and Commit & Sync.
+  - **History:** the commits of the branch and of the remote's branch as
+    last fetched, merged lines included, newest first (up to 200;
+    `vkr_depot_log_graph`). An arrow marks a commit to push or to pull, a
+    branch icon a merge; columns give the message, author (`You` for this
+    user's key), date and short id, fewer as the pane narrows. The
+    selected commit's details sit beside the list (under it below 640
+    points): its whole message, the branches at it, to push or to pull,
+    merge, author, date, id with Copy, parents that select their commit,
+    and the files it changed against its first parent
+    (`vkr_depot_commit_changes`), read on a thread of their own.
+  - **Remotes:** a card per remote with its address, key, state, Sync with
+    it and Remove, and Add remote (filled by one click from a service found
+    on the network).
+  - **Sharing:** Let others fetch and push, the service's host, port, key
+    and connections, and the computers with access.
 - A step the user starts stops a running status check first, so a remote
   that does not answer never holds the user's step behind its timeout.
 - **Commit** needs saved scenes and records the changes in the repository.
@@ -301,6 +322,17 @@ with its name; `depot.allow` gave it write access and its next try cloned
 list in the next two status steps. `depot.serve` with `serve` false removed
 the store and the service stopped serving it. A window capture showed the
 serving line with host, port, key and connected peers.
+
+The window's toolbar, tabs and History, Mac M1, Release, 2026-10-24:
+headless captures of the Bistro project's working copy (`~/vkr-depot/work`)
+at 640 and 900 points wide. History listed all 19 commits newest first, among
+them Windows' "D5 Windows: raise titlecard2" marked to pull with the
+`origin/main` badge and this Mac's "D5 Mac: raise titlecard1" marked to push
+with `main`, by `You`; the details of each showed the files it changed
+against its first parent (the Mac's: one overlay deleted, one added,
+`scene.json` modified), and its parent link selected that commit. Changes
+listed one added file with its folder. The window with no project open is
+unverified.
 
 Unverified: the editor part on Windows; Source Control between two
 computers; Start (`service install`) from the editor; the Local Network

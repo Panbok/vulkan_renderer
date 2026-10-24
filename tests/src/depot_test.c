@@ -861,6 +861,83 @@ static void test_depot_ignore(void) {
   printf("  test_depot_ignore PASSED\n");
 }
 
+/* A commit with `message`, `time_us` and up to two parents, put in `store`;
+   the graph walk reads no tree. */
+static VkrDepotId depot_test_graph_commit(VkrDepotStore *store,
+                                          const char *message, uint64_t time_us,
+                                          const VkrDepotId *first,
+                                          const VkrDepotId *second) {
+  VkrDepotCommit commit = {.time_us = time_us,
+                           .message = message,
+                           .message_size = (uint32_t)strlen(message)};
+  if (first) {
+    commit.parents[commit.parent_count++] = *first;
+  }
+  if (second) {
+    commit.parents[commit.parent_count++] = *second;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  VkrDepotId id;
+  assert(vkr_depot_commit_encode(&commit, &bytes, &size));
+  vkr_depot_id_of(bytes, size, &id);
+  assert(vkr_depot_store_put(store, &id, bytes, size));
+  free(bytes);
+  return id;
+}
+
+typedef struct DepotTestGraph {
+  char order[8];
+  uint32_t reach[8];
+  uint32_t parents[8];
+  uint32_t count;
+} DepotTestGraph;
+
+static bool8_t depot_test_graph_visit(void *context,
+                                      const VkrDepotLogEntry *entry) {
+  DepotTestGraph *graph = context;
+  assert(entry->message_size == 1u);
+  graph->order[graph->count] = entry->message[0];
+  graph->reach[graph->count] = entry->reach;
+  graph->parents[graph->count] = entry->parent_count;
+  graph->count += 1u;
+  return true_v;
+}
+
+/* Fails when the graph walk follows first parents only (it would miss B,
+   which the merge M brought in), visits a parent before a child whose
+   clock ran ahead (C), visits a commit twice, misses the count, or marks
+   the wrong side as reaching a commit. */
+static void test_depot_log_graph(void) {
+  printf("  Running test_depot_log_graph...\n");
+  char root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("graph", root, sizeof(root));
+  VkrDepotStore store;
+  assert(vkr_depot_store_open(&store, root, vkr_depot_zstd_codec()));
+  /* R <- A <- B <- D: the remote tip D. A <- C <- M with M merging B: the
+     local tip M. C's clock runs ahead of M's. */
+  const VkrDepotId r = depot_test_graph_commit(&store, "R", 1u, NULL, NULL);
+  const VkrDepotId a = depot_test_graph_commit(&store, "A", 2u, &r, NULL);
+  const VkrDepotId b = depot_test_graph_commit(&store, "B", 4u, &a, NULL);
+  const VkrDepotId c = depot_test_graph_commit(&store, "C", 8u, &a, NULL);
+  const VkrDepotId m = depot_test_graph_commit(&store, "M", 6u, &c, &b);
+  const VkrDepotId d = depot_test_graph_commit(&store, "D", 7u, &b, NULL);
+  const VkrDepotId tips[] = {m, d};
+  DepotTestGraph graph = {0};
+  assert(vkr_depot_log_graph(&store, tips, 2u, 8u, depot_test_graph_visit,
+                             &graph) == 6u);
+  assert(memcmp(graph.order, "DMCBAR", 6u) == 0);
+  static const uint32_t reach[] = {2u, 1u, 1u, 3u, 3u, 3u};
+  assert(memcmp(graph.reach, reach, sizeof(reach)) == 0);
+  assert(graph.parents[1] == 2u && graph.parents[5] == 0u);
+  DepotTestGraph few = {0};
+  assert(vkr_depot_log_graph(&store, tips, 2u, 3u, depot_test_graph_visit,
+                             &few) == 3u);
+  assert(memcmp(few.order, "DMC", 3u) == 0);
+  assert(vkr_bakery_remove_tree(root));
+  printf("  test_depot_log_graph PASSED\n");
+}
+
 /* Fails when a push over a lossy path does not reach the server whole, a
    fetch into an empty store does not reproduce every file, a second push
    resends unchanged objects, a stale compare-and-swap or a commit with
@@ -4148,6 +4225,7 @@ bool32_t run_depot_tests(void) {
   test_depot_chunking();
   test_depot_workspace();
   test_depot_ignore();
+  test_depot_log_graph();
   test_depot_transfer();
   test_depot_runtime_access();
   test_depot_conflicts();

@@ -65,6 +65,9 @@ typedef struct VkrEditorTableRow {
   const Vec4 *cell_fills;
   const float32_t *cell_bars;
   const Vec4 *bar_colors;
+  /* Optional, one per column: an icon before the cell's text
+     (VKR_UI_ICON_NONE for none), in the cell's text colour. */
+  const VkrUiIcon *cell_icons;
 } VkrEditorTableRow;
 
 /** Draws the header (a click sorts, a column's right edge resizes it) and
