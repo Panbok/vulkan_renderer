@@ -637,6 +637,11 @@ VkrBakeryJson *vkr_project_recook_textures(VkrProjectJob *job);
  * asset closure into a new self-contained workspace at the request's
  * `destination` (vkr_project_share.c). */
 VkrBakeryJson *vkr_project_share(VkrProjectJob *job);
+/** `untracked_dependencies`: the files of the project's closure that the
+ * content root serves and git does not track there, which another machine
+ * lacks; with `adopt`, copies each into the working copy's own assets/
+ * (vkr_project_share.c). */
+VkrBakeryJson *vkr_project_dependencies(VkrProjectJob *job);
 /** `merge_scene_unit` and `merge_project_document`: the depot's merge
  * drivers, which merge one unit of the request's `base`, `mine` and
  * `theirs` folders into its `output` folder (vkr_project_merge.c). They

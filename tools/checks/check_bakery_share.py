@@ -18,7 +18,9 @@ files, bytes, missing references, cooked textures and the build that needs a
 rebuild for want of texture recipes, that `.vkrdepotignore` and the merge
 units of `.vkrdepotmerge` are written, and that a destination inside the
 source workspace or a non-empty
-one is refused and left as it was.
+one is refused and left as it was. `untracked_dependencies` then lists the
+files the content root serves the project apart from engine content, and
+with `adopt` copies them into the workspace, after which it lists none.
 """
 import argparse
 import json
@@ -283,10 +285,34 @@ def main():
         job = jobs.Job(dict(base, destination=str(destination)), result_path, bakery)
         assert job.execute() == 1, job.output
         assert tree(destination) == expected
+
+        # Untracked dependencies: what the content root serves this project
+        # and git does not track there. This content root is no checkout, so
+        # only an identity git tracks in the repository counts as engine
+        # content; the workspace's own copies are the project's already.
+        write(content / 'assets/materials/default.world.mt', 'name=engine\n')
+        write(b / b_overlay, {'version': 5, 'overrides': [
+            {'material': 'assets/materials/stone.mt'},
+            {'material': 'assets/materials/default.world.mt'}]})
+        dependencies = dict(base, operation='untracked_dependencies')
+        job = jobs.Job(dependencies, result_path, bakery)
+        assert job.execute() == 0, job.output
+        listed = jobs.load_json(result_path)
+        assert sorted(entry['path'] for entry in listed['untracked']) == \
+            ['assets/materials/stone.mt', 'assets/textures/stone.png'], listed
+        assert listed['adopted'] == 0 and not (source / 'assets/materials/stone.mt').exists()
+        job = jobs.Job(dict(dependencies, adopt=True), result_path, bakery)
+        assert job.execute() == 0, job.output
+        assert jobs.load_json(result_path)['adopted'] == 2
+        assert (source / 'assets/materials/stone.mt').read_bytes() == \
+            (content / 'assets/materials/stone.mt').read_bytes()
+        job = jobs.Job(dependencies, result_path, bakery)
+        assert job.execute() == 0, job.output
+        assert jobs.load_json(result_path)['untracked'] == [], 'Adopted files are the project\'s'
     print('Bakery share: live files, stale overlays/inventories/builds left out, asset closure through '
           'the workspace overlay, content root and terrain folder, cooked siblings skipped, cooked '
           'textures without sources reported, missing references reported, ignore file, refused '
-          'destinations passed')
+          'destinations, untracked dependencies and their adoption passed')
 
 
 if __name__ == '__main__':

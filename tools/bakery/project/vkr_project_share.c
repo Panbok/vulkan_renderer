@@ -765,7 +765,12 @@ vkr_internal VkrBakeryJson *vkr_share_result(VkrShare *share, uint64_t bytes) {
 // Operation
 // =============================================================================
 
-VkrBakeryJson *vkr_project_share(VkrProjectJob *job) {
+/* A share of the job's project, with the closure of its live files
+   collected: each scene's, then the project's documents and scripts.
+   `destination` checks the request's destination first. NULL, with the
+   job failed, otherwise. */
+vkr_internal VkrShare *vkr_share_collect(VkrProjectJob *job,
+                                         bool8_t destination) {
   VkrShare *share = (VkrShare *)arena_alloc(job->arena, sizeof(VkrShare),
                                             ARENA_MEMORY_TAG_STRUCT);
   if (!share) {
@@ -776,12 +781,12 @@ VkrBakeryJson *vkr_project_share(VkrProjectJob *job) {
   share->job = job;
   share->needs_rebuild = vkr_bakery_json_array(job->arena);
   if (strcmp(vkr_bakery_path_name(job->workspace), ".vkreditor") != 0) {
-    vkr_project_fail(job, "share_project requires a workspace_root named "
-                          ".vkreditor");
+    vkr_project_fail(job, "%s requires a workspace_root named .vkreditor",
+                     job->operation);
     return NULL;
   }
   vkr_bakery_path_parent(share->source, sizeof(share->source), job->workspace);
-  if (!vkr_share_destination(share)) {
+  if (destination && !vkr_share_destination(share)) {
     return NULL;
   }
   VkrBakeryJson *project =
@@ -814,11 +819,6 @@ VkrBakeryJson *vkr_project_share(VkrProjectJob *job) {
         .prefix = prefixes[i], .directory = share->mount_directories[i]};
   }
 
-  VkrBakeryJson *result = NULL;
-  uint64_t bytes = 0u;
-  char parent[VKR_PROJECT_PATH];
-  char staging[VKR_PROJECT_PATH];
-  char ignore[VKR_PROJECT_PATH];
   const VkrBakeryJson *scenes = vkr_bakery_json_get(project, "scenes");
   for (const VkrBakeryJson *scene = scenes ? scenes->first : NULL; scene;
        scene = scene->next) {
@@ -829,14 +829,28 @@ VkrBakeryJson *vkr_project_share(VkrProjectJob *job) {
     }
     if (!vkr_share_collect_scene(share, id,
                                  vkr_project_json_text(scene, "name"))) {
-      goto cleanup;
+      vkr_bundle_free(&share->bundle);
+      return NULL;
     }
   }
   if (!vkr_project_progress(job, "Collecting files", -1.0, "Project") ||
       !vkr_share_collect_project(share, project)) {
-    goto cleanup;
+    vkr_bundle_free(&share->bundle);
+    return NULL;
   }
+  return share;
+}
 
+VkrBakeryJson *vkr_project_share(VkrProjectJob *job) {
+  VkrShare *share = vkr_share_collect(job, true_v);
+  if (!share) {
+    return NULL;
+  }
+  VkrBakeryJson *result = NULL;
+  uint64_t bytes = 0u;
+  char parent[VKR_PROJECT_PATH];
+  char staging[VKR_PROJECT_PATH];
+  char ignore[VKR_PROJECT_PATH];
   vkr_bakery_path_parent(parent, sizeof(parent), share->destination);
   if (!vkr_project_make_dirs(job, parent) ||
       !vkr_project_mkdtemp(
@@ -872,6 +886,96 @@ VkrBakeryJson *vkr_project_share(VkrProjectJob *job) {
   result = vkr_share_result(share, bytes);
 
 cleanup:
+  vkr_bundle_free(&share->bundle);
+  return result;
+}
+
+VkrBakeryJson *vkr_project_dependencies(VkrProjectJob *job) {
+  Arena *arena = job->arena;
+  /* Engine content stays where it is; the rest of what the content root
+     serves this project is the project's to hold. */
+  if (!vkr_vfs_engine_content_load()) {
+    vkr_project_fail(job, "Engine content is unknown: git ls-files failed in "
+                          "the content root");
+    return NULL;
+  }
+  bool8_t adopt = false_v;
+  const VkrBakeryJson *requested = vkr_bakery_json_get(job->request, "adopt");
+  if (requested && requested->type != VKR_BAKERY_JSON_BOOL) {
+    vkr_project_fail(job, "adopt must be boolean");
+    return NULL;
+  }
+  adopt = requested && requested->boolean;
+  VkrShare *share = vkr_share_collect(job, false_v);
+  if (!share) {
+    return NULL;
+  }
+  VkrBakeryJson *untracked = vkr_bakery_json_array(arena);
+  uint64_t untracked_bytes = 0u;
+  uint32_t adopted = 0u;
+  bool8_t ok = true_v;
+  const VkrBundleSet *files = &share->bundle.files;
+  for (uint32_t i = 0u; ok && i < files->count; ++i) {
+    const char *identity = files->items[i];
+    char source[VKR_PROJECT_PATH];
+    uint32_t mount = 0u;
+    if (!vkr_bundle_source_mount(&share->bundle, identity, source,
+                                 sizeof(source), &mount) ||
+        mount != VKR_SHARE_MOUNT_CONTENT ||
+        vkr_vfs_is_engine_content(identity)) {
+      continue;
+    }
+    VkrBakeryStat info = {0};
+    (void)vkr_bakery_stat(source, &info);
+    untracked_bytes += info.size;
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, entry, "path",
+                        vkr_bakery_json_cstr(arena, identity));
+    vkr_bakery_json_set(arena, entry, "bytes",
+                        vkr_bakery_json_int(arena, (int64_t)info.size));
+    vkr_bakery_json_append(untracked, entry);
+    if (!adopt) {
+      continue;
+    }
+    /* Into the working copy's own assets/, which the overlay serves first,
+       so the project's next commit carries it. */
+    char destination[VKR_PROJECT_PATH];
+    char parent[VKR_PROJECT_PATH];
+    if ((uint32_t)snprintf(destination, sizeof(destination), "%s/%s",
+                           share->source, identity) >= sizeof(destination)) {
+      ok = vkr_project_fail(job, "Path too long: %s", identity);
+      break;
+    }
+    if (vkr_bakery_is_file(destination)) {
+      continue;
+    }
+    vkr_bakery_path_parent(parent, sizeof(parent), destination);
+    ok = vkr_project_make_dirs(job, parent) &&
+         (vkr_bakery_clone_or_copy(source, destination) ||
+          vkr_project_fail(job, "Cannot copy %s", source));
+    adopted += ok ? 1u : 0u;
+  }
+  VkrBakeryJson *result = NULL;
+  if (ok) {
+    result = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, result, "version",
+                        vkr_bakery_json_int(arena, VKR_PROJECT_VERSION));
+    vkr_bakery_json_set(arena, result, "status",
+                        vkr_bakery_json_cstr(arena, "complete"));
+    vkr_bakery_json_set(arena, result, "untracked", untracked);
+    vkr_bakery_json_set(arena, result, "untracked_count",
+                        vkr_bakery_json_int(arena, untracked->count));
+    vkr_bakery_json_set(arena, result, "untracked_bytes",
+                        vkr_bakery_json_int(arena, (int64_t)untracked_bytes));
+    vkr_bakery_json_set(arena, result, "adopted",
+                        vkr_bakery_json_int(arena, adopted));
+    vkr_bakery_json_set(
+        arena, result, "missing",
+        vkr_share_list(share, &share->bundle.missing_references));
+    vkr_bakery_json_set(
+        arena, result, "missing_count",
+        vkr_bakery_json_int(arena, share->bundle.missing_references.count));
+  }
   vkr_bundle_free(&share->bundle);
   return result;
 }
