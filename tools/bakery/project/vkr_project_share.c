@@ -78,6 +78,17 @@ typedef struct VkrShare {
   bool8_t destination_exists;
 } VkrShare;
 
+/* The units a depot merge sends whole to Bakery's drivers (vkr_depot_merge.h,
+   vkr_project_merge.c): a scene with its live inventory and overlay, and the
+   project document. */
+vkr_internal const char vkr_share_merge[] =
+    "# Written by `vkr_bakery project` share_project. A depot merge sends "
+    "each\n"
+    "# unit both sides changed whole to Bakery's driver for it.\n"
+    "unit scene .vkreditor/projects/*/scenes/*/scene.json inventory/*.json "
+    "edits/*.json\n"
+    "unit project .vkreditor/projects/*/project.json\n";
+
 vkr_internal const char vkr_share_ignore[] =
     "# Written by `vkr_bakery project` share_project. A depot snapshot leaves\n"
     "# out each machine's own editor state and per-platform build output.\n"
@@ -841,6 +852,9 @@ VkrBakeryJson *vkr_project_share(VkrProjectJob *job) {
   if (!vkr_share_copy(share, staging, &bytes) ||
       !vkr_project_write_text(job, ignore, vkr_share_ignore,
                               sizeof(vkr_share_ignore) - 1u) ||
+      !vkr_project_write_text(
+          job, vkr_project_printf(job, "%s/.vkrdepotmerge", staging),
+          vkr_share_merge, sizeof(vkr_share_merge) - 1u) ||
       !vkr_project_progress(job, "Publishing", 1.0, share->destination)) {
     goto cleanup;
   }

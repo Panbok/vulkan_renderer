@@ -15,8 +15,9 @@ overlays, inventories and builds, cooked siblings, locks, job folders and
 Scripts build output stay behind, that the overlay copy wins over the content
 root, that no file is a hard link of its source, that the result reports
 files, bytes, missing references, cooked textures and the build that needs a
-rebuild for want of texture recipes, that `.vkrdepotignore`
-is written, and that a destination inside the source workspace or a non-empty
+rebuild for want of texture recipes, that `.vkrdepotignore` and the merge
+units of `.vkrdepotmerge` are written, and that a destination inside the
+source workspace or a non-empty
 one is refused and left as it was.
 """
 import argparse
@@ -223,7 +224,7 @@ def main():
         mesh_materials = {f'{pa}/{path.relative_to(a).as_posix()}'
                           for path in (live / 'materials').glob('*.mt')}
         expected = {
-            '.vkrdepotignore',
+            '.vkrdepotignore', '.vkrdepotmerge',
             f'{p}/project.json', f'{p}/game.json', f'{p}/world.scene.json', f'{p}/world.editor.json',
             f'{p}/Scripts/Spin/Spin.script.json', f'{p}/Scripts/Spin/spin.c',
             f'{pa}/scene.json', f'{pa}/{live_overlay}', f'{pa}/{live_inventory}',
@@ -245,7 +246,7 @@ def main():
         # The workspace overlay wins over the content root, and every file is
         # its own copy.
         assert (destination / 'assets/materials/overlay.mt').read_text().startswith('name=overlay')
-        for relative in shared - {'.vkrdepotignore'}:
+        for relative in shared - {'.vkrdepotignore', '.vkrdepotmerge'}:
             copy = destination / relative
             origin = (workspace / relative[len('.vkreditor/'):] if relative.startswith('.vkreditor/')
                       else source / relative if (source / relative).is_file() else content / relative)
@@ -255,9 +256,9 @@ def main():
         assert result['status'] == 'complete', result
         assert result['destination'] == destination.as_posix(), result
         assert result['project_path'] == (destination / p / 'project.json').as_posix(), result
-        assert result['files'] == len(expected) - 1, result
+        assert result['files'] == len(expected) - 2, result
         assert result['bytes'] == sum((destination / f).stat().st_size for f in expected
-                                      if f != '.vkrdepotignore'), result
+                                      if f not in ('.vkrdepotignore', '.vkrdepotmerge')), result
         assert result['missing'] == ['assets/models/missing.vkb'], result['missing']
         assert result['missing_count'] == 1, result
         assert result['cooked_without_source'] == [f'{pa[len(".vkreditor/"):]}/builds/{live_build}'
