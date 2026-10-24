@@ -118,7 +118,7 @@ def main() -> int:
         for name in ("bistro.scene.json", "bistro.scene.json.editor.json"):
             shutil.copy(ROOT / "assets" / "scenes" / name, seed / "scenes" /
                         name)
-        run([depot, "commit", str(seed), "-m", "Bistro"], env, log)
+        run([depot, "commit", str(seed), "-m", "Bistro", "--push"], env, log)
         host_copy = work / "host"
         guest_copy = work / "guest"
         run([depot, "clone", address, key, str(host_copy)], env, log)

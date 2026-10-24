@@ -1053,6 +1053,37 @@ bool8_t vkr_depot_publish_cooked(VkrDepotWorkspace *workspace,
   return true_v;
 }
 
+/* Points the working copy's branch in its store at `commit`, and, with
+   `track_origin`, origin's record of that branch too when the working copy's
+   server is origin. The steps that move the base through the server (the
+   editor's Submit and Get latest, clone) keep the store's branches in step
+   so. Best effort: the base moved already, and a later commit or pull
+   reports a branch that disagrees with it. */
+static void depot_branch_follow(VkrDepotWorkspace *workspace,
+                                const VkrDepotId *commit,
+                                bool8_t track_origin) {
+  const char *store = workspace->store.root;
+  for (uint32_t attempt = 0u; attempt < 4u; ++attempt) {
+    VkrDepotId current = {0};
+    if (vkr_depot_ref_read(store, workspace->branch, &current) &&
+        vkr_depot_id_equal(&current, commit)) {
+      break;
+    }
+    if (vkr_depot_ref_swap(store, workspace->branch, &current, commit, NULL) !=
+        VKR_DEPOT_REF_SWAP_MOVED) {
+      break;
+    }
+  }
+  VkrDepotRemoteEntry origin;
+  if (track_origin && workspace->remote[0] &&
+      vkr_depot_remote_find(store, VKR_DEPOT_ORIGIN, &origin) &&
+      strcmp(origin.address, workspace->remote) == 0 &&
+      MemCompare(origin.key, workspace->server_key, 32u) == 0) {
+    (void)vkr_depot_tracking_set(store, VKR_DEPOT_ORIGIN, workspace->branch,
+                                 commit);
+  }
+}
+
 bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
                               VkrDepotClient *client, const char *branch,
                               const VkrDepotId *parent,
@@ -1107,6 +1138,7 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
   }
   /* The new index recorded every file the log names, or its deletion. */
   (void)vkr_depot_workspace_clear_fetched(workspace);
+  depot_branch_follow(workspace, &pending->commit, true_v);
   depot_step_done(workspace);
   return true_v;
 }
@@ -1149,10 +1181,14 @@ static bool8_t depot_same_content(const VkrDepotIndexEntry *a,
   return vkr_depot_id_equal(&a->blob, &b->blob);
 }
 
-bool8_t vkr_depot_fetch_checkout(
-    VkrDepotWorkspace *workspace, VkrDepotClient *client,
-    const VkrDepotId *commit, VkrDepotConflictPolicy policy, uint32_t *out_kept,
-    VkrDepotChangeList *out_conflicts, char *error, uint32_t capacity) {
+/* vkr_depot_fetch_checkout; `track_origin` as for depot_branch_follow. */
+static bool8_t depot_checkout_commit(VkrDepotWorkspace *workspace,
+                                     VkrDepotClient *client,
+                                     const VkrDepotId *commit,
+                                     VkrDepotConflictPolicy policy,
+                                     bool8_t track_origin, uint32_t *out_kept,
+                                     VkrDepotChangeList *out_conflicts,
+                                     char *error, uint32_t capacity) {
   VkrDepotFileList local = {0};
   VkrDepotChangeList changes = {0};
   VkrDepotChangeList conflicts = {0};
@@ -1164,16 +1200,20 @@ bool8_t vkr_depot_fetch_checkout(
     MemZero(out_conflicts, sizeof(*out_conflicts));
   }
   if (vkr_depot_id_equal(commit, &workspace->base)) {
+    depot_branch_follow(workspace, commit, track_origin);
     depot_step_done(workspace);
     return true_v;
   }
-  vkr_depot_client_set_progress(client, workspace->progress);
   VkrDepotTransferStats stats = {0};
+  if (client) {
+    vkr_depot_client_set_progress(client, workspace->progress);
+  }
   /* A sparse working copy fetches the trees here, and below only the files
      its checkout writes. */
   const bool8_t fetched =
-      workspace->sparse ? vkr_depot_client_fetch_trees(client, commit, &stats)
-                        : vkr_depot_client_fetch(client, commit, &stats);
+      !client ||
+      (workspace->sparse ? vkr_depot_client_fetch_trees(client, commit, &stats)
+                         : vkr_depot_client_fetch(client, commit, &stats));
   if (!fetched) {
     depot_step_error(workspace, error, capacity, "fetch failed",
                      vkr_depot_client_error(client));
@@ -1240,7 +1280,7 @@ bool8_t vkr_depot_fetch_checkout(
     uint32_t blob_count = 0u;
     bool8_t written =
         depot_sparse_writes(&local, &remote, &keep, &blobs, &blob_count);
-    if (written && blob_count > 0u) {
+    if (written && blob_count > 0u && client) {
       written = vkr_depot_client_fetch_files(client, blobs, blob_count, &stats);
       if (!written) {
         depot_step_error(workspace, error, capacity, "fetch failed",
@@ -1264,6 +1304,7 @@ bool8_t vkr_depot_fetch_checkout(
     goto cleanup;
   }
   (void)vkr_depot_workspace_clear_fetched(workspace);
+  depot_branch_follow(workspace, commit, track_origin);
   *out_kept = keep.count;
   depot_step_done(workspace);
   ok = true_v;
@@ -1278,6 +1319,15 @@ cleanup:
   vkr_depot_file_list_free(&remote);
   vkr_depot_file_list_free(&keep);
   return ok;
+}
+
+bool8_t vkr_depot_fetch_checkout(
+    VkrDepotWorkspace *workspace, VkrDepotClient *client,
+    const VkrDepotId *commit, VkrDepotConflictPolicy policy, uint32_t *out_kept,
+    VkrDepotChangeList *out_conflicts, char *error, uint32_t capacity) {
+  return depot_checkout_commit(workspace, client, commit, policy,
+                               client != NULL, out_kept, out_conflicts, error,
+                               capacity);
 }
 
 // =============================================================================
@@ -1375,5 +1425,732 @@ bool8_t vkr_depot_clone(VkrAllocator *allocator,
 cleanup:
   vkr_depot_disconnect(connection);
   vkr_depot_workspace_close(&workspace);
+  return ok;
+}
+
+// =============================================================================
+// History
+// =============================================================================
+
+/* Commits found by one walk, at most VKR_DEPOT_HISTORY_MAX. */
+typedef struct DepotCommitSet {
+  VkrDepotId *ids;
+  uint32_t count;
+  /* The walk met a commit the store lacks, or the bound. */
+  bool8_t incomplete;
+} DepotCommitSet;
+
+static bool8_t depot_set_has(const DepotCommitSet *set, const VkrDepotId *id) {
+  for (uint32_t i = 0u; i < set->count; ++i) {
+    if (vkr_depot_id_equal(&set->ids[i], id)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+static void depot_set_free(DepotCommitSet *set) {
+  free(set->ids);
+  MemZero(set, sizeof(*set));
+}
+
+/* A stored commit's parents; false when the store lacks it. */
+static bool8_t depot_commit_parents(const VkrDepotStore *store,
+                                    const VkrDepotId *id,
+                                    VkrDepotId out[VKR_DEPOT_PARENTS_MAX],
+                                    uint32_t *out_count) {
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  VkrDepotCommit commit;
+  *out_count = 0u;
+  if (!vkr_depot_store_has(store, id) ||
+      !vkr_depot_store_get(store, id, &bytes, &size) ||
+      !vkr_depot_commit_parse(bytes, size, &commit)) {
+    free(bytes);
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < commit.parent_count; ++i) {
+    out[i] = commit.parents[i];
+  }
+  *out_count = commit.parent_count;
+  free(bytes);
+  return true_v;
+}
+
+/* Every commit reachable from `start` through parents, `start` included,
+   that the store holds, stopping at commits `stop` (may be NULL) holds. With
+   a `client`, a commit the store lacks is fetched first with its trees but
+   none of its files. */
+static bool8_t depot_ancestors(const VkrDepotStore *store,
+                               VkrDepotClient *client, const VkrDepotId *start,
+                               const DepotCommitSet *stop,
+                               DepotCommitSet *out) {
+  MemZero(out, sizeof(*out));
+  if (vkr_depot_id_zero(start)) {
+    return true_v;
+  }
+  out->ids = malloc(VKR_DEPOT_HISTORY_MAX * sizeof(*out->ids));
+  VkrDepotId *pending = malloc(VKR_DEPOT_HISTORY_MAX * sizeof(*pending));
+  uint32_t pending_count = 0u;
+  bool8_t ok = out->ids && pending;
+  if (ok) {
+    pending[pending_count++] = *start;
+  }
+  while (ok && pending_count) {
+    const VkrDepotId id = pending[--pending_count];
+    if (depot_set_has(out, &id) || (stop && depot_set_has(stop, &id))) {
+      continue;
+    }
+    if (out->count == VKR_DEPOT_HISTORY_MAX) {
+      out->incomplete = true_v;
+      break;
+    }
+    if (client && !vkr_depot_store_has(store, &id)) {
+      VkrDepotTransferStats stats = {0};
+      if (!vkr_depot_client_fetch_trees(client, &id, &stats)) {
+        ok = false_v;
+        break;
+      }
+    }
+    VkrDepotId parents[VKR_DEPOT_PARENTS_MAX];
+    uint32_t parent_count = 0u;
+    if (!depot_commit_parents(store, &id, parents, &parent_count)) {
+      out->incomplete = true_v;
+      continue;
+    }
+    out->ids[out->count++] = id;
+    for (uint32_t i = 0u; i < parent_count; ++i) {
+      if (pending_count == VKR_DEPOT_HISTORY_MAX) {
+        out->incomplete = true_v;
+        break;
+      }
+      pending[pending_count++] = parents[i];
+    }
+  }
+  free(pending);
+  if (!ok) {
+    depot_set_free(out);
+  }
+  return ok;
+}
+
+bool8_t vkr_depot_descends(const VkrDepotStore *store, const VkrDepotId *start,
+                           const VkrDepotId *ancestor, bool8_t *out_descends) {
+  *out_descends = false_v;
+  if (vkr_depot_id_zero(ancestor)) {
+    *out_descends = true_v;
+    return true_v;
+  }
+  DepotCommitSet history;
+  if (!depot_ancestors(store, NULL, start, NULL, &history)) {
+    return false_v;
+  }
+  *out_descends = depot_set_has(&history, ancestor);
+  depot_set_free(&history);
+  return true_v;
+}
+
+bool8_t vkr_depot_ahead_behind(const VkrDepotStore *store,
+                               const VkrDepotId *local, const VkrDepotId *other,
+                               uint32_t *out_ahead, uint32_t *out_behind) {
+  *out_ahead = 0u;
+  *out_behind = 0u;
+  DepotCommitSet mine;
+  DepotCommitSet theirs;
+  if (!depot_ancestors(store, NULL, local, NULL, &mine)) {
+    return false_v;
+  }
+  if (!depot_ancestors(store, NULL, other, NULL, &theirs)) {
+    depot_set_free(&mine);
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < mine.count; ++i) {
+    *out_ahead += !depot_set_has(&theirs, &mine.ids[i]);
+  }
+  for (uint32_t i = 0u; i < theirs.count; ++i) {
+    *out_behind += !depot_set_has(&mine, &theirs.ids[i]);
+  }
+  depot_set_free(&mine);
+  depot_set_free(&theirs);
+  return true_v;
+}
+
+// =============================================================================
+// Local commit and branches
+// =============================================================================
+
+/* The tree of a stored commit. */
+static bool8_t depot_commit_tree(const VkrDepotStore *store,
+                                 const VkrDepotId *id, VkrDepotId *out_tree) {
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  VkrDepotCommit commit;
+  const bool8_t ok = vkr_depot_store_get(store, id, &bytes, &size) &&
+                     vkr_depot_commit_parse(bytes, size, &commit);
+  if (ok) {
+    *out_tree = commit.tree;
+  }
+  free(bytes);
+  return ok;
+}
+
+/* Where the working copy's branch is in its store; zero when it does not
+   exist yet. */
+static VkrDepotId depot_branch_at(const VkrDepotWorkspace *workspace,
+                                  const char *branch) {
+  VkrDepotId commit = {0};
+  if (!vkr_depot_ref_read(workspace->store.root, branch, &commit)) {
+    MemZero(&commit, sizeof(commit));
+  }
+  return commit;
+}
+
+bool8_t vkr_depot_commit_local(VkrDepotWorkspace *workspace,
+                               const char *message,
+                               VkrDepotCommitResult *out_result, char *error,
+                               uint32_t capacity) {
+  MemZero(out_result, sizeof(*out_result));
+  const VkrDepotId branch_at = depot_branch_at(workspace, workspace->branch);
+  if (!vkr_depot_id_equal(&branch_at, &workspace->base)) {
+    char hex[VKR_DEPOT_ID_HEX];
+    vkr_depot_id_hex(&branch_at, hex);
+    snprintf(error, capacity,
+             "%s is at %.12s in the store, not at this working copy's base; "
+             "pull or switch to it first",
+             workspace->branch, hex);
+    return false_v;
+  }
+
+  VkrDepotPendingCommit pending;
+  if (!vkr_depot_commit_snapshot(workspace, &workspace->base, message, &pending,
+                                 error, capacity)) {
+    return false_v;
+  }
+  VkrDepotId tree = {0};
+  VkrDepotId base_tree = {0};
+  bool8_t ok = depot_commit_tree(&workspace->store, &pending.commit, &tree);
+  if (ok && !vkr_depot_id_zero(&workspace->base) &&
+      depot_commit_tree(&workspace->store, &workspace->base, &base_tree) &&
+      vkr_depot_id_equal(&tree, &base_tree)) {
+    out_result->empty = true_v;
+    out_result->commit = workspace->base;
+    out_result->files = pending.files.count;
+    vkr_depot_pending_commit_free(&pending);
+    depot_step_done(workspace);
+    return true_v;
+  }
+
+  VkrDepotId current;
+  const VkrDepotRefSwap swap =
+      ok ? vkr_depot_ref_swap(workspace->store.root, workspace->branch,
+                              &workspace->base, &pending.commit, &current)
+         : VKR_DEPOT_REF_SWAP_FAILED;
+  if (swap == VKR_DEPOT_REF_SWAP_MOVED) {
+    snprintf(error, capacity,
+             "%s moved in the store meanwhile; pull or switch to it first",
+             workspace->branch);
+    ok = false_v;
+  } else if (swap != VKR_DEPOT_REF_SWAP_OK) {
+    snprintf(error, capacity, "%s could not move in the store",
+             workspace->branch);
+    ok = false_v;
+  }
+  if (ok) {
+    out_result->commit = pending.commit;
+    out_result->files = pending.files.count;
+    vkr_depot_file_list_free(&workspace->index);
+    workspace->index = pending.files;
+    MemZero(&pending.files, sizeof(pending.files));
+    workspace->base = pending.commit;
+    if (!vkr_depot_workspace_save(workspace)) {
+      snprintf(error, capacity,
+               "committed, but the working copy state did not save");
+      ok = false_v;
+    } else {
+      (void)vkr_depot_workspace_clear_fetched(workspace);
+      depot_step_done(workspace);
+    }
+  }
+  vkr_depot_pending_commit_free(&pending);
+  return ok;
+}
+
+bool8_t vkr_depot_branch_create(VkrDepotWorkspace *workspace,
+                                const char *branch, char *error,
+                                uint32_t capacity) {
+  const VkrDepotId zero = {0};
+  if (!vkr_depot_branch_valid(branch)) {
+    snprintf(error, capacity, "invalid branch name %s", branch);
+    return false_v;
+  }
+  if (vkr_depot_id_zero(&workspace->base)) {
+    snprintf(error, capacity, "nothing is committed yet");
+    return false_v;
+  }
+  const VkrDepotRefSwap swap = vkr_depot_ref_swap(
+      workspace->store.root, branch, &zero, &workspace->base, NULL);
+  if (swap == VKR_DEPOT_REF_SWAP_MOVED) {
+    snprintf(error, capacity, "branch %s exists", branch);
+  } else if (swap != VKR_DEPOT_REF_SWAP_OK) {
+    snprintf(error, capacity, "branch %s could not be written", branch);
+  }
+  return swap == VKR_DEPOT_REF_SWAP_OK;
+}
+
+typedef struct DepotHeldCheck {
+  const VkrDepotWorkspace *workspace;
+  const char *skip;
+  const char *remote;
+  const VkrDepotId *target;
+  bool8_t held;
+} DepotHeldCheck;
+
+/* Whether the branch or tracked branch `name` holds the check's target. */
+static bool8_t depot_held_visit(void *context, const char *name) {
+  DepotHeldCheck *check = context;
+  if (!check->remote && strcmp(name, check->skip) == 0) {
+    return true_v;
+  }
+  VkrDepotId commit;
+  const char *store = check->workspace->store.root;
+  const bool8_t found =
+      check->remote
+          ? vkr_depot_tracking_read(store, check->remote, name, &commit)
+          : vkr_depot_ref_read(store, name, &commit);
+  bool8_t descends = false_v;
+  if (found &&
+      vkr_depot_descends(&check->workspace->store, &commit, check->target,
+                         &descends) &&
+      descends) {
+    check->held = true_v;
+    return false_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_depot_branch_delete(VkrDepotWorkspace *workspace,
+                                const char *branch, bool8_t force, char *error,
+                                uint32_t capacity) {
+  VkrDepotId commit;
+  const char *store = workspace->store.root;
+  if (!vkr_depot_ref_read(store, branch, &commit)) {
+    snprintf(error, capacity, "no branch %s", branch);
+    return false_v;
+  }
+  if (strcmp(branch, workspace->branch) == 0) {
+    snprintf(error, capacity, "%s is this working copy's branch", branch);
+    return false_v;
+  }
+  if (!force) {
+    DepotHeldCheck check = {
+        .workspace = workspace, .skip = branch, .target = &commit};
+    (void)vkr_depot_ref_list(store, depot_held_visit, &check);
+    VkrDepotRemoteEntry remotes[VKR_DEPOT_REMOTES_MAX];
+    uint32_t count = 0u;
+    (void)vkr_depot_remotes_load(store, remotes, ArrayCount(remotes), &count);
+    for (uint32_t i = 0u; i < count && !check.held; ++i) {
+      check.remote = remotes[i].name;
+      (void)vkr_depot_tracking_list(store, remotes[i].name, depot_held_visit,
+                                    &check);
+    }
+    if (!check.held) {
+      snprintf(error, capacity,
+               "%s holds commits no other branch has; delete with --force",
+               branch);
+      return false_v;
+    }
+  }
+  const VkrDepotId zero = {0};
+  if (vkr_depot_ref_swap(store, branch, &commit, &zero, NULL) !=
+      VKR_DEPOT_REF_SWAP_OK) {
+    snprintf(error, capacity, "branch %s moved or could not be removed",
+             branch);
+    return false_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_depot_switch(VkrDepotWorkspace *workspace, const char *branch,
+                         VkrDepotConflictPolicy policy, uint32_t *out_kept,
+                         VkrDepotChangeList *out_conflicts, char *error,
+                         uint32_t capacity) {
+  *out_kept = 0u;
+  if (out_conflicts) {
+    MemZero(out_conflicts, sizeof(*out_conflicts));
+  }
+  VkrDepotId commit;
+  if (!vkr_depot_ref_read(workspace->store.root, branch, &commit)) {
+    snprintf(error, capacity, "no branch %s", branch);
+    return false_v;
+  }
+  char previous[VKR_DEPOT_BRANCH_NAME];
+  snprintf(previous, sizeof(previous), "%s", workspace->branch);
+  snprintf(workspace->branch, sizeof(workspace->branch), "%s", branch);
+  if (!depot_checkout_commit(workspace, NULL, &commit, policy, false_v,
+                             out_kept, out_conflicts, error, capacity)) {
+    snprintf(workspace->branch, sizeof(workspace->branch), "%s", previous);
+    return false_v;
+  }
+  if (!vkr_depot_workspace_save(workspace)) {
+    snprintf(error, capacity, "the working copy state did not save");
+    return false_v;
+  }
+  return true_v;
+}
+
+// =============================================================================
+// Remotes: fetch, push and pull
+// =============================================================================
+
+VkrDepotConnection *vkr_depot_connect_remote(VkrAllocator *allocator,
+                                             VkrDepotWorkspace *workspace,
+                                             const VkrDepotRemoteEntry *remote,
+                                             VkrDepotConnectStatus *out_status,
+                                             char *error, uint32_t capacity) {
+  const VkrDepotConnectConfig config = {.address = remote->address,
+                                        .server_key = remote->key,
+                                        .store = &workspace->store,
+                                        .progress = workspace->progress};
+  return vkr_depot_connect(allocator, &config, out_status, error, capacity);
+}
+
+/* `name` NULL finds origin, else the only remote. */
+static bool8_t depot_remote_named(const VkrDepotWorkspace *workspace,
+                                  const char *name, VkrDepotRemoteEntry *out,
+                                  char *error, uint32_t capacity) {
+  if (vkr_depot_remote_find(workspace->store.root, name, out)) {
+    return true_v;
+  }
+  if (name) {
+    snprintf(error, capacity, "no remote %s; add it with `remote add`", name);
+  } else {
+    snprintf(error, capacity,
+             "no remote origin; add one with `remote add` or name it");
+  }
+  return false_v;
+}
+
+/* Fetches one remote branch at `commit` and records it. */
+static VkrDepotFetchAction depot_fetch_branch(VkrDepotWorkspace *workspace,
+                                              VkrDepotClient *client,
+                                              const char *remote,
+                                              const char *branch,
+                                              const VkrDepotId *commit) {
+  const char *store = workspace->store.root;
+  VkrDepotId tracked = {0};
+  const bool8_t known =
+      vkr_depot_tracking_read(store, remote, branch, &tracked);
+  if (known && vkr_depot_id_equal(&tracked, commit) &&
+      vkr_depot_store_has(&workspace->store, commit)) {
+    return VKR_DEPOT_FETCH_SAME;
+  }
+  VkrDepotTransferStats stats = {0};
+  const bool8_t fetched =
+      workspace->sparse ? vkr_depot_client_fetch_trees(client, commit, &stats)
+                        : vkr_depot_client_fetch(client, commit, &stats);
+  DepotCommitSet history;
+  if (!fetched ||
+      !depot_ancestors(&workspace->store, client, commit, NULL, &history)) {
+    return VKR_DEPOT_FETCH_FAILED;
+  }
+  depot_set_free(&history);
+  if (!vkr_depot_tracking_set(store, remote, branch, commit)) {
+    return VKR_DEPOT_FETCH_FAILED;
+  }
+  return known ? VKR_DEPOT_FETCH_MOVED : VKR_DEPOT_FETCH_NEW;
+}
+
+/* Fetches over an open connection; see vkr_depot_fetch. */
+static bool8_t depot_fetch_over(VkrDepotWorkspace *workspace,
+                                VkrDepotClient *client, const char *remote,
+                                const char *branch, VkrDepotFetchVisit visit,
+                                void *context, char *error, uint32_t capacity) {
+  VkrDepotRef *refs = malloc(VKR_DEPOT_REFS_MAX * sizeof(*refs));
+  uint32_t count = 0u;
+  if (!refs ||
+      !vkr_depot_client_refs(client, refs, VKR_DEPOT_REFS_MAX, &count)) {
+    snprintf(error, capacity, "listing branches failed: %s",
+             refs ? vkr_depot_client_error(client) : "out of memory");
+    free(refs);
+    return false_v;
+  }
+  bool8_t ok = true_v;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const char *name = refs[i].name;
+    /* Cooked side branches travel with vkr_depot_fetch_cooked. */
+    if ((branch && strcmp(name, branch) != 0) ||
+        (!branch && strstr(name, ".cooked."))) {
+      continue;
+    }
+    const VkrDepotFetchAction action =
+        depot_fetch_branch(workspace, client, remote, name, &refs[i].commit);
+    if (action == VKR_DEPOT_FETCH_FAILED) {
+      depot_step_error(workspace, error, capacity, "fetch failed",
+                       vkr_depot_client_error(client));
+      ok = false_v;
+    }
+    if (visit) {
+      visit(context, name, action, &refs[i].commit,
+            action == VKR_DEPOT_FETCH_FAILED ? error : "");
+    }
+  }
+  free(refs);
+  return ok;
+}
+
+bool8_t vkr_depot_fetch(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
+                        const char *remote, const char *branch,
+                        VkrDepotFetchVisit visit, void *context, char *error,
+                        uint32_t capacity) {
+  VkrDepotRemoteEntry entry;
+  if (!depot_remote_named(workspace, remote, &entry, error, capacity)) {
+    return false_v;
+  }
+  VkrDepotConnection *connection = vkr_depot_connect_remote(
+      allocator, workspace, &entry, NULL, error, capacity);
+  if (!connection) {
+    return false_v;
+  }
+  const bool8_t ok =
+      depot_fetch_over(workspace, vkr_depot_connection_client(connection),
+                       entry.name, branch, visit, context, error, capacity);
+  vkr_depot_disconnect(connection);
+  if (ok) {
+    depot_step_done(workspace);
+  }
+  return ok;
+}
+
+/* The commits reachable from `tip` and not from `base`, oldest first: each
+   comes after its parents, so the remote can check each one's tree against
+   its parent's. */
+static bool8_t depot_push_order(const VkrDepotStore *store,
+                                const VkrDepotId *tip, const VkrDepotId *base,
+                                DepotCommitSet *out) {
+  DepotCommitSet known;
+  if (!depot_ancestors(store, NULL, base, NULL, &known)) {
+    return false_v;
+  }
+  DepotCommitSet pending;
+  const bool8_t walked = depot_ancestors(store, NULL, tip, &known, &pending);
+  depot_set_free(&known);
+  if (!walked) {
+    return false_v;
+  }
+  out->ids = malloc((size_t)Max(pending.count, 1u) * sizeof(*out->ids));
+  out->count = 0u;
+  out->incomplete = pending.incomplete;
+  bool8_t ok = out->ids != NULL;
+  while (ok && out->count < pending.count) {
+    bool8_t progressed = false_v;
+    for (uint32_t i = 0u; i < pending.count; ++i) {
+      if (depot_set_has(out, &pending.ids[i])) {
+        continue;
+      }
+      VkrDepotId parents[VKR_DEPOT_PARENTS_MAX];
+      uint32_t parent_count = 0u;
+      (void)depot_commit_parents(store, &pending.ids[i], parents,
+                                 &parent_count);
+      bool8_t ready = true_v;
+      for (uint32_t k = 0u; k < parent_count && ready; ++k) {
+        ready = !depot_set_has(&pending, &parents[k]) ||
+                depot_set_has(out, &parents[k]);
+      }
+      if (ready) {
+        out->ids[out->count++] = pending.ids[i];
+        progressed = true_v;
+      }
+    }
+    ok = progressed;
+  }
+  depot_set_free(&pending);
+  if (!ok) {
+    depot_set_free(out);
+  }
+  return ok;
+}
+
+static VkrDepotPushStatus depot_push_over(VkrDepotWorkspace *workspace,
+                                          VkrDepotClient *client,
+                                          const char *remote,
+                                          const char *branch,
+                                          VkrDepotPushResult *out_result,
+                                          char *error, uint32_t capacity) {
+  const VkrDepotId local = depot_branch_at(workspace, branch);
+  out_result->commit = local;
+  if (vkr_depot_id_zero(&local)) {
+    snprintf(error, capacity, "no branch %s in this repository", branch);
+    return VKR_DEPOT_PUSH_FAILED;
+  }
+  VkrDepotId theirs = {0};
+  bool8_t exists = false_v;
+  if (!vkr_depot_find_ref(client, branch, &theirs, &exists)) {
+    snprintf(error, capacity, "listing branches failed: %s",
+             vkr_depot_client_error(client));
+    return VKR_DEPOT_PUSH_FAILED;
+  }
+  const char *store = workspace->store.root;
+  if (exists && vkr_depot_id_equal(&theirs, &local)) {
+    (void)vkr_depot_tracking_set(store, remote, branch, &local);
+    return VKR_DEPOT_PUSH_UP_TO_DATE;
+  }
+  bool8_t descends = false_v;
+  if (exists &&
+      (!vkr_depot_store_has(&workspace->store, &theirs) ||
+       !vkr_depot_descends(&workspace->store, &local, &theirs, &descends) ||
+       !descends)) {
+    char hex[VKR_DEPOT_ID_HEX];
+    vkr_depot_id_hex(&theirs, hex);
+    snprintf(error, capacity,
+             "%s on %s is at %.12s, which %s does not build on; pull, then "
+             "push again",
+             branch, remote, hex, branch);
+    return VKR_DEPOT_PUSH_NOT_FAST_FORWARD;
+  }
+
+  const VkrDepotId zero = {0};
+  const VkrDepotId *base = exists ? &theirs : &zero;
+  DepotCommitSet order;
+  if (!depot_push_order(&workspace->store, &local, base, &order)) {
+    snprintf(error, capacity, "the history of %s is unreadable", branch);
+    return VKR_DEPOT_PUSH_FAILED;
+  }
+  vkr_depot_client_set_progress(client, workspace->progress);
+  bool8_t uploaded = true_v;
+  for (uint32_t i = 0u; i < order.count && uploaded; ++i) {
+    VkrDepotId parents[VKR_DEPOT_PARENTS_MAX];
+    uint32_t parent_count = 0u;
+    (void)depot_commit_parents(&workspace->store, &order.ids[i], parents,
+                               &parent_count);
+    uploaded = vkr_depot_client_upload(client, &order.ids[i],
+                                       parent_count ? &parents[0] : &zero,
+                                       &out_result->uploaded);
+    out_result->commits += uploaded;
+  }
+  depot_set_free(&order);
+  if (!uploaded) {
+    depot_step_error(workspace, error, capacity, "upload failed",
+                     vkr_depot_client_error(client));
+    return VKR_DEPOT_PUSH_FAILED;
+  }
+
+  VkrDepotId current;
+  const VkrDepotRefStatus status =
+      vkr_depot_client_update_ref(client, branch, base, &local, &current);
+  if (status == VKR_DEPOT_REF_OK) {
+    (void)vkr_depot_tracking_set(store, remote, branch, &local);
+    return VKR_DEPOT_PUSH_OK;
+  }
+  if (status == VKR_DEPOT_REF_CONFLICT) {
+    char hex[VKR_DEPOT_ID_HEX];
+    vkr_depot_id_hex(&current, hex);
+    snprintf(error, capacity, "%s on %s moved to %.12s meanwhile; pull first",
+             branch, remote, hex);
+    return VKR_DEPOT_PUSH_REMOTE_MOVED;
+  }
+  if (status == VKR_DEPOT_REF_LOCKED) {
+    snprintf(error, capacity,
+             "a pushed commit changes a file another user "
+             "locked");
+    return VKR_DEPOT_PUSH_LOCKED;
+  }
+  if (status == VKR_DEPOT_REF_INVALID) {
+    snprintf(error, capacity,
+             "%s refused the commit: a name no tree may hold, or a tree past "
+             "the depot's limits",
+             remote);
+  } else {
+    snprintf(error, capacity, "%s refused the push (status %u)", remote,
+             status);
+  }
+  return VKR_DEPOT_PUSH_FAILED;
+}
+
+bool8_t vkr_depot_push(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
+                       const char *remote, const char *branch,
+                       VkrDepotPushResult *out_result, char *error,
+                       uint32_t capacity) {
+  MemZero(out_result, sizeof(*out_result));
+  out_result->status = VKR_DEPOT_PUSH_FAILED;
+  const char *name = branch ? branch : workspace->branch;
+  VkrDepotRemoteEntry entry;
+  if (!vkr_depot_branch_valid(name)) {
+    snprintf(error, capacity, "invalid branch name %s", name);
+    return false_v;
+  }
+  if (!depot_remote_named(workspace, remote, &entry, error, capacity)) {
+    return false_v;
+  }
+  VkrDepotConnection *connection = vkr_depot_connect_remote(
+      allocator, workspace, &entry, NULL, error, capacity);
+  if (!connection) {
+    return false_v;
+  }
+  out_result->status =
+      depot_push_over(workspace, vkr_depot_connection_client(connection),
+                      entry.name, name, out_result, error, capacity);
+  vkr_depot_disconnect(connection);
+  const bool8_t ok = out_result->status == VKR_DEPOT_PUSH_OK ||
+                     out_result->status == VKR_DEPOT_PUSH_UP_TO_DATE;
+  if (ok) {
+    depot_step_done(workspace);
+  }
+  return ok;
+}
+
+bool8_t vkr_depot_pull(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
+                       const char *remote, VkrDepotConflictPolicy policy,
+                       VkrDepotPullResult *out_result, char *error,
+                       uint32_t capacity) {
+  MemZero(out_result, sizeof(*out_result));
+  out_result->status = VKR_DEPOT_PULL_FAILED;
+  VkrDepotRemoteEntry entry;
+  if (!depot_remote_named(workspace, remote, &entry, error, capacity)) {
+    return false_v;
+  }
+  VkrDepotConnection *connection = vkr_depot_connect_remote(
+      allocator, workspace, &entry, NULL, error, capacity);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
+  if (!client) {
+    return false_v;
+  }
+  const char *store = workspace->store.root;
+  bool8_t ok = depot_fetch_over(workspace, client, entry.name,
+                                workspace->branch, NULL, NULL, error, capacity);
+  VkrDepotId theirs = {0};
+  if (ok &&
+      !vkr_depot_tracking_read(store, entry.name, workspace->branch, &theirs)) {
+    snprintf(error, capacity, "%s has no branch %s", entry.name,
+             workspace->branch);
+    ok = false_v;
+  }
+  const VkrDepotId local = depot_branch_at(workspace, workspace->branch);
+  bool8_t forward = false_v;
+  bool8_t ahead = false_v;
+  if (ok && vkr_depot_id_equal(&theirs, &local)) {
+    out_result->status = VKR_DEPOT_PULL_UP_TO_DATE;
+  } else if (ok && (!vkr_depot_descends(&workspace->store, &theirs, &local,
+                                        &forward) ||
+                    !vkr_depot_descends(&workspace->store, &local, &theirs,
+                                        &ahead))) {
+    snprintf(error, capacity, "the history of %s is unreadable",
+             workspace->branch);
+    ok = false_v;
+  } else if (ok && forward) {
+    ok = depot_checkout_commit(workspace, client, &theirs, policy, false_v,
+                               &out_result->kept, &out_result->conflicts, error,
+                               capacity);
+    out_result->status =
+        ok ? VKR_DEPOT_PULL_FAST_FORWARD : VKR_DEPOT_PULL_FAILED;
+  } else if (ok && ahead) {
+    out_result->status = VKR_DEPOT_PULL_AHEAD;
+  } else if (ok) {
+    out_result->status = VKR_DEPOT_PULL_DIVERGED;
+  }
+  out_result->commit = ok ? theirs : local;
+  vkr_depot_disconnect(connection);
+  if (ok) {
+    depot_step_done(workspace);
+  }
   return ok;
 }

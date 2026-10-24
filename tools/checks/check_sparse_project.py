@@ -242,8 +242,8 @@ def main() -> int:
             env=env, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT)
         time.sleep(1.0)
         depot([depot_exe, "clone", address, key, str(shared)], env, log)
-        depot([depot_exe, "commit", str(shared), "-m", "Bistro project"], env,
-              log)
+        depot([depot_exe, "commit", str(shared), "-m", "Bistro project",
+               "--push"], env, log)
         published = depot([depot_exe, "cooked", str(shared)], env, log)
         tracked = len(disk_files(shared))
         store_before = tree_bytes(store)

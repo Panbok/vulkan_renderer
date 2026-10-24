@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-23
+updated: 2026-10-24
 authority: adr
 ---
 
@@ -291,10 +291,17 @@ its close frame is sent rather than 200 ms.
 - **Command** ([vkr_depot_main.c](../../tools/depot/vkr_depot_main.c)):
   `keygen`, `init`, `serve`, `discover`, `mirror` (once or `--watch`),
   `access` (takes effect without a restart), `clone`, `status`, `commit`
-  (snapshot, upload, move the branch), `pull` (keeps local changes, refuses
-  conflicts unless `--take-theirs` or `--keep-mine`), `refs`, `log`,
-  `lock`, `unlock`, `locks`. On macOS `vkr_depot` carries an Info.plist with
-  a Local Network usage string.
+  (snapshot and move the branch in the working copy's store; `--push` also
+  pushes, or leaves the branch as it was when the push is refused), `push`,
+  `fetch`, `pull` (fetches and fast-forwards, keeps local changes, refuses
+  conflicts unless `--take-theirs` or `--keep-mine`), `remote`, `branch`,
+  `switch`, `refs`, `log`, `lock`, `unlock`, `locks`. The store holds the
+  branches, remotes and tracked remote branches
+  ([vkr_depot_repository.h](../../tools/depot/vkr_depot_repository.h)), and
+  a working copy of the older form gets them on open; the model and its
+  remaining phases are in
+  [proposals/depot-git-model.md](../proposals/depot-git-model.md). On macOS
+  `vkr_depot` carries an Info.plist with a Local Network usage string.
 - **Fuzzers** ([tests/fuzz](../../tests/fuzz)): the server core's receive
   path with decrypted frames under the real keys, the wire codec and bit
   stream, sessions, and depot objects, protocol messages and discovery

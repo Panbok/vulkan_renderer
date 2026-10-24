@@ -56,6 +56,12 @@ standing server, a mirror or a check the editor cannot run.
 
 ## Keys, stores and servers
 
+- A working copy's store is its repository: `commit -m MSG` commits
+  locally and pushes nothing. `push`, `fetch` and `pull` (fast-forward
+  only) take `--remote NAME`, default `origin`, the server a clone came
+  from. `commit -m MSG --push` commits and pushes, or changes nothing when
+  the push is refused. `remote add NAME ADDR KEY` adds a peer, and `branch`
+  and `switch` work on the store's branches.
 - `keygen` prints the machine's identity key. `init STORE` prints the server
   key. Each store grants the other machine's identity with
   `access STORE KEY write`; a running server picks the change up within a

@@ -85,7 +85,7 @@ def main():
         (work_a / "deep" / "a" / "b" / "c.txt").write_bytes(b"nested\n")
         (work_a / "empty.dat").write_bytes(b"")
         run(["status", str(work_a)])
-        run(["commit", str(work_a), "-m", "first assets"])
+        run(["commit", str(work_a), "-m", "first assets", "--push"])
 
         work_b = root / "bob"
         run(["clone", address, server_key, str(work_b)], "bob")
@@ -98,7 +98,7 @@ def main():
         (work_b / "textures" / "big.bin").write_bytes(bytes(data))
         (work_b / "scene.json").unlink()
         (work_b / "new.txt").write_bytes(b"bob was here\n")
-        run(["commit", str(work_b), "-m", "bob edits"], "bob")
+        run(["commit", str(work_b), "-m", "bob edits", "--push"], "bob")
 
         (work_a / "deep" / "a" / "b" / "c.txt").write_bytes(b"alice local\n")
         run(["pull", str(work_a)])
@@ -108,17 +108,17 @@ def main():
             sys.exit("the pull result differs")
 
         (work_b / "new.txt").write_bytes(b"bob again\n")
-        run(["commit", str(work_b), "-m", "bob again"], "bob")
-        run(["commit", str(work_a), "-m", "alice stale"], ok=False)
+        run(["commit", str(work_b), "-m", "bob again", "--push"], "bob")
+        run(["commit", str(work_a), "-m", "alice stale", "--push"], ok=False)
 
         run(["pull", str(work_a)])
         run(["lock", "textures/zeros.bin", "--dir", str(work_b)], "bob")
         run(["locks", str(work_a)])
         (work_a / "textures" / "zeros.bin").write_bytes(bytes(10))
-        run(["commit", str(work_a), "-m", "touch locked"], ok=False)
+        run(["commit", str(work_a), "-m", "touch locked", "--push"], ok=False)
         run(["unlock", "textures/zeros.bin", "--dir", str(work_a)], ok=False)
         run(["unlock", "textures/zeros.bin", "--dir", str(work_b)], "bob")
-        run(["commit", str(work_a), "-m", "after unlock"])
+        run(["commit", str(work_a), "-m", "after unlock", "--push"])
         run(["log", str(work_a)])
         run(["refs", str(work_a)])
 
@@ -160,7 +160,7 @@ def main():
         if digest(work_c) != digest(work_a):
             sys.exit("the peer's clone differs from the first server's")
         (work_c / "peer.txt").write_bytes(b"made on the peer\n")
-        run(["commit", str(work_c), "-m", "peer edit"], "bob")
+        run(["commit", str(work_c), "-m", "peer edit", "--push"], "bob")
         mirrored = run(["mirror", str(store), peer_address, peer_key,
                         "--local", address])
         if not mirrored.startswith("from-peer main"):
@@ -174,9 +174,9 @@ def main():
 
         # Both servers move main: the mirror refuses and changes nothing.
         (work_a / "a.txt").write_bytes(b"first server\n")
-        run(["commit", str(work_a), "-m", "first side"])
+        run(["commit", str(work_a), "-m", "first side", "--push"])
         (work_c / "c.txt").write_bytes(b"second server\n")
-        run(["commit", str(work_c), "-m", "second side"], "bob")
+        run(["commit", str(work_c), "-m", "second side", "--push"], "bob")
         mirrored = run(["mirror", str(store), peer_address, peer_key,
                         "--local", address], ok=False)
         if not mirrored.startswith("diverged main"):

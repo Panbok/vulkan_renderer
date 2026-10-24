@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vkr_depot_client.h"
+#include "vkr_depot_repository.h"
 #include "vkr_depot_workspace.h"
 
 /* A working copy's exchanges with its depot server, for the vkr_depot
@@ -310,7 +311,9 @@ typedef enum VkrDepotConflictPolicy {
   VKR_DEPOT_CONFLICT_KEEP_MINE,
 } VkrDepotConflictPolicy;
 
-/* Fetches `commit` and checks it out over the working directory. Files
+/* Fetches `commit` (a NULL `client`: the store holds it) and checks it out
+   over the working directory, and moves the working copy's branch in its
+   store to it. Files
    changed here since the base stay as they are; a path the commit changed
    too, to other content, is a conflict that `policy` resolves.
    `out_conflicts` (may be NULL) lists the conflicting paths with their
@@ -325,3 +328,152 @@ bool8_t vkr_depot_fetch_checkout(
     VkrDepotWorkspace *workspace, VkrDepotClient *client,
     const VkrDepotId *commit, VkrDepotConflictPolicy policy, uint32_t *out_kept,
     VkrDepotChangeList *out_conflicts, char *error, uint32_t capacity);
+
+// -----------------------------------------------------------------------------
+// Repositories and remotes (docs/proposals/depot-git-model.md)
+//
+// A working copy commits into its store and moves its branch there
+// (`refs/<branch>`, vkr_depot_repository.h); fetch, push and pull exchange
+// branches with the store's remotes. Each remote branch is tracked as it was
+// at the last fetch or push. A push only fast-forwards the remote's branch;
+// a pull fast-forwards the local one, and branches that both sides moved
+// wait for a merge.
+// -----------------------------------------------------------------------------
+
+/* Connects to `remote` with the user's identity, as vkr_depot_connect does;
+   fetched objects go to the working copy's store. */
+VkrDepotConnection *vkr_depot_connect_remote(VkrAllocator *allocator,
+                                             VkrDepotWorkspace *workspace,
+                                             const VkrDepotRemoteEntry *remote,
+                                             VkrDepotConnectStatus *out_status,
+                                             char *error, uint32_t capacity);
+
+/* Commits of one history the store may walk at most. */
+#define VKR_DEPOT_HISTORY_MAX 4096u
+
+/* Whether `ancestor` is `start` or one of its ancestors, walking the
+   commits the store holds; a commit it lacks ends that path of the walk. */
+bool8_t vkr_depot_descends(const VkrDepotStore *store, const VkrDepotId *start,
+                           const VkrDepotId *ancestor, bool8_t *out_descends);
+
+/* Commits reachable from `local` but not `other` (ahead) and the reverse
+   (behind), over the commits the store holds. A zero side has none. */
+bool8_t vkr_depot_ahead_behind(const VkrDepotStore *store,
+                               const VkrDepotId *local, const VkrDepotId *other,
+                               uint32_t *out_ahead, uint32_t *out_behind);
+
+typedef struct VkrDepotCommitResult {
+  VkrDepotId commit;
+  uint32_t files;
+  /* The working directory equals the base: nothing was committed. */
+  bool8_t empty;
+} VkrDepotCommitResult;
+
+/* Snapshots the working directory, commits it on top of the base and moves
+   the working copy's branch in its store from the base to the commit. Needs
+   no connection. A branch that another working copy of the store moved
+   meanwhile refuses the commit; switch to it or pull first. */
+bool8_t vkr_depot_commit_local(VkrDepotWorkspace *workspace,
+                               const char *message,
+                               VkrDepotCommitResult *out_result, char *error,
+                               uint32_t capacity);
+
+typedef enum VkrDepotFetchAction {
+  VKR_DEPOT_FETCH_SAME = 0,
+  /* The remote branch is tracked for the first time. */
+  VKR_DEPOT_FETCH_NEW,
+  VKR_DEPOT_FETCH_MOVED,
+  VKR_DEPOT_FETCH_FAILED,
+} VkrDepotFetchAction;
+
+typedef void (*VkrDepotFetchVisit)(void *context, const char *branch,
+                                   VkrDepotFetchAction action,
+                                   const VkrDepotId *commit,
+                                   const char *detail);
+
+/* Fetches `remote`'s branches (`branch` NULL for all but the cooked side
+   branches) into the store and records where each is: a sparse working copy
+   takes trees only. The history behind each branch arrives as commits and
+   trees, so ancestry and logs work without its files. `visit` (may be
+   NULL) hears each branch. */
+bool8_t vkr_depot_fetch(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
+                        const char *remote, const char *branch,
+                        VkrDepotFetchVisit visit, void *context, char *error,
+                        uint32_t capacity);
+
+typedef enum VkrDepotPushStatus {
+  VKR_DEPOT_PUSH_OK = 0,
+  VKR_DEPOT_PUSH_UP_TO_DATE,
+  /* The remote's branch has commits this store lacks or does not descend
+     from: pull, then push again. */
+  VKR_DEPOT_PUSH_NOT_FAST_FORWARD,
+  /* The remote moved between the check and the move. */
+  VKR_DEPOT_PUSH_REMOTE_MOVED,
+  /* A pushed commit changes a path another key locked. */
+  VKR_DEPOT_PUSH_LOCKED,
+  VKR_DEPOT_PUSH_FAILED,
+} VkrDepotPushStatus;
+
+typedef struct VkrDepotPushResult {
+  VkrDepotPushStatus status;
+  VkrDepotId commit;
+  /* Commits uploaded, oldest first, and what they cost. */
+  uint32_t commits;
+  VkrDepotTransferStats uploaded;
+} VkrDepotPushResult;
+
+/* Pushes the store's `branch` (NULL for the working copy's) to `remote`
+   (NULL for origin, else the only one): uploads each commit the remote
+   lacks, oldest first, and moves its branch by compare-and-swap. True for
+   OK and UP_TO_DATE; the error explains any other status. */
+bool8_t vkr_depot_push(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
+                       const char *remote, const char *branch,
+                       VkrDepotPushResult *out_result, char *error,
+                       uint32_t capacity);
+
+typedef enum VkrDepotPullStatus {
+  VKR_DEPOT_PULL_UP_TO_DATE = 0,
+  VKR_DEPOT_PULL_FAST_FORWARD,
+  /* Only this side has new commits; push them. */
+  VKR_DEPOT_PULL_AHEAD,
+  /* Both sides have new commits: they wait for a merge. */
+  VKR_DEPOT_PULL_DIVERGED,
+  VKR_DEPOT_PULL_FAILED,
+} VkrDepotPullStatus;
+
+typedef struct VkrDepotPullResult {
+  VkrDepotPullStatus status;
+  VkrDepotId commit;
+  /* Local changes kept over the new base. */
+  uint32_t kept;
+  /* Paths changed here and in the commit (vkr_depot_fetch_checkout). */
+  VkrDepotChangeList conflicts;
+} VkrDepotPullResult;
+
+/* Fetches the working copy's branch from `remote` (NULL: origin, else the
+   only one) and fast-forwards to it, keeping local changes as
+   vkr_depot_fetch_checkout does under `policy`. True for every status but
+   FAILED; the caller frees `conflicts`. */
+bool8_t vkr_depot_pull(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
+                       const char *remote, VkrDepotConflictPolicy policy,
+                       VkrDepotPullResult *out_result, char *error,
+                       uint32_t capacity);
+
+/* Creates `branch` at the working copy's base; false when it exists. */
+bool8_t vkr_depot_branch_create(VkrDepotWorkspace *workspace,
+                                const char *branch, char *error,
+                                uint32_t capacity);
+
+/* Deletes a branch other than the working copy's. Unless `force`, a branch
+   whose commits no other branch or tracked branch holds stays. */
+bool8_t vkr_depot_branch_delete(VkrDepotWorkspace *workspace,
+                                const char *branch, bool8_t force, char *error,
+                                uint32_t capacity);
+
+/* Checks out the store's `branch` and makes it the working copy's, keeping
+   local changes under `policy` as a pull does. Every object of the branch's
+   commit must be in the store. */
+bool8_t vkr_depot_switch(VkrDepotWorkspace *workspace, const char *branch,
+                         VkrDepotConflictPolicy policy, uint32_t *out_kept,
+                         VkrDepotChangeList *out_conflicts, char *error,
+                         uint32_t capacity);

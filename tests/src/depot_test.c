@@ -1573,6 +1573,257 @@ static void test_depot_service(void) {
   printf("  test_depot_service PASSED\n");
 }
 
+typedef struct DepotRepoWorld {
+  VkrAllocator *allocator;
+  char address[64];
+  uint8_t server_key[32];
+  char server_store[VKR_DEPOT_PATH_CAPACITY];
+} DepotRepoWorld;
+
+static void depot_repo_clone(const DepotRepoWorld *world, const char *label,
+                             const char *store_root,
+                             VkrDepotWorkspace *out_workspace) {
+  char directory[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir(label, directory, sizeof(directory));
+  const VkrDepotCloneConfig config = {.address = world->address,
+                                      .server_key = world->server_key,
+                                      .directory = directory,
+                                      .store_root = store_root,
+                                      .codec = vkr_depot_zstd_codec()};
+  VkrDepotCloneResult result;
+  char error[256];
+  if (!vkr_depot_clone(world->allocator, &config, &result, error,
+                       sizeof(error))) {
+    printf("    clone failed: %s\n", error);
+    assert(false && "clone");
+  }
+  assert(vkr_depot_workspace_open(out_workspace, directory,
+                                  vkr_depot_zstd_codec()));
+}
+
+static VkrDepotId depot_repo_commit(VkrDepotWorkspace *workspace,
+                                    const char *path, const char *text) {
+  depot_test_write(workspace->root, path, text, strlen(text));
+  VkrDepotCommitResult result;
+  char error[256];
+  if (!vkr_depot_commit_local(workspace, text, &result, error, sizeof(error))) {
+    printf("    commit failed: %s\n", error);
+    assert(false && "commit");
+  }
+  assert(!result.empty);
+  return result.commit;
+}
+
+static VkrDepotPushStatus depot_repo_push(const DepotRepoWorld *world,
+                                          VkrDepotWorkspace *workspace,
+                                          uint32_t *out_commits) {
+  VkrDepotPushResult result;
+  char error[256];
+  (void)vkr_depot_push(world->allocator, workspace, NULL, NULL, &result, error,
+                       sizeof(error));
+  if (out_commits) {
+    *out_commits = result.commits;
+  }
+  return result.status;
+}
+
+static VkrDepotPullStatus depot_repo_pull(const DepotRepoWorld *world,
+                                          VkrDepotWorkspace *workspace) {
+  VkrDepotPullResult result;
+  char error[256];
+  if (!vkr_depot_pull(world->allocator, workspace, NULL,
+                      VKR_DEPOT_CONFLICT_FAIL, &result, error, sizeof(error))) {
+    printf("    pull failed: %s\n", error);
+  }
+  vkr_depot_change_list_free(&result.conflicts);
+  return result.status;
+}
+
+static bool8_t depot_repo_file_is(const VkrDepotWorkspace *workspace,
+                                  const char *relative, const char *text) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  assert(vkr_bakery_path_join(path, sizeof(path), workspace->root, relative));
+  const bool8_t ok = vkr_bakery_read_file(path, 1u << 20, &bytes, &size) &&
+                     size == strlen(text) && memcmp(bytes, text, size) == 0;
+  free(bytes);
+  return ok;
+}
+
+/* Fails when a commit reaches the server without a push, when a push of
+   several local commits leaves the server without the ones before the tip,
+   when a push or pull moves a branch that does not fast-forward, when a pull
+   does not fast-forward to a remote that moved ahead, when ahead and behind
+   miscount a divergence, when switching branches does not swap the files,
+   when an unmerged branch is deleted without --force, when a working copy
+   of the older form does not get origin, its branch and its tracking branch
+   back on open, or when a working copy that shares its server's store gets
+   itself as origin instead of committing into the served branch. Runs a
+   loopback service with a temporary identity. */
+static void test_depot_repositories(void) {
+  printf("  Running test_depot_repositories...\n");
+  char server_store[VKR_DEPOT_PATH_CAPACITY];
+  char identity_root[VKR_DEPOT_PATH_CAPACITY];
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("repo_server", server_store, sizeof(server_store));
+  depot_test_dir("repo_identity", identity_root, sizeof(identity_root));
+  assert(vkr_bakery_path_join(identity, sizeof(identity), identity_root,
+                              "identity.key"));
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), GB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const VkrDepotServiceConfig config = {.store_root = server_store,
+                                        .bind = "127.0.0.1:0",
+                                        .discovery_port = 7353u,
+                                        .codec = vkr_depot_zstd_codec(),
+                                        .open_access = true_v};
+  char error[256];
+  VkrDepotService *service =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  VkrDepotServiceInfo info;
+  vkr_depot_service_info(service, &info);
+  DepotRepoWorld world = {.allocator = &allocator};
+  snprintf(world.address, sizeof(world.address), "127.0.0.1:%u",
+           info.address.port);
+  MemCopy(world.server_key, info.server_key, 32u);
+  snprintf(world.server_store, sizeof(world.server_store), "%s", server_store);
+
+  /* Commits stay local until a push, which brings the whole history. */
+  VkrDepotWorkspace alice;
+  depot_repo_clone(&world, "repo_alice", NULL, &alice);
+  VkrDepotRemoteEntry origin;
+  assert(vkr_depot_remote_find(alice.store.root, NULL, &origin));
+  assert(strcmp(origin.name, VKR_DEPOT_ORIGIN) == 0 &&
+         strcmp(origin.address, world.address) == 0);
+  const VkrDepotId first = depot_repo_commit(&alice, "a.txt", "one");
+  const VkrDepotId second = depot_repo_commit(&alice, "a.txt", "two");
+  VkrDepotId commit;
+  assert(!vkr_depot_ref_read(server_store, "main", &commit));
+  uint32_t pushed = 0u;
+  assert(depot_repo_push(&world, &alice, &pushed) == VKR_DEPOT_PUSH_OK);
+  assert(pushed == 2u);
+  assert(vkr_depot_ref_read(server_store, "main", &commit) &&
+         vkr_depot_id_equal(&commit, &second));
+  VkrDepotStore served;
+  assert(vkr_depot_store_open(&served, server_store, vkr_depot_zstd_codec()));
+  assert(vkr_depot_store_has(&served, &first));
+  assert(vkr_depot_tracking_read(alice.store.root, VKR_DEPOT_ORIGIN, "main",
+                                 &commit) &&
+         vkr_depot_id_equal(&commit, &second));
+  assert(depot_repo_push(&world, &alice, NULL) == VKR_DEPOT_PUSH_UP_TO_DATE);
+
+  /* A remote that moved ahead fast-forwards a pull. */
+  VkrDepotWorkspace bob;
+  depot_repo_clone(&world, "repo_bob", NULL, &bob);
+  assert(depot_repo_file_is(&bob, "a.txt", "two"));
+  const VkrDepotId third = depot_repo_commit(&alice, "b.txt", "three");
+  assert(depot_repo_push(&world, &alice, NULL) == VKR_DEPOT_PUSH_OK);
+  assert(depot_repo_pull(&world, &bob) == VKR_DEPOT_PULL_FAST_FORWARD);
+  assert(depot_repo_file_is(&bob, "b.txt", "three"));
+  assert(vkr_depot_ref_read(bob.store.root, "main", &commit) &&
+         vkr_depot_id_equal(&commit, &third));
+  assert(vkr_depot_id_equal(&bob.base, &third));
+
+  /* Both sides commit: neither push nor pull moves a branch. */
+  (void)depot_repo_commit(&bob, "c.txt", "bob");
+  const VkrDepotId alice_tip = depot_repo_commit(&alice, "d.txt", "alice");
+  assert(depot_repo_push(&world, &alice, NULL) == VKR_DEPOT_PUSH_OK);
+  assert(depot_repo_push(&world, &bob, NULL) ==
+         VKR_DEPOT_PUSH_NOT_FAST_FORWARD);
+  assert(depot_repo_pull(&world, &bob) == VKR_DEPOT_PULL_DIVERGED);
+  assert(vkr_depot_ref_read(server_store, "main", &commit) &&
+         vkr_depot_id_equal(&commit, &alice_tip));
+  VkrDepotId bob_main;
+  VkrDepotId bob_tracked;
+  uint32_t ahead = 0u;
+  uint32_t behind = 0u;
+  assert(vkr_depot_ref_read(bob.store.root, "main", &bob_main));
+  assert(vkr_depot_tracking_read(bob.store.root, VKR_DEPOT_ORIGIN, "main",
+                                 &bob_tracked));
+  assert(vkr_depot_id_equal(&bob_tracked, &alice_tip));
+  assert(vkr_depot_ahead_behind(&bob.store, &bob_main, &bob_tracked, &ahead,
+                                &behind));
+  assert(ahead == 1u && behind == 1u);
+  assert(depot_repo_pull(&world, &alice) == VKR_DEPOT_PULL_UP_TO_DATE);
+
+  /* A branch carries its own files, and only --force deletes it unmerged. */
+  assert(vkr_depot_branch_create(&alice, "feature", error, sizeof(error)));
+  assert(!vkr_depot_branch_create(&alice, "feature", error, sizeof(error)));
+  uint32_t kept = 0u;
+  assert(vkr_depot_switch(&alice, "feature", VKR_DEPOT_CONFLICT_FAIL, &kept,
+                          NULL, error, sizeof(error)));
+  assert(strcmp(alice.branch, "feature") == 0);
+  (void)depot_repo_commit(&alice, "a.txt", "feature");
+  assert(vkr_depot_switch(&alice, "main", VKR_DEPOT_CONFLICT_FAIL, &kept, NULL,
+                          error, sizeof(error)));
+  assert(depot_repo_file_is(&alice, "a.txt", "two"));
+  assert(
+      !vkr_depot_branch_delete(&alice, "main", true_v, error, sizeof(error)));
+  assert(!vkr_depot_branch_delete(&alice, "feature", false_v, error,
+                                  sizeof(error)));
+  assert(
+      vkr_depot_branch_delete(&alice, "feature", true_v, error, sizeof(error)));
+
+  /* A working copy of the older form gets its repository back on open. */
+  char alice_root[VKR_DEPOT_PATH_CAPACITY];
+  char legacy[VKR_DEPOT_PATH_CAPACITY];
+  snprintf(alice_root, sizeof(alice_root), "%s", alice.root);
+  const VkrDepotId alice_base = alice.base;
+  static const char *const added[] = {"remotes", "refs", "tracking"};
+  for (uint32_t i = 0u; i < ArrayCount(added); ++i) {
+    assert(vkr_bakery_path_join(legacy, sizeof(legacy), alice.store.root,
+                                added[i]));
+    assert(vkr_bakery_remove_tree(legacy));
+  }
+  vkr_depot_workspace_close(&alice);
+  assert(vkr_depot_workspace_open(&alice, alice_root, vkr_depot_zstd_codec()));
+  assert(vkr_depot_remote_find(alice.store.root, VKR_DEPOT_ORIGIN, &origin) &&
+         memcmp(origin.key, world.server_key, 32u) == 0);
+  assert(vkr_depot_ref_read(alice.store.root, "main", &commit) &&
+         vkr_depot_id_equal(&commit, &alice_base));
+  assert(vkr_depot_tracking_read(alice.store.root, VKR_DEPOT_ORIGIN, "main",
+                                 &commit) &&
+         vkr_depot_id_equal(&commit, &alice_base));
+
+  /* A working copy beside the server, sharing its store, is that
+     repository: its commits move the served branch. */
+  VkrDepotWorkspace beside;
+  depot_repo_clone(&world, "repo_beside", server_store, &beside);
+  assert(!vkr_depot_remote_find(beside.store.root, VKR_DEPOT_ORIGIN, &origin));
+  const VkrDepotId served_tip = depot_repo_commit(&beside, "e.txt", "beside");
+  assert(vkr_depot_ref_read(server_store, "main", &commit) &&
+         vkr_depot_id_equal(&commit, &served_tip));
+  assert(depot_repo_pull(&world, &alice) == VKR_DEPOT_PULL_FAST_FORWARD);
+  assert(depot_repo_file_is(&alice, "e.txt", "beside"));
+
+  char roots[4][VKR_DEPOT_PATH_CAPACITY];
+  snprintf(roots[0], sizeof(roots[0]), "%s", alice.root);
+  snprintf(roots[1], sizeof(roots[1]), "%s", bob.root);
+  snprintf(roots[2], sizeof(roots[2]), "%s", beside.root);
+  snprintf(roots[3], sizeof(roots[3]), "%s", identity_root);
+  vkr_depot_workspace_close(&alice);
+  vkr_depot_workspace_close(&bob);
+  vkr_depot_workspace_close(&beside);
+  vkr_depot_service_stop(service);
+  vkr_dmemory_allocator_destroy(&allocator);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  for (uint32_t i = 0u; i < ArrayCount(roots); ++i) {
+    assert(vkr_bakery_remove_tree(roots[i]));
+  }
+  assert(vkr_bakery_remove_tree(server_store));
+  printf("  test_depot_repositories PASSED\n");
+}
+
 typedef struct DepotRemoteReader {
   VkrDepotRemote *remote;
   const char *path;
@@ -2829,6 +3080,7 @@ bool32_t run_depot_tests(void) {
   test_depot_cancel();
   test_depot_identity_migration();
   test_depot_service();
+  test_depot_repositories();
   test_depot_remote();
   test_depot_remote_ranges();
   test_depot_sparse();

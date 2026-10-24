@@ -11,21 +11,30 @@
  *   vkr_depot access STORE KEY none|read|write|admin
  *   vkr_depot clone ADDR SERVER-KEY DIR [--branch NAME] [--store DIR]
  *   vkr_depot status [DIR]
- *   vkr_depot commit [DIR] -m MESSAGE
- *   vkr_depot pull [DIR] [--take-theirs|--keep-mine]
+ *   vkr_depot commit [DIR] -m MESSAGE [--push] [--remote NAME]
+ *   vkr_depot push|fetch [DIR] [--remote NAME] [--branch NAME]
+ *   vkr_depot pull [DIR] [--remote NAME] [--take-theirs|--keep-mine]
+ *   vkr_depot remote [list|add NAME ADDR KEY|remove NAME] [--dir DIR]
+ *   vkr_depot branch [NAME [--delete [--force]]] [--dir DIR]
+ *   vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]
  *   vkr_depot refs [DIR]
  *   vkr_depot log [DIR] [--count N]
  *   vkr_depot lock PATH [--dir DIR]
  *   vkr_depot unlock PATH [--dir DIR] [--force]
  *   vkr_depot locks [DIR]
  *
- * A working copy pushes with `commit`: it snapshots the directory, uploads
- * the objects the server lacks and moves the branch from the commit it
- * started from. A branch that moved meanwhile refuses the push; `pull`
- * first. `serve` also answers LAN discovery (vkr_depot_discovery.h), and
- * `mirror` keeps the branches of the local server and a peer server equal,
- * so two machines each hold a full store. A running server applies `access`
- * within a second; a key it refused waits there as a request. */
+ * A working copy's store is its repository (docs/proposals/depot-git-model.md):
+ * `commit` snapshots the directory and moves the branch there, with no
+ * network; `push` uploads the commits a remote lacks and moves its branch
+ * when that is a fast-forward, `fetch` brings the remotes' branches in and
+ * `pull` fetches and fast-forwards the working copy's branch. `commit
+ * --push` commits and pushes, or, when the push is refused, leaves the
+ * branch and the working copy as they were, as `commit` did before
+ * repositories. A remote defaults to `origin`, the server a clone came from.
+ * `serve` also answers LAN discovery (vkr_depot_discovery.h), and `mirror`
+ * keeps the branches of the local server and a peer server equal. A running
+ * server applies `access` within a second; a key it refused waits there as a
+ * request. */
 
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
@@ -35,6 +44,7 @@
 #include "vkr_depot_client.h"
 #include "vkr_depot_discovery.h"
 #include "vkr_depot_remote.h"
+#include "vkr_depot_repository.h"
 #include "vkr_depot_server.h"
 #include "vkr_depot_service.h"
 #include "vkr_depot_sync.h"
@@ -327,6 +337,20 @@ static int depot_status(const char *directory) {
       printf("; %u of %u files not fetched", depot_unfetched(&workspace),
              workspace.index.count);
     }
+    VkrDepotRemoteEntry remote;
+    VkrDepotId local;
+    VkrDepotId tracked;
+    uint32_t ahead = 0u;
+    uint32_t behind = 0u;
+    if (vkr_depot_remote_find(workspace.store.root, NULL, &remote) &&
+        vkr_depot_ref_read(workspace.store.root, workspace.branch, &local) &&
+        vkr_depot_tracking_read(workspace.store.root, remote.name,
+                                workspace.branch, &tracked) &&
+        vkr_depot_ahead_behind(&workspace.store, &local, &tracked, &ahead,
+                               &behind)) {
+      printf("; %u ahead, %u behind %s/%s", ahead, behind, remote.name,
+             workspace.branch);
+    }
     printf("\n");
     vkr_depot_change_list_free(&changes);
     result = 0;
@@ -337,44 +361,149 @@ static int depot_status(const char *directory) {
   return result;
 }
 
-static int depot_commit(const char *directory, const char *message) {
-  VkrDepotWorkspace workspace;
-  if (!vkr_depot_workspace_open(&workspace, directory,
-                                vkr_depot_zstd_codec())) {
+static int depot_open(VkrDepotWorkspace *workspace, const char *directory) {
+  if (!vkr_depot_workspace_open(workspace, directory, vkr_depot_zstd_codec())) {
     fprintf(stderr, "no working copy at %s\n", directory);
     return 1;
   }
-  /* The snapshot comes first: hashing large files outlasts the idle
-     timeout of a connection opened before it. */
-  const VkrDepotId base = workspace.base;
-  VkrDepotPendingCommit pending;
-  char error[256];
-  if (!vkr_depot_commit_snapshot(&workspace, &base, message, &pending, error,
-                                 sizeof(error))) {
-    fprintf(stderr, "%s\n", error);
-    vkr_depot_workspace_close(&workspace);
+  return 0;
+}
+
+static VkrDepotFileList depot_index_copy(const VkrDepotFileList *index) {
+  VkrDepotFileList copy = {0};
+  for (uint32_t i = 0u; i < index->count; ++i) {
+    const VkrDepotIndexEntry *entry = &index->entries[i];
+    if (!vkr_depot_file_list_add(&copy, entry->path, entry->size,
+                                 entry->mtime_ns, &entry->blob)) {
+      vkr_depot_file_list_free(&copy);
+      copy.count = UINT32_MAX;
+      return copy;
+    }
+  }
+  return copy;
+}
+
+static void depot_print_push(const VkrDepotPushResult *result,
+                             const char *branch, const char *remote) {
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&result->commit, hex);
+  if (result->status == VKR_DEPOT_PUSH_UP_TO_DATE) {
+    printf("%s on %s is up to date at %.12s\n", branch, remote, hex);
+    return;
+  }
+  printf("pushed %s to %s at %.12s: %u commits, %llu objects, %llu bytes "
+         "uploaded\n",
+         branch, remote, hex, result->commits,
+         (unsigned long long)result->uploaded.objects,
+         (unsigned long long)result->uploaded.stored_bytes);
+}
+
+/* Commits locally; with `push`, pushes too, and puts the branch, base and
+   index back when the push is refused. */
+static int depot_commit(const char *directory, const char *message,
+                        bool8_t push, const char *remote) {
+  VkrDepotWorkspace workspace;
+  if (depot_open(&workspace, directory)) {
     return 1;
   }
-  VkrDepotConnection *connection = depot_connect(&workspace);
-  VkrDepotClient *client = vkr_depot_connection_client(connection);
+  const VkrDepotId base = workspace.base;
+  VkrDepotFileList index = depot_index_copy(&workspace.index);
+  char error[256];
+  VkrDepotCommitResult committed;
   int result = 1;
-  if (client) {
-    char branch[VKR_DEPOT_BRANCH_NAME];
-    snprintf(branch, sizeof(branch), "%s", workspace.branch);
-    if (vkr_depot_commit_push(&workspace, client, branch, &base, &base,
-                              &pending, error, sizeof(error))) {
-      char hex[VKR_DEPOT_ID_HEX];
-      vkr_depot_id_hex(&pending.commit, hex);
-      printf("pushed %s at %.12s: %llu objects, %llu bytes uploaded\n", branch,
-             hex, (unsigned long long)pending.uploaded.objects,
-             (unsigned long long)pending.uploaded.stored_bytes);
+  if (index.count == UINT32_MAX) {
+    fprintf(stderr, "out of memory\n");
+  } else if (!vkr_depot_commit_local(&workspace, message, &committed, error,
+                                     sizeof(error))) {
+    fprintf(stderr, "%s\n", error);
+  } else if (committed.empty && !push) {
+    printf("nothing to commit on %s\n", workspace.branch);
+    result = 0;
+  } else if (!push) {
+    char hex[VKR_DEPOT_ID_HEX];
+    vkr_depot_id_hex(&committed.commit, hex);
+    printf("committed %s at %.12s: %u files\n", workspace.branch, hex,
+           committed.files);
+    result = 0;
+  } else {
+    VkrDepotPushResult pushed;
+    if (vkr_depot_push(&depot_allocator, &workspace, remote, NULL, &pushed,
+                       error, sizeof(error))) {
+      depot_print_push(&pushed, workspace.branch,
+                       remote ? remote : VKR_DEPOT_ORIGIN);
       result = 0;
     } else {
       fprintf(stderr, "%s\n", error);
+      if (!committed.empty &&
+          vkr_depot_ref_swap(workspace.store.root, workspace.branch,
+                             &committed.commit, &base,
+                             NULL) == VKR_DEPOT_REF_SWAP_OK) {
+        vkr_depot_file_list_free(&workspace.index);
+        workspace.index = index;
+        MemZero(&index, sizeof(index));
+        workspace.base = base;
+        if (vkr_depot_workspace_save(&workspace)) {
+          fprintf(stderr, "nothing was committed; the changes stay local\n");
+        }
+      }
     }
   }
-  vkr_depot_pending_commit_free(&pending);
-  vkr_depot_disconnect(connection);
+  if (index.count != UINT32_MAX) {
+    vkr_depot_file_list_free(&index);
+  }
+  vkr_depot_workspace_close(&workspace);
+  return result;
+}
+
+static int depot_push_command(const char *directory, const char *remote,
+                              const char *branch) {
+  VkrDepotWorkspace workspace;
+  if (depot_open(&workspace, directory)) {
+    return 1;
+  }
+  VkrDepotPushResult pushed;
+  char error[256];
+  int result = 1;
+  if (vkr_depot_push(&depot_allocator, &workspace, remote, branch, &pushed,
+                     error, sizeof(error))) {
+    depot_print_push(&pushed, branch ? branch : workspace.branch,
+                     remote ? remote : VKR_DEPOT_ORIGIN);
+    result = 0;
+  } else {
+    fprintf(stderr, "%s\n", error);
+  }
+  vkr_depot_workspace_close(&workspace);
+  return result;
+}
+
+static void depot_fetch_print(void *context, const char *branch,
+                              VkrDepotFetchAction action,
+                              const VkrDepotId *commit, const char *detail) {
+  static const char *const actions[] = {"same", "new", "moved", "failed"};
+  const char *remote = context;
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(commit, hex);
+  printf("%s %s/%s %.12s%s%s\n", actions[action], remote, branch, hex,
+         detail[0] ? ": " : "", detail);
+}
+
+static int depot_fetch_command(const char *directory, const char *remote,
+                               const char *branch) {
+  VkrDepotWorkspace workspace;
+  if (depot_open(&workspace, directory)) {
+    return 1;
+  }
+  char error[256];
+  VkrDepotRemoteEntry entry = {0};
+  (void)vkr_depot_remote_find(workspace.store.root, remote, &entry);
+  const int result =
+      vkr_depot_fetch(&depot_allocator, &workspace, remote, branch,
+                      depot_fetch_print, entry.name, error, sizeof(error))
+          ? 0
+          : 1;
+  if (result) {
+    fprintf(stderr, "%s\n", error);
+  }
   vkr_depot_workspace_close(&workspace);
   return result;
 }
@@ -466,53 +595,193 @@ static int depot_stream(const char *address, const char *key_hex,
   return fetched ? 0 : 1;
 }
 
-static int depot_pull(const char *directory, VkrDepotConflictPolicy policy) {
+static int depot_pull(const char *directory, const char *remote,
+                      VkrDepotConflictPolicy policy) {
   VkrDepotWorkspace workspace;
-  if (!vkr_depot_workspace_open(&workspace, directory,
-                                vkr_depot_zstd_codec())) {
-    fprintf(stderr, "no working copy at %s\n", directory);
+  if (depot_open(&workspace, directory)) {
     return 1;
   }
-  VkrDepotConnection *connection = depot_connect(&workspace);
-  VkrDepotClient *client = vkr_depot_connection_client(connection);
+  VkrDepotPullResult pulled;
+  char error[256];
+  const bool8_t ok = vkr_depot_pull(&depot_allocator, &workspace, remote,
+                                    policy, &pulled, error, sizeof(error));
+  static const char *const sides[] = {"conflict", "took theirs", "kept mine"};
+  for (uint32_t i = 0u; i < pulled.conflicts.count; ++i) {
+    printf("%s %s\n", sides[policy], pulled.conflicts.entries[i].path);
+  }
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&pulled.commit, hex);
   int result = 1;
-  VkrDepotId commit;
-  bool8_t exists = false_v;
-  if (client &&
-      (!vkr_depot_find_ref(client, workspace.branch, &commit, &exists) ||
-       !exists)) {
-    fprintf(stderr, "branch %s not found\n", workspace.branch);
-  } else if (client && vkr_depot_id_equal(&commit, &workspace.base)) {
+  if (!ok) {
+    fprintf(stderr, "%s\n", error);
+    if (pulled.conflicts.count) {
+      fprintf(stderr, "pull again with --take-theirs or --keep-mine\n");
+    }
+  } else if (pulled.status == VKR_DEPOT_PULL_UP_TO_DATE) {
     printf("up to date\n");
     result = 0;
-  } else if (client) {
-    uint32_t kept = 0u;
-    VkrDepotChangeList conflicts;
-    char error[256];
-    const bool8_t ok =
-        vkr_depot_fetch_checkout(&workspace, client, &commit, policy, &kept,
-                                 &conflicts, error, sizeof(error));
-    static const char *const sides[] = {"conflict", "took theirs", "kept mine"};
-    for (uint32_t i = 0u; i < conflicts.count; ++i) {
-      printf("%s %s\n", sides[policy], conflicts.entries[i].path);
+  } else if (pulled.status == VKR_DEPOT_PULL_FAST_FORWARD) {
+    printf("pulled %s at %.12s; %u local changes kept\n", workspace.branch, hex,
+           pulled.kept);
+    result = 0;
+  } else if (pulled.status == VKR_DEPOT_PULL_AHEAD) {
+    printf("%s is ahead of %s; push it\n", workspace.branch,
+           remote ? remote : VKR_DEPOT_ORIGIN);
+    result = 0;
+  } else {
+    fprintf(stderr,
+            "%s and %s/%s both have new commits (theirs at %.12s); they wait "
+            "for a merge\n",
+            workspace.branch, remote ? remote : VKR_DEPOT_ORIGIN,
+            workspace.branch, hex);
+  }
+  vkr_depot_change_list_free(&pulled.conflicts);
+  vkr_depot_workspace_close(&workspace);
+  return result;
+}
+
+static int depot_remote_command(const char *directory, const char *action,
+                                const char *name, const char *address,
+                                const char *key_hex) {
+  VkrDepotWorkspace workspace;
+  if (depot_open(&workspace, directory)) {
+    return 1;
+  }
+  const char *store = workspace.store.root;
+  int result = 1;
+  if (!action || strcmp(action, "list") == 0) {
+    VkrDepotRemoteEntry remotes[VKR_DEPOT_REMOTES_MAX];
+    uint32_t count = 0u;
+    if (vkr_depot_remotes_load(store, remotes, ArrayCount(remotes), &count)) {
+      for (uint32_t i = 0u; i < count; ++i) {
+        printf("%s %s ", remotes[i].name, remotes[i].address);
+        depot_print_key(remotes[i].key);
+        printf("\n");
+      }
+      result = 0;
     }
-    if (ok) {
-      char hex[VKR_DEPOT_ID_HEX];
-      vkr_depot_id_hex(&commit, hex);
-      printf("pulled %s at %.12s; %u local changes kept\n", workspace.branch,
-             hex, kept);
+  } else if (strcmp(action, "add") == 0 && name && address && key_hex) {
+    VkrDepotRemoteEntry remote = {0};
+    snprintf(remote.name, sizeof(remote.name), "%s", name);
+    snprintf(remote.address, sizeof(remote.address), "%s", address);
+    VkrNetAddress parsed;
+    if (!vkr_depot_remote_name_valid(name) ||
+        !vkr_depot_address(address, &parsed) ||
+        !depot_parse_key(key_hex, remote.key)) {
+      fprintf(stderr, "remote add needs NAME (a-z, 0-9, - and _) ADDR KEY\n");
+    } else if (!vkr_depot_remote_set(store, &remote)) {
+      fprintf(stderr, "could not save remote %s\n", name);
+    } else {
+      printf("remote %s %s\n", name, address);
+      result = 0;
+    }
+  } else if (strcmp(action, "remove") == 0 && name) {
+    if (vkr_depot_remote_remove(store, name)) {
+      printf("removed remote %s\n", name);
+      result = 0;
+    } else {
+      fprintf(stderr, "no remote %s\n", name);
+    }
+  } else {
+    fprintf(stderr, "remote takes list, add NAME ADDR KEY or remove NAME\n");
+  }
+  vkr_depot_workspace_close(&workspace);
+  return result;
+}
+
+typedef struct DepotBranchPrint {
+  const VkrDepotWorkspace *workspace;
+  const char *remote;
+} DepotBranchPrint;
+
+/* A branch with its commit and, when the default remote tracks it, how far
+   it is ahead and behind. */
+static bool8_t depot_branch_print(void *context, const char *branch) {
+  const DepotBranchPrint *print = context;
+  const char *store = print->workspace->store.root;
+  VkrDepotId commit;
+  VkrDepotId tracked;
+  if (!vkr_depot_ref_read(store, branch, &commit)) {
+    return true_v;
+  }
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&commit, hex);
+  printf("%c %s %.12s", strcmp(branch, print->workspace->branch) ? ' ' : '*',
+         branch, hex);
+  uint32_t ahead = 0u;
+  uint32_t behind = 0u;
+  if (print->remote &&
+      vkr_depot_tracking_read(store, print->remote, branch, &tracked) &&
+      vkr_depot_ahead_behind(&print->workspace->store, &commit, &tracked,
+                             &ahead, &behind)) {
+    printf(" [%s/%s: ahead %u, behind %u]", print->remote, branch, ahead,
+           behind);
+  }
+  printf("\n");
+  return true_v;
+}
+
+static int depot_branch_command(const char *directory, const char *name,
+                                bool8_t remove, bool8_t force) {
+  VkrDepotWorkspace workspace;
+  if (depot_open(&workspace, directory)) {
+    return 1;
+  }
+  char error[256];
+  int result = 1;
+  if (!name) {
+    VkrDepotRemoteEntry origin;
+    const bool8_t tracked =
+        vkr_depot_remote_find(workspace.store.root, NULL, &origin);
+    DepotBranchPrint print = {.workspace = &workspace,
+                              .remote = tracked ? origin.name : NULL};
+    result =
+        vkr_depot_ref_list(workspace.store.root, depot_branch_print, &print)
+            ? 0
+            : 1;
+  } else if (remove) {
+    if (vkr_depot_branch_delete(&workspace, name, force, error,
+                                sizeof(error))) {
+      printf("deleted branch %s\n", name);
       result = 0;
     } else {
       fprintf(stderr, "%s\n", error);
-      if (conflicts.count) {
-        fprintf(stderr, "pull again with --take-theirs or --keep-mine\n");
-      }
     }
-    vkr_depot_change_list_free(&conflicts);
+  } else if (vkr_depot_branch_create(&workspace, name, error, sizeof(error))) {
+    char hex[VKR_DEPOT_ID_HEX];
+    vkr_depot_id_hex(&workspace.base, hex);
+    printf("branch %s at %.12s\n", name, hex);
+    result = 0;
+  } else {
+    fprintf(stderr, "%s\n", error);
   }
-  vkr_depot_disconnect(connection);
   vkr_depot_workspace_close(&workspace);
   return result;
+}
+
+static int depot_switch(const char *directory, const char *name,
+                        VkrDepotConflictPolicy policy) {
+  VkrDepotWorkspace workspace;
+  if (depot_open(&workspace, directory)) {
+    return 1;
+  }
+  uint32_t kept = 0u;
+  VkrDepotChangeList conflicts;
+  char error[256];
+  const bool8_t ok = vkr_depot_switch(&workspace, name, policy, &kept,
+                                      &conflicts, error, sizeof(error));
+  static const char *const sides[] = {"conflict", "took theirs", "kept mine"};
+  for (uint32_t i = 0u; i < conflicts.count; ++i) {
+    printf("%s %s\n", sides[policy], conflicts.entries[i].path);
+  }
+  if (ok) {
+    printf("switched to %s; %u local changes kept\n", name, kept);
+  } else {
+    fprintf(stderr, "%s\n", error);
+  }
+  vkr_depot_change_list_free(&conflicts);
+  vkr_depot_workspace_close(&workspace);
+  return ok ? 0 : 1;
 }
 
 static int depot_refs(const char *directory) {
@@ -626,8 +895,12 @@ static void depot_usage(void) {
       "  vkr_depot clone ADDR SERVER-KEY DIR [--branch NAME] [--store DIR]\n"
       "                  [--sparse]\n"
       "  vkr_depot status|refs|locks [DIR]\n"
-      "  vkr_depot pull [DIR] [--take-theirs|--keep-mine]\n"
-      "  vkr_depot commit [DIR] -m MESSAGE\n"
+      "  vkr_depot commit [DIR] -m MESSAGE [--push] [--remote NAME]\n"
+      "  vkr_depot push|fetch [DIR] [--remote NAME] [--branch NAME]\n"
+      "  vkr_depot pull [DIR] [--remote NAME] [--take-theirs|--keep-mine]\n"
+      "  vkr_depot remote [list|add NAME ADDR KEY|remove NAME] [--dir DIR]\n"
+      "  vkr_depot branch [NAME [--delete [--force]]] [--dir DIR]\n"
+      "  vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]\n"
       "  vkr_depot cooked [DIR]\n"
       "  vkr_depot stream ADDR SERVER-KEY DIR PATH [--branch NAME]\n"
       "  vkr_depot log [DIR] [--count N]\n"
@@ -658,6 +931,9 @@ static int depot_main(int argc, char **argv) {
   bool8_t open_access = false_v;
   bool8_t force = false_v;
   bool8_t sparse = false_v;
+  bool8_t push = false_v;
+  bool8_t remove = false_v;
+  const char *remote = NULL;
   VkrDepotConflictPolicy policy = VKR_DEPOT_CONFLICT_FAIL;
   for (int i = 2; i < argc; ++i) {
     const char *arg = argv[i];
@@ -668,6 +944,13 @@ static int depot_main(int argc, char **argv) {
       sparse = true_v;
     } else if (strcmp(arg, "--force") == 0) {
       force = true_v;
+    } else if (strcmp(arg, "--push") == 0) {
+      push = true_v;
+    } else if (strcmp(arg, "--delete") == 0) {
+      remove = true_v;
+    } else if (value && strcmp(arg, "--remote") == 0) {
+      remote = value;
+      ++i;
     } else if (strcmp(arg, "--take-theirs") == 0) {
       policy = VKR_DEPOT_CONFLICT_TAKE_THEIRS;
     } else if (strcmp(arg, "--keep-mine") == 0) {
@@ -750,10 +1033,26 @@ static int depot_main(int argc, char **argv) {
     return depot_status(first);
   }
   if (strcmp(command, "commit") == 0 && message) {
-    return depot_commit(first, message);
+    return depot_commit(first, message, push, remote);
+  }
+  if (strcmp(command, "push") == 0) {
+    return depot_push_command(first, remote, branch_given ? branch : NULL);
+  }
+  if (strcmp(command, "fetch") == 0) {
+    return depot_fetch_command(first, remote, branch_given ? branch : NULL);
   }
   if (strcmp(command, "pull") == 0) {
-    return depot_pull(first, policy);
+    return depot_pull(first, remote, policy);
+  }
+  if (strcmp(command, "remote") == 0) {
+    return depot_remote_command(dir ? dir : ".", positional[0], positional[1],
+                                positional[2], positional[3]);
+  }
+  if (strcmp(command, "branch") == 0) {
+    return depot_branch_command(dir ? dir : ".", positional[0], remove, force);
+  }
+  if (strcmp(command, "switch") == 0 && positional[0]) {
+    return depot_switch(dir ? dir : ".", positional[0], policy);
   }
   if (strcmp(command, "cooked") == 0) {
     return depot_cooked(first);

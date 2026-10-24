@@ -161,7 +161,8 @@ def main() -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / identity, target)
         (seed / ".vkrdepotignore").write_text("*.vkt\n", encoding="utf-8")
-        depot([depot_exe, "commit", str(seed), "-m", "Bistro"], env, log)
+        depot([depot_exe, "commit", str(seed), "-m", "Bistro", "--push"], env,
+              log)
         depot([depot_exe, "cooked", str(seed)], env, log)
 
         # 3. The sparse clone holds the ignore rules alone.
@@ -220,7 +221,7 @@ def main() -> int:
             failures.append(f"{len(stray)} files on disk the local run never "
                             f"read, such as {stray[0]}")
         pushed = depot([depot_exe, "commit", str(sparse), "-m",
-                        "sparse edit"], env, log)
+                        "sparse edit", "--push"], env, log)
         upload = re.search(r"(\d+) objects, (\d+) bytes uploaded", pushed)
         if not upload:
             raise RuntimeError(f"unexpected commit output: {pushed.strip()}")

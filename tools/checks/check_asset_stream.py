@@ -332,7 +332,8 @@ def main() -> int:
             cooked += identity.endswith(".vkt")
             seed_bytes += target.stat().st_size
         (seed / ".vkrdepotignore").write_text("*.vkt\n", encoding="utf-8")
-        depot([depot_exe, "commit", str(seed), "-m", "Bistro"], env, log)
+        depot([depot_exe, "commit", str(seed), "-m", "Bistro", "--push"], env,
+              log)
         published = depot([depot_exe, "cooked", str(seed)], env, log)
 
         # 3. The streamed run.

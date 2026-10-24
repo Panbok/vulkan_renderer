@@ -3,6 +3,7 @@
 #include "core/vkr_byte_io.h"
 #include "filesystem/filesystem.h"
 #include "vkr_bakery_os.h"
+#include "vkr_depot_repository.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -203,6 +204,53 @@ bool8_t vkr_depot_cooked_cache_load(const VkrDepotWorkspace *workspace,
   return true_v;
 }
 
+/* Gives the store what a working copy of the older form kept in its state
+   alone (docs/proposals/depot-git-model.md, "Migration"): the server it
+   syncs with as the remote `origin`, the branch at the base, and origin's
+   record of that branch. A working copy whose server is its store's own,
+   such as one beside the server sharing its store, is that repository and
+   gets no `origin`. Runs on every open and save, so the editor's direct use
+   of `remote` stays in step; a store that cannot take the files only loses
+   the new commands. */
+static void workspace_adopt_repository(const VkrDepotWorkspace *workspace) {
+  const char *store = workspace->store.root;
+  uint8_t id[VKR_DEPOT_REPOSITORY_ID_SIZE];
+  (void)vkr_depot_repository_id(store, id, true_v);
+
+  uint8_t served[32];
+  const bool8_t self = vkr_depot_repository_served_key(store, served) &&
+                       MemCompare(served, workspace->server_key, 32u) == 0;
+  VkrDepotRemoteEntry origin = {0};
+  bool8_t has_origin = vkr_depot_remote_find(store, VKR_DEPOT_ORIGIN, &origin);
+  if (workspace->remote[0] && !self &&
+      (!has_origin || strcmp(origin.address, workspace->remote) != 0 ||
+       MemCompare(origin.key, workspace->server_key, 32u) != 0)) {
+    if (!has_origin || MemCompare(origin.key, workspace->server_key, 32u)) {
+      MemZero(&origin, sizeof(origin));
+    }
+    snprintf(origin.name, sizeof(origin.name), "%s", VKR_DEPOT_ORIGIN);
+    snprintf(origin.address, sizeof(origin.address), "%s", workspace->remote);
+    MemCopy(origin.key, workspace->server_key, 32u);
+    has_origin = vkr_depot_remote_set(store, &origin);
+  }
+
+  if (vkr_depot_id_zero(&workspace->base)) {
+    return;
+  }
+  VkrDepotId commit;
+  const VkrDepotId zero = {0};
+  if (!vkr_depot_ref_read(store, workspace->branch, &commit)) {
+    (void)vkr_depot_ref_swap(store, workspace->branch, &zero, &workspace->base,
+                             NULL);
+  }
+  if (has_origin && !self &&
+      !vkr_depot_tracking_read(store, VKR_DEPOT_ORIGIN, workspace->branch,
+                               &commit)) {
+    (void)vkr_depot_tracking_set(store, VKR_DEPOT_ORIGIN, workspace->branch,
+                                 &workspace->base);
+  }
+}
+
 bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace) {
   const uint32_t flags_size = workspace->sparse ? 4u : 0u;
   uint64_t size = 4u + 4u + flags_size + 2u + strlen(workspace->remote) + 32u +
@@ -259,6 +307,9 @@ bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace) {
       workspace_meta_path(workspace, "state", path, sizeof(path)) &&
       vkr_bakery_write_file_atomic(path, bytes, size);
   free(bytes);
+  if (ok) {
+    workspace_adopt_repository(workspace);
+  }
   return ok;
 }
 
@@ -434,6 +485,7 @@ bool8_t vkr_depot_workspace_open(VkrDepotWorkspace *workspace, const char *root,
     vkr_depot_workspace_close(workspace);
     return false_v;
   }
+  workspace_adopt_repository(workspace);
   return true_v;
 }
 
