@@ -213,6 +213,92 @@ git repository or a build folder.
 branch | switch | remote | log | lock | unlock | locks | service`. The
 `keygen` and `access` commands stay. `serve` becomes a mode of `service`.
 
+## Contracts between the tracks (C0)
+
+The Mac session implements the depot core and the editor, and the Windows
+session the service and Bakery. The three contracts below are where their
+work meets.
+
+### Repository layout
+
+A store is the repository. The working copies of one repository can share
+its store, as `clone --store` does today, and the service serves that same
+store.
+
+```
+<store>/objects/                   chunks and objects (unchanged)
+<store>/refs/<branch>              local branches: the ones the store serves
+<store>/repository                 repository id (16 random bytes) and name
+<store>/remotes                    per remote: name, address, service key,
+                                   repository id, fetch-and-push interval
+<store>/tracking/<remote>/<branch> each remote branch at the last fetch or push
+<store>/tracking/<remote>.locks    the remote's locks at the last fetch
+<store>/locks, access              unchanged
+```
+
+- The working copy's `.vkrdepot/state` (version 3) keeps the checked-out
+  branch, the base commit, the index and the sparse flag. The remote and
+  server key leave it.
+- A branch moves by compare-and-swap under the store's named process lock
+  (`vkr_platform_process_lock_acquire`). A local commit, a fetch and the
+  server use the same lock, so a working copy can share the store its
+  service serves.
+- Branch names keep `vkr_depot_branch_valid`. A remote name has 1 to 32
+  characters from `a-z`, `0-9`, `-` and `_`.
+- Migration of a version 1 or 2 state: the remote and key become the remote
+  `origin`, `tracking/origin/<branch>` and `refs/<branch>` (when absent)
+  get the base, and the store gets a repository id. A state whose server
+  key is the store's own `server.key` is the served repository and gets no
+  `origin`.
+
+### Merge driver
+
+- `.vkrdepotmerge` at the root names units: groups of paths that merge
+  together through a driver. Each line is
+  `unit <driver> <anchor pattern> [member patterns relative to the anchor's folder]`:
+
+  ```
+  unit scene .vkreditor/projects/*/scenes/*/scene.json inventory/*.json edits/*.json
+  unit project .vkreditor/projects/*/project.json
+  ```
+
+- A driver name is only a key into drivers built into the caller (`scene`,
+  `project`). A line that names any other driver is ignored with a
+  warning. A pulled file can never make the depot run a command.
+- A merge first decides each path against the merge base. A unit goes to
+  its driver when one of its paths changed on both sides. The driver gets
+  the unit's member files of each side, written to `base/`, `mine/` and
+  `theirs/` under a temporary folder, and returns one of three results:
+  merged (files to write and delete under the anchor's folder), conflicts
+  (a list of `{path, id, reason}`), or failed. When the driver is missing
+  or fails, the whole unit is a conflict, and Mine or Theirs settles it as
+  one unit.
+- The depot calls a function the caller supplies. `vkr_depot` and the
+  editor run Bakery: `vkr_bakery project --request` with the operation
+  `merge_unit`, and the fields `driver`, `anchor`, `base`, `mine`,
+  `theirs`, `output` and per-side `paths`. Bakery writes the merged files
+  into `output` and the result as JSON:
+  `{"merged":true,"write":[…],"delete":[…]}` or
+  `{"merged":false,"conflicts":[…]}`.
+
+### Service
+
+- One service key per machine. The service adopts an existing served
+  store's key, so remotes that name `f9239cc6…` (windows-d) stay valid.
+- Discovery answers also list the served repositories (id, name, default
+  branch) and say when the machine is outbound only.
+- After the handshake, the client selects a repository by id. A server
+  that serves one store takes a connection that selects none as that
+  store, so older clients keep working until both machines update.
+  `VkrDepotConnectConfig` gains the repository id, where zero means none.
+- An outbound-only service says so in its hello, and the server records
+  it for that key. The remote's status then shows "reachable only when it
+  connects".
+- `VkrDepotServiceInfo` reports: running, address and port, the served
+  repositories (name, id, store), and connected peers (name, key, last
+  seen, outbound only). The last fetch and push per remote live in the
+  repository.
+
 ## Migration
 
 - A working copy made by today's `clone` becomes a repository whose remote
@@ -295,6 +381,4 @@ Mac M1 and the Windows desktop.
 
 ## Open questions
 
-- Beyond the served repository (Migration), should several clones on one
-  machine share one store, as `clone --store` allows today?
 - Which history operations are worth adding: reset, revert, stash?
