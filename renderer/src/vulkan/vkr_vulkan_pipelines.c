@@ -2401,6 +2401,14 @@ vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
                                                &module_info, NULL, out_module);
   vkr_allocator_free(renderer->allocator, bytes, size,
                      VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  /* Named before any pipeline uses it, so GPU-assisted validation can
+     instrument only the shaders a run selects by file name
+     (khronos_validation.gpuav_shaders_to_instrument). */
+  if (result == VK_SUCCESS) {
+    vkr_vulkan_device_set_object_name(
+        renderer->device, VK_OBJECT_TYPE_SHADER_MODULE,
+        (uint64_t)(uintptr_t)*out_module, path, string_length(path));
+  }
   return result == VK_SUCCESS;
 }
 
