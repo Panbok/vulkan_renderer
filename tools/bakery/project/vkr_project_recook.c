@@ -198,20 +198,82 @@ bool8_t vkr_project_read_recipes(VkrProjectJob *job, const char *textures,
   return true_v;
 }
 
+/* Whether `text`, a material file of the build, names a texture of the
+   build's own `textures` folder (`../textures/<name>.vkt`) no recipe
+   covers. */
+vkr_internal bool8_t vkr_project_material_unrecorded(
+    const uint8_t *text, uint64_t size, const VkrBakeryJson *recipes) {
+  static const char prefix[] = "../textures/";
+  const uint64_t prefix_length = sizeof(prefix) - 1u;
+  for (uint64_t at = 0u; at + prefix_length < size; ++at) {
+    if (MemCompare(text + at, prefix, prefix_length) != 0) {
+      continue;
+    }
+    char name[96];
+    uint32_t length = 0u;
+    for (uint64_t c = at + prefix_length;
+         c < size && length + 1u < sizeof(name); ++c) {
+      const char ch = (char)text[c];
+      const bool8_t plain =
+          (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') ||
+          (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '-' || ch == '.';
+      if (!plain) {
+        break;
+      }
+      name[length++] = ch;
+    }
+    name[length] = '\0';
+    if (vkr_project_is_cooked_texture(name) &&
+        !vkr_bakery_json_get(recipes, name)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 bool8_t vkr_project_textures_unrecorded(VkrProjectJob *job,
                                         const char *textures,
                                         const VkrBakeryJson *recipes) {
   VkrProjectStrings names = {0};
   const bool8_t failed_before = job->failed;
-  if (!vkr_bakery_is_directory(textures) ||
-      !vkr_project_list(job, textures, &names)) {
-    vkr_project_forgive(job, failed_before);
-    return false_v;
+  if (vkr_bakery_is_directory(textures) &&
+      vkr_project_list(job, textures, &names)) {
+    for (uint32_t i = 0u; i < names.count; ++i) {
+      if (vkr_project_is_cooked_texture(names.items[i]) &&
+          !vkr_bakery_json_get(recipes, names.items[i])) {
+        return true_v;
+      }
+    }
   }
-  for (uint32_t i = 0u; i < names.count; ++i) {
-    if (vkr_project_is_cooked_texture(names.items[i]) &&
-        !vkr_bakery_json_get(recipes, names.items[i])) {
-      return true_v;
+  vkr_project_forgive(job, failed_before);
+  /* A copy that never held the cooked textures, as a pull leaves one,
+     knows them only from the materials that name them. */
+  char build[VKR_PROJECT_PATH];
+  vkr_bakery_path_parent(build, sizeof(build), textures);
+  static const char *const folders[] = {"dependencies", "materials"};
+  for (uint32_t f = 0u; f < ArrayCount(folders); ++f) {
+    const char *folder = vkr_project_printf(job, "%s/%s", build, folders[f]);
+    if (!vkr_bakery_is_directory(folder) ||
+        !vkr_project_list(job, folder, &names)) {
+      vkr_project_forgive(job, failed_before);
+      continue;
+    }
+    for (uint32_t i = 0u; i < names.count; ++i) {
+      const char *name = names.items[i];
+      const uint64_t length = strlen(name);
+      if (length < 4u || strcmp(name + length - 3u, ".mt") != 0) {
+        continue;
+      }
+      uint8_t *text = NULL;
+      uint64_t size = 0u;
+      const bool8_t read = vkr_bakery_read_file(
+          vkr_project_printf(job, "%s/%s", folder, name), MB(4), &text, &size);
+      const bool8_t unrecorded =
+          read && vkr_project_material_unrecorded(text, size, recipes);
+      free(text);
+      if (unrecorded) {
+        return true_v;
+      }
     }
   }
   return false_v;

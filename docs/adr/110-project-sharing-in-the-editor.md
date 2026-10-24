@@ -167,7 +167,12 @@ writes no ignored path (ADR-105).
   (`untracked_dependencies`): with any, it stops and lists them with their
   size, and **Copy in and commit** copies them into the repository's own
   `assets/` and commits them, or **Commit without them** goes on
-  (`depot.commit` `adopt` and `ignore_untracked`).
+  (`depot.commit` `adopt` and `ignore_untracked`). The same check lists
+  models whose builds hold, or whose materials name, cooked textures that no
+  texture recipe covers (`needs_rebuild`). Commit rebuilds them first
+  (`rebuild_asset`), as Make repository does, because another computer
+  cannot cook their textures. Bistro's builds from before texture recipes
+  reached the Mac that way on 2026-10-24, and it could not open the scene.
   **Push** pushes the branch when that is a fast-forward and publishes this
   computer's cooked textures to the remote's side branch
   ([ADR-123](123-asset-streaming-from-a-depot.md#project-sharing)).

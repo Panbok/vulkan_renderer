@@ -291,6 +291,17 @@ def main():
         mesh_id = next(asset['id'] for asset in jobs.read_managed_scene(again_path)['assets']
                        if asset['kind'] == 'mesh')
         assert [entry['asset_id'] for entry in stale['needs_rebuild']] == [mesh_id], stale
+        # A pulled copy of it holds no cooked texture at all (*.vkt stays out
+        # of a commit): its materials still name them, so it needs the
+        # rebuild too.
+        assert any('../textures/' in path.read_text(errors='replace')
+                   for folder in ('dependencies', 'materials')
+                   for path in (old_build / folder).glob('*.mt')), old_build
+        for path in (old_build / 'textures').glob('*.vkt'):
+            path.unlink()
+        pulled = run(dict(recook, scene_id=again['scene_id'], scene_path=again['scene_path']),
+                     'recook-pulled')
+        assert [entry['asset_id'] for entry in pulled['needs_rebuild']] == [mesh_id], pulled
         run({'operation': 'rebuild_asset', 'scene_id': again['scene_id'],
              'scene_path': again['scene_path'], 'asset_id': mesh_id}, 'rebuild')
         new_build, _, rebuilt_textures, _ = build_textures(again_path)

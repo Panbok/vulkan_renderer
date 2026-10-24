@@ -623,8 +623,10 @@ VkrBakeryJson *vkr_project_delete_project(VkrProjectJob *job);
  * False on an unreadable or invalid file. */
 bool8_t vkr_project_read_recipes(VkrProjectJob *job, const char *textures,
                                  const VkrBakeryJson **out_recipes);
-/** Whether `textures` holds a cooked texture no recipe covers: a build an
- * earlier cook made, which another host can only rebuild. */
+/** Whether `textures` holds a cooked texture no recipe covers, or a
+ * material of its build (`dependencies/`, `materials/`) names one: a build
+ * an earlier cook made, which another host can only rebuild. A copy whose
+ * cooked textures never arrived knows them only from its materials. */
 bool8_t vkr_project_textures_unrecorded(VkrProjectJob *job,
                                         const char *textures,
                                         const VkrBakeryJson *recipes);

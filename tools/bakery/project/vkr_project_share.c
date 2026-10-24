@@ -975,6 +975,9 @@ VkrBakeryJson *vkr_project_dependencies(VkrProjectJob *job) {
     vkr_bakery_json_set(
         arena, result, "missing_count",
         vkr_bakery_json_int(arena, share->bundle.missing_references.count));
+    /* Models cooked without texture recipes, which a commit rebuilds so
+       another computer can cook their textures. */
+    vkr_bakery_json_set(arena, result, "needs_rebuild", share->needs_rebuild);
   }
   vkr_bundle_free(&share->bundle);
   return result;

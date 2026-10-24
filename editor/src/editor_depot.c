@@ -1234,6 +1234,10 @@ static bool8_t depot_project_job(DepotJob *job, const char *folder,
                                  Arena *arena, VkrBakeryJson *request,
                                  const char *what,
                                  const VkrBakeryJson **out_result);
+static void depot_job_rebuild_old_models(DepotJob *job, const char *directory,
+                                         const char *project_id,
+                                         const VkrBakeryJson *share_result,
+                                         int64_t grace_seconds);
 static void depot_first_project(const char *directory, char out[40]);
 
 /* Lists, and with the job's `adopt` copies into the project, the files it
@@ -1273,13 +1277,16 @@ static bool8_t depot_job_untracked(DepotJob *job, const char *folder) {
       (void)depot_json_text(entry, "path", path, sizeof(path));
       depot_job_add_text(job->untracked, &job->untracked_count, path);
     }
-    if (job->untracked_count && !job->adopt) {
+    /* A model cooked without texture recipes leaves another computer
+       unable to cook its textures: rebuild it before it is committed. */
+    depot_job_rebuild_old_models(job, folder, project_id, result, -1);
+    if (job->untracked_count && !job->adopt && !job->ignore_untracked) {
       string_format(job->error, sizeof(job->error),
                     "%u files this project uses come from outside it; "
                     "another computer lacks them",
                     job->untracked_count);
       proceed = false_v;
-    } else if (job->adopt) {
+    } else if (job->adopt || job->ignore_untracked) {
       job->untracked_count = 0u;
     }
   } else {
@@ -1339,8 +1346,7 @@ static void depot_job_commit(DepotWorker *worker) {
   if (!ws->sparse) {
     depot_job_prune(job, ws->root);
   }
-  if (!job->ignore_untracked && !ws->sparse &&
-      !depot_job_untracked(job, ws->root)) {
+  if (!ws->sparse && !depot_job_untracked(job, ws->root)) {
     return;
   }
   VkrDepotCommitResult committed;
@@ -1691,11 +1697,15 @@ static void depot_job_recook(DepotJob *job, const char *folder,
   arena_destroy(arena);
 }
 
-/* Rebuilds each imported model the share reported as cooked before
-   texture recipes existed, in the shared workspace, so another computer
-   can cook its textures (rebuild_asset). */
-static void depot_job_rebuild_old_models(DepotJob *job,
-                                         const VkrBakeryJson *share_result) {
+/* Rebuilds each imported model Bakery reported as cooked without texture
+   recipes (`needs_rebuild` of share_project or untracked_dependencies) in
+   the workspace at `directory`, so another computer can cook its textures
+   (rebuild_asset), then removes the builds the rebuilds replaced after
+   `grace_seconds` (-1 for collect_garbage's default). */
+static void depot_job_rebuild_old_models(DepotJob *job, const char *directory,
+                                         const char *project_id,
+                                         const VkrBakeryJson *share_result,
+                                         int64_t grace_seconds) {
   const VkrBakeryJson *list =
       vkr_bakery_json_get(share_result, "needs_rebuild");
   if (!list || !list->count) {
@@ -1707,7 +1717,7 @@ static void depot_job_rebuild_old_models(DepotJob *job,
   }
   char projects[DEPOT_PATH];
   string_format(projects, sizeof(projects), "%s/.vkreditor/projects/%s",
-                job->directory, job->project_id);
+                directory, project_id);
   char project_path[DEPOT_PATH];
   string_format(project_path, sizeof(project_path), "%s/project.json",
                 projects);
@@ -1740,7 +1750,7 @@ static void depot_job_rebuild_old_models(DepotJob *job,
       vkr_bakery_json_set(arena, request, "texture_encode_speed",
                           vkr_bakery_json_cstr(arena, "fast"));
       const VkrBakeryJson *result = NULL;
-      if (!depot_project_job(job, job->directory, arena, request,
+      if (!depot_project_job(job, directory, arena, request,
                              "Rebuilding a model for sharing", &result)) {
         log_warn("Source control: %s", job->error);
         job->textures_failed++;
@@ -1753,15 +1763,15 @@ static void depot_job_rebuild_old_models(DepotJob *job,
   VkrBakeryJson *request = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, request, "operation",
                       vkr_bakery_json_cstr(arena, "collect_garbage"));
-  /* No other job writes the new workspace yet, so nothing needs the grace
-     period that protects builds a running job has not recorded. */
-  vkr_bakery_json_set(arena, request, "grace_seconds",
-                      vkr_bakery_json_int(arena, 0));
+  if (grace_seconds >= 0) {
+    vkr_bakery_json_set(arena, request, "grace_seconds",
+                        vkr_bakery_json_int(arena, grace_seconds));
+  }
   vkr_bakery_json_set(arena, request, "project_path",
                       vkr_bakery_json_cstr(arena, project_path));
   const VkrBakeryJson *result = NULL;
   if (!vkr_depot_progress_canceled(&job->progress) &&
-      !depot_project_job(job, job->directory, arena, request,
+      !depot_project_job(job, directory, arena, request,
                          "Removing replaced builds", &result)) {
     log_warn("Source control: %s", job->error);
     job->error[0] = '\0';
@@ -1805,7 +1815,9 @@ static void depot_job_init(DepotWorker *worker) {
     arena_destroy(arena);
     return;
   }
-  depot_job_rebuild_old_models(job, result);
+  /* No other job writes the new workspace yet, so nothing needs the grace
+     period that protects builds a running job has not recorded. */
+  depot_job_rebuild_old_models(job, job->directory, job->project_id, result, 0);
   arena_destroy(arena);
   if (vkr_depot_progress_canceled(&job->progress)) {
     string_format(job->error, sizeof(job->error), "canceled");
