@@ -306,7 +306,15 @@ from it.
   build cooked before recipes existed is reported in `needs_rebuild` and
   takes one `rebuild_asset` where it is shared. A build with no mesh record
   or no snapshot left keeps its mesh-cook textures uncooked and is reported
-  in `missing_source` with a `skipped` count; the run goes on. A mesh
+  in `missing_source` with a `skipped` count; the run goes on.
+  `prepare_scene` runs the same cook for the scene's builds
+  (`vkr_project_recook_missing`) before it checks them, so a copy whose
+  cooked textures never arrived, as `vkr_depot clone` leaves one, opens.
+  It cooks only missing textures and does not read the block family of the
+  ones present. A read-only preparation cooks nothing and fails with the
+  number of textures it lacks. A cooked texture still missing after that
+  has no recipe or no snapshot left, and its check says to rebuild the
+  model. A mesh
   rebuild or reimport retires the import's material and texture records
   that the new revision no longer holds, unless the scene, its overlay or
   another record names them, so no live record keeps naming a build whose
@@ -789,6 +797,16 @@ or inventory, and the scene then prepared. `check_bakery_share.py` and
 `check_bakery_recook.py` pass. A BC host has not re-cooked an ASTC host's
 build; the check recomputes each name from its recipe and finds no
 encoding in it.
+
+Windows (Ryzen 5 2600), Release, 2026-10-25: a `vkr_depot clone` of the
+Bistro repository, which holds only the baked probe as a `.vkt`, opened in
+the editor. Its `prepare_scene` cooked the 514 textures of Bistro's build
+(503 through one 46 s mesh cook, 11 images) in 66 s, and the scene loaded
+with 5,983 entities. Before the change, the same clone failed to open with
+`[Errno 2]` for the first texture its materials named.
+`check_bakery_recook.py` deletes a build's cooked textures and checks that
+a read-only preparation refuses and a write one cooks them back byte for
+byte.
 
 ## Alternatives considered
 

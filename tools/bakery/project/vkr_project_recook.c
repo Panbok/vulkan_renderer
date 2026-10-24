@@ -49,6 +49,9 @@ typedef struct VkrRecook {
   VkrRecookBuild *builds;
   uint32_t build_count;
   VkrRecookFamily host;
+  /* Scene preparation: a texture present counts as current whatever its
+     family, and a read-only job only counts what it would cook. */
+  bool8_t missing_only;
   uint32_t textures;
   uint32_t current;
   uint32_t recooked;
@@ -337,6 +340,18 @@ vkr_internal void vkr_recook_note_missing_source(VkrRecook *recook,
   recook->skipped += textures;
 }
 
+/* Warns about the builds whose mesh textures did not cook for want of a
+   source snapshot (vkr_recook_note_missing_source). */
+vkr_internal void vkr_recook_warn_missing_source(const VkrRecook *recook) {
+  if (recook->missing_source->count) {
+    vkr_project_warn(recook->job,
+                     "%u textures of %u builds did not cook: their mesh "
+                     "source snapshot is missing; rebuild or reimport the "
+                     "model, or delete the records that name them",
+                     recook->skipped, recook->missing_source->count);
+  }
+}
+
 /* Packs the source images of `entries` (name -> image recipe) into their
    names on this host. */
 vkr_internal bool8_t vkr_recook_images(VkrRecook *recook, const char *textures,
@@ -462,7 +477,8 @@ vkr_internal bool8_t vkr_recook_build(VkrRecook *recook,
   VKR_PROJECT_TRY(vkr_recook_textures_folder(recook, build, textures));
   const VkrBakeryJson *recipes = NULL;
   VKR_PROJECT_TRY(vkr_project_read_recipes(job, textures, &recipes));
-  if (vkr_project_textures_unrecorded(job, textures, recipes)) {
+  if (!recook->missing_only &&
+      vkr_project_textures_unrecorded(job, textures, recipes)) {
     vkr_recook_note_rebuild(recook, build);
   }
   if (!recipes) {
@@ -488,9 +504,18 @@ vkr_internal bool8_t vkr_recook_build(VkrRecook *recook,
     if (vkr_project_lstat_is_link(texture)) {
       return vkr_project_fail(job, "Re-cook refuses links: %s", texture);
     }
-    const VkrRecookFamily family = vkr_recook_family(texture);
+    VkrRecookFamily family = VKR_RECOOK_FAMILY_MISSING;
+    if (!recook->missing_only) {
+      family = vkr_recook_family(texture);
+    } else if (vkr_bakery_is_file(texture)) {
+      family = recook->host;
+    }
     if (family == recook->host || family == VKR_RECOOK_FAMILY_OTHER) {
       recook->current += 1u;
+      continue;
+    }
+    if (recook->missing_only && job->read_only) {
+      recook->skipped += 1u;
       continue;
     }
     /* Another family's blocks are of no use here and go before the cook. */
@@ -599,13 +624,7 @@ VkrBakeryJson *vkr_project_recook_textures(VkrProjectJob *job) {
                      "rebuild them so other hosts can cook them",
                      recook.needs_rebuild->count);
   }
-  if (recook.missing_source->count) {
-    vkr_project_warn(job,
-                     "%u textures of %u builds did not cook: their mesh "
-                     "source snapshot is missing; rebuild or reimport the "
-                     "model, or delete the records that name them",
-                     recook.skipped, recook.missing_source->count);
-  }
+  vkr_recook_warn_missing_source(&recook);
   VkrBakeryJson *result = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, result, "version",
                       vkr_bakery_json_int(arena, VKR_PROJECT_VERSION));
@@ -627,4 +646,43 @@ VkrBakeryJson *vkr_project_recook_textures(VkrProjectJob *job) {
   vkr_bakery_json_set(arena, result, "missing_source", recook.missing_source);
   vkr_bakery_json_set(arena, result, "warnings", job->warnings);
   return result;
+}
+
+bool8_t vkr_project_recook_missing(VkrProjectJob *job,
+                                   const VkrBakeryJson *scene,
+                                   const char *owner) {
+  VkrRecook recook = {
+      .job = job,
+      .owner = owner,
+      .host = vkr_vkt_host_encoding() == VKR_VKT_ENCODING_BC
+                  ? VKR_RECOOK_FAMILY_BC
+                  : VKR_RECOOK_FAMILY_ASTC,
+      .missing_only = true_v,
+      .needs_rebuild = vkr_bakery_json_array(job->arena),
+      .missing_source = vkr_bakery_json_array(job->arena),
+  };
+  VKR_PROJECT_TRY(
+      vkr_recook_collect(&recook, vkr_bakery_json_get(scene, "assets")));
+  /* A mesh recook sets the job's texture settings; the preparation after
+     it cooks with the request's. */
+  const bool8_t preview = job->texture_preview;
+  const bool8_t deferred = job->texture_deferred;
+  const VkrVktEncoding encoding = job->texture_encoding;
+  bool8_t ok = true_v;
+  for (uint32_t i = 0u; ok && i < recook.build_count; ++i) {
+    ok = vkr_recook_build(&recook, &recook.builds[i]);
+  }
+  job->texture_preview = preview;
+  job->texture_deferred = deferred;
+  job->texture_encoding = encoding;
+  VKR_PROJECT_TRY(ok);
+  if (job->read_only && recook.skipped) {
+    return vkr_project_fail(job,
+                            "%u textures of this scene are not cooked for "
+                            "this computer; open it with write access to "
+                            "cook them from their recipes",
+                            recook.skipped);
+  }
+  vkr_recook_warn_missing_source(&recook);
+  return true_v;
 }

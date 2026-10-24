@@ -1131,8 +1131,11 @@ VkrBakeryJson *vkr_project_prepare(VkrProjectJob *job, const char *scene_path) {
     goto cleanup;
   }
   scene = vkr_project_read_managed_scene(job, path);
+  /* A copy whose cooked textures never arrived (`*.vkt` stays out of a
+     commit) cooks them here from their recipes, as a pull does. */
   if (!scene || !vkr_project_migrate_source_references(job, scene, path) ||
       !vkr_project_validate_semantics(job, scene) ||
+      !vkr_project_recook_missing(job, scene, directory) ||
       !vkr_project_texture_repair_bundles(job, scene, directory, &repairs)) {
     goto cleanup;
   }

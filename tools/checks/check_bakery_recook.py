@@ -280,6 +280,28 @@ def main():
                    if path.endswith('.vkt')), closures
         replace_bytes(build / 'textures' / names[1], textures[names[1]])
 
+        # A copy whose cooked textures never arrived, as a command-line
+        # clone leaves one, opens: preparation cooks them from the recipes.
+        # A read-only preparation cooks nothing and says how to open it.
+        for name in names:
+            (build / 'textures' / name).unlink()
+        prepare = {'operation': 'prepare_scene', 'scene_id': final['scene_id'],
+                   'scene_path': final['scene_path']}
+        # A read-only job needs the editor bundle a write one installs; an
+        # empty one stands in for it.
+        bundle_manifest = workspace / 'editor' / 'bundles' / '1' / 'manifest.json'
+        assert not bundle_manifest.exists()
+        bundle_manifest.parent.mkdir(parents=True, exist_ok=True)
+        bundle_manifest.write_text(json.dumps({'version': 1, 'files': []}))
+        refused = run(dict(prepare, read_only=True, runtime_directory=str(root / 'runtime')),
+                      'prepare-uncooked-read-only', code=1)
+        bundle_manifest.unlink()
+        assert f'{len(names)} textures of this scene are not cooked' in refused['error'], refused
+        assert not any((build / 'textures' / name).exists() for name in names)
+        run(prepare, 'prepare-uncooked')
+        for name in names:
+            assert (build / 'textures' / name).read_bytes() == textures[name], name
+
         # A build without recipes, as a cook before them left it, needs a
         # rebuild; the rebuild records recipes and retires the texture
         # records of the old revision.

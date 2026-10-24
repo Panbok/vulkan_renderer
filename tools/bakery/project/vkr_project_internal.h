@@ -635,6 +635,13 @@ bool8_t vkr_project_textures_unrecorded(VkrProjectJob *job,
  * or of another GPU family, under its existing name (vkr_project_recook.c).
  */
 VkrBakeryJson *vkr_project_recook_textures(VkrProjectJob *job);
+/** Scene preparation's part of it: cooks the textures the recipes of the
+ * scene's builds (below `owner`) name and this copy lacks, so a copy whose
+ * cooked textures never arrived opens. A present texture is not checked
+ * further. A read-only job cooks nothing and fails when one is missing. */
+bool8_t vkr_project_recook_missing(VkrProjectJob *job,
+                                   const VkrBakeryJson *scene,
+                                   const char *owner);
 /** `share_project`: copies the project with only its live files and their
  * asset closure into a new self-contained workspace at the request's
  * `destination` (vkr_project_share.c). */

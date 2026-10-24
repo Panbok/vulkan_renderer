@@ -1313,6 +1313,15 @@ vkr_internal bool8_t vkr_project_bundle_dependency(
   vkr_bakery_path_parent(directory, sizeof(directory), path);
   (void)vkr_bakery_path_join(joined, sizeof(joined), directory, raw);
   if (!vkr_project_resolve(joined, true_v, target, sizeof(target))) {
+    /* Scene preparation cooked every texture a recipe names. */
+    if (vkr_project_is_cooked_texture(joined)) {
+      return vkr_project_fail(
+          job,
+          "Cooked texture %s is missing and this computer cannot cook it: "
+          "its build has no recipe for it, or its model's source snapshot is "
+          "gone; rebuild the model",
+          joined);
+    }
     return vkr_project_fail(job, "[Errno 2] No such file or directory: '%s'",
                             joined);
   }
