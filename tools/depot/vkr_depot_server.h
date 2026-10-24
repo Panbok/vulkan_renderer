@@ -1,12 +1,14 @@
 #pragma once
 
 #include "vkr_depot_protocol.h"
+#include "vkr_depot_repository.h"
 #include "vkr_depot_store.h"
 
 /* The depot server: a store directory served over the depot service.
  *
  *   <store>/objects/       chunks and objects (vkr_depot_store.h)
  *   <store>/refs/<branch>  the 32-byte commit ID of each branch
+ *                          (vkr_depot_repository.h)
  *   <store>/locks          path locks: path, owner key, time
  *   <store>/access         keys and roles (read, write, admin)
  *   <store>/server.key     the server's X25519 secret key
@@ -128,7 +130,3 @@ bool8_t vkr_depot_server_key(const char *store_root, VkrNetKeyPair *out_keys);
 /* Gives `key` a role in the store's access list (NONE removes it). */
 bool8_t vkr_depot_access_set(const char *store_root, const uint8_t key[32],
                              VkrDepotRole role);
-
-/* Reads a branch; false when it does not exist. */
-bool8_t vkr_depot_ref_read(const char *store_root, const char *branch,
-                           VkrDepotId *out_commit);

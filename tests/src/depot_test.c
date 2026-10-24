@@ -1,4 +1,5 @@
 #include "depot_test.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
@@ -9,6 +10,7 @@
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
 #include "vkr_depot_remote.h"
+#include "vkr_depot_repository.h"
 #include "vkr_depot_server.h"
 #include "vkr_depot_service.h"
 #include "vkr_depot_sync.h"
@@ -312,6 +314,121 @@ static void test_depot_store(void) {
   free(bytes);
   assert(vkr_bakery_remove_tree(root) && vkr_bakery_remove_tree(other_root));
   printf("  test_depot_store PASSED\n");
+}
+
+typedef struct DepotRefRacer {
+  const char *store_root;
+  uint32_t moves;
+} DepotRefRacer;
+
+/* The branch holds a counter in its first 4 bytes: each move reads it and
+   swaps it for the next value, retrying when another thread moved first. */
+static void *depot_ref_race(void *argument) {
+  DepotRefRacer *racer = argument;
+  for (uint32_t i = 0u; i < racer->moves;) {
+    VkrDepotId current = {0};
+    (void)vkr_depot_ref_read(racer->store_root, "main", &current);
+    VkrDepotId next = current;
+    const uint32_t value = vkr_load_le_u32(current.bytes);
+    vkr_store_le_u32(next.bytes, value + 1u);
+    const VkrDepotRefSwap swap =
+        vkr_depot_ref_swap(racer->store_root, "main", &current, &next, NULL);
+    assert(swap == VKR_DEPOT_REF_SWAP_OK || swap == VKR_DEPOT_REF_SWAP_MOVED);
+    if (swap == VKR_DEPOT_REF_SWAP_OK) {
+      ++i;
+    }
+  }
+  return NULL;
+}
+
+typedef struct DepotBranchNames {
+  char names[4][VKR_DEPOT_BRANCH_NAME];
+  uint32_t count;
+} DepotBranchNames;
+
+static bool8_t depot_test_branch_visit(void *context, const char *branch) {
+  DepotBranchNames *names = context;
+  assert(names->count < 4u);
+  snprintf(names->names[names->count++], VKR_DEPOT_BRANCH_NAME, "%s", branch);
+  return true_v;
+}
+
+/* Fails when a branch moves from a commit other than the one the caller
+   expected, when concurrent movers lose an update (the compare and the
+   write are not one step under the store's lock), when two spellings of
+   one store take different locks, or when listing returns folders or
+   invalid names as branches. */
+static void test_depot_repository_refs(void) {
+  printf("  Running test_depot_repository_refs...\n");
+  char root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("repository", root, sizeof(root));
+  VkrDepotId zero = {0};
+  VkrDepotId first = {0};
+  VkrDepotId second = {0};
+  VkrDepotId current;
+  first.bytes[31] = 1u;
+  second.bytes[31] = 2u;
+
+  assert(!vkr_depot_ref_read(root, "main", &current));
+  assert(vkr_depot_ref_swap(root, "main", &first, &second, &current) ==
+         VKR_DEPOT_REF_SWAP_MOVED);
+  assert(vkr_depot_id_zero(&current));
+  assert(vkr_depot_ref_swap(root, "main", &zero, &first, &current) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  assert(vkr_depot_id_equal(&current, &first));
+  assert(vkr_depot_ref_swap(root, "main", &zero, &second, &current) ==
+         VKR_DEPOT_REF_SWAP_MOVED);
+  assert(vkr_depot_id_equal(&current, &first));
+  assert(vkr_depot_ref_swap(root, "main", &first, &second, &current) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  assert(vkr_depot_ref_read(root, "main", &current) &&
+         vkr_depot_id_equal(&current, &second));
+  assert(vkr_depot_ref_swap(root, "../main", &zero, &first, NULL) ==
+         VKR_DEPOT_REF_SWAP_FAILED);
+
+  /* Four threads move one branch 50 times each, half of them through a
+     second spelling of the store's path: every move lands. */
+  char spelled[VKR_DEPOT_PATH_CAPACITY];
+  snprintf(spelled, sizeof(spelled), "%s/", root);
+  assert(vkr_depot_ref_swap(root, "main", &second, &zero, NULL) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(64), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  DepotRefRacer racers[4] = {{.store_root = root, .moves = 50u},
+                             {.store_root = spelled, .moves = 50u},
+                             {.store_root = root, .moves = 50u},
+                             {.store_root = spelled, .moves = 50u}};
+  VkrThread threads[4];
+  for (uint32_t i = 0u; i < 4u; ++i) {
+    assert(
+        vkr_thread_create(&allocator, &threads[i], depot_ref_race, &racers[i]));
+  }
+  for (uint32_t i = 0u; i < 4u; ++i) {
+    assert(vkr_thread_join(threads[i]));
+    (void)vkr_thread_destroy(&allocator, &threads[i]);
+  }
+  assert(vkr_depot_ref_read(root, "main", &current));
+  assert(vkr_load_le_u32(current.bytes) == 200u);
+  vkr_dmemory_allocator_destroy(&allocator);
+
+  /* Folders and invalid names under refs/ are not branches. */
+  assert(vkr_depot_ref_swap(root, "feature-a", &zero, &first, NULL) ==
+         VKR_DEPOT_REF_SWAP_OK);
+  char folder[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(folder, sizeof(folder), root, "refs/nested"));
+  assert(vkr_bakery_make_directories(folder));
+  depot_test_write(root, "refs/bad name", first.bytes, VKR_DEPOT_ID_SIZE);
+  DepotBranchNames names = {0};
+  assert(vkr_depot_ref_list(root, depot_test_branch_visit, &names));
+  assert(names.count == 2u);
+  const bool8_t main_first = strcmp(names.names[0], "main") == 0;
+  assert(strcmp(names.names[main_first ? 1u : 0u], "feature-a") == 0);
+  assert(strcmp(names.names[main_first ? 0u : 1u], "main") == 0);
+
+  assert(vkr_bakery_remove_tree(root));
+  printf("  test_depot_repository_refs PASSED\n");
 }
 
 /* Fails when content-defined chunks leave their size bounds, or when an edit
@@ -2702,6 +2819,7 @@ bool32_t run_depot_tests(void) {
   assert(vkr_net_crypto_init());
   test_depot_objects();
   test_depot_store();
+  test_depot_repository_refs();
   test_depot_chunking();
   test_depot_workspace();
   test_depot_ignore();

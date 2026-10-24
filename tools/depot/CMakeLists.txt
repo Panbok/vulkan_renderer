@@ -5,6 +5,7 @@
 add_library(vkr_depot_lib STATIC
     vkr_depot_object.c
     vkr_depot_store.c
+    vkr_depot_repository.c
     vkr_depot_workspace.c
     vkr_depot_protocol.c
     vkr_depot_server.c

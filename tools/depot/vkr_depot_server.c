@@ -3,6 +3,7 @@
 #include "core/vkr_byte_io.h"
 #include "core/vkr_threads.h"
 #include "vkr_bakery_os.h"
+#include "vkr_depot_repository.h"
 #include "vkr_depot_workspace.h"
 
 #include <stdio.h>
@@ -178,41 +179,6 @@ static uint64_t server_unix_us(void) {
 static bool8_t server_file(const char *root, const char *name, char *out,
                            uint32_t capacity) {
   return vkr_bakery_path_join(out, capacity, root, name);
-}
-
-bool8_t vkr_depot_ref_read(const char *store_root, const char *branch,
-                           VkrDepotId *out_commit) {
-  char path[VKR_DEPOT_PATH_CAPACITY];
-  char relative[VKR_DEPOT_BRANCH_NAME + 8u];
-  if (!vkr_depot_branch_valid(branch)) {
-    return false_v;
-  }
-  snprintf(relative, sizeof(relative), "refs/%s", branch);
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  if (!server_file(store_root, relative, path, sizeof(path)) ||
-      !vkr_bakery_is_file(path) ||
-      !vkr_bakery_read_file(path, 64u, &bytes, &size)) {
-    return false_v;
-  }
-  const bool8_t ok = size == VKR_DEPOT_ID_SIZE;
-  if (ok) {
-    memcpy(out_commit->bytes, bytes, VKR_DEPOT_ID_SIZE);
-  }
-  free(bytes);
-  return ok;
-}
-
-static bool8_t server_ref_write(const char *store_root, const char *branch,
-                                const VkrDepotId *commit) {
-  char path[VKR_DEPOT_PATH_CAPACITY];
-  char directory[VKR_DEPOT_PATH_CAPACITY];
-  char relative[VKR_DEPOT_BRANCH_NAME + 8u];
-  snprintf(relative, sizeof(relative), "refs/%s", branch);
-  return server_file(store_root, "refs", directory, sizeof(directory)) &&
-         vkr_bakery_make_directories(directory) &&
-         server_file(store_root, relative, path, sizeof(path)) &&
-         vkr_bakery_write_file_atomic(path, commit->bytes, VKR_DEPOT_ID_SIZE);
 }
 
 bool8_t vkr_depot_server_key(const char *store_root, VkrNetKeyPair *out_keys) {
@@ -1186,12 +1152,8 @@ VkrDepotServerStats vkr_depot_server_stats(const VkrDepotServer *server) {
 // Requests
 // =============================================================================
 
-static bool8_t server_ref_name_visit(void *context, const char *name,
-                                     bool8_t is_directory) {
+static bool8_t server_ref_name_visit(void *context, const char *name) {
   RefNames *list = context;
-  if (is_directory || !vkr_depot_branch_valid(name)) {
-    return true_v;
-  }
   if (list->count == VKR_DEPOT_REFS_MAX) {
     return false_v;
   }
@@ -1204,14 +1166,10 @@ static void server_on_refs(VkrDepotServer *server, ServerPeer *peer,
   VkrDepotRefsWire *reply = &server->reply.refs;
   MemZero(reply, sizeof(*reply));
   reply->request = request;
-  char refs[VKR_DEPOT_PATH_CAPACITY];
   RefNames *names = &server->ref_names;
   names->count = 0u;
-  if (server_file(server->store.root, "refs", refs, sizeof(refs)) &&
-      vkr_bakery_is_directory(refs)) {
-    /* More than VKR_DEPOT_REFS_MAX branches: the first ones answer. */
-    (void)vkr_bakery_list_directory(refs, server_ref_name_visit, names);
-  }
+  /* More than VKR_DEPOT_REFS_MAX branches: the first ones answer. */
+  (void)vkr_depot_ref_list(server->store.root, server_ref_name_visit, names);
   for (uint32_t i = 0u; i < names->count; ++i) {
     VkrDepotId commit;
     if (!vkr_depot_ref_read(server->store.root, names->names[i], &commit)) {
@@ -1417,9 +1375,16 @@ static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
           }
         }
         if (reply->status == VKR_DEPOT_REF_OK) {
-          if (server_ref_write(server->store.root, update->name, &commit_id)) {
-            memcpy(reply->current, commit_id.bytes, VKR_DEPOT_ID_SIZE);
-          } else {
+          /* A working copy that shares the store may have moved the
+             branch since it was read: the swap checks again under the
+             store's lock. */
+          VkrDepotId after;
+          const VkrDepotRefSwap swap = vkr_depot_ref_swap(
+              server->store.root, update->name, &expected, &commit_id, &after);
+          memcpy(reply->current, after.bytes, VKR_DEPOT_ID_SIZE);
+          if (swap == VKR_DEPOT_REF_SWAP_MOVED) {
+            reply->status = VKR_DEPOT_REF_CONFLICT;
+          } else if (swap != VKR_DEPOT_REF_SWAP_OK) {
             reply->status = VKR_DEPOT_REF_DENIED;
           }
         }
