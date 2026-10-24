@@ -161,7 +161,9 @@ git repository or a build folder.
   rules exist on the Windows desktop today). The firewall rule binds to the
   installed path and covers UDP 7320 and the 7319 discovery port. The
   installer creates it for the active network profile (Public on the
-  Windows desktop), or asks.
+  Windows desktop), or asks. The task needs no administrator rights, but
+  the firewall rule does: `service install` asks once through UAC, and
+  when that is declined it prints the exact `netsh` command.
 - It serves every repository that the user marks "Allow others to fetch and
   push", each with its own access list, on one UDP port. Discovery answers
   with the machine name and the list of served repositories.
@@ -273,13 +275,22 @@ store.
   (a list of `{path, id, reason}`), or failed. When the driver is missing
   or fails, the whole unit is a conflict, and Mine or Theirs settles it as
   one unit.
-- The depot calls a function the caller supplies. `vkr_depot` and the
-  editor run Bakery: `vkr_bakery project --request` with the operation
-  `merge_unit`, and the fields `driver`, `anchor`, `base`, `mine`,
-  `theirs`, `output` and per-side `paths`. Bakery writes the merged files
-  into `output` and the result as JSON:
-  `{"merged":true,"write":[…],"delete":[…]}` or
+- `tools/depot` links only `vkr_bakery_os` and runs no Bakery job in its
+  process. So the depot calls a function that the caller supplies, and
+  `vkr_depot` and the editor supply one that runs
+  `vkr_bakery project --request <file> --result <file>`. The `scene`
+  driver maps to the operation `merge_scene_unit` and `project` to
+  `merge_project_document`. The request and result use the existing
+  project-job JSON, with the fields `anchor`, `base`, `mine`, `theirs`,
+  `output` and per-side `paths`. Bakery writes the merged files into
+  `output`. Its result is `{"merged":true,"write":[…],"delete":[…]}` or
   `{"merged":false,"conflicts":[…]}`.
+- After a pull, the depot runs the operation `pull_report` for the scenes
+  the pull changed. It runs `recook_textures` and then `prepare_scene`, and
+  returns a result per scene.
+- The depot finds `vkr_bakery` next to its own executable, or through
+  `--bakery` or `VKR_BAKERY`. The Mac session owns the depot side and the
+  Windows session owns the three operations.
 
 ### Service
 
@@ -365,6 +376,7 @@ Mac M1 and the Windows desktop.
     Windows service.
   - A rebuild of `vkr_depot` while the service runs leaves the service and
     its firewall rule untouched.
+  - A fresh `service install` on a Windows PC that has no rule yet.
   - An editor round trip (commit, push, then pull on the other machine)
     reloads the open scene, and `prepare_scene` passes on every scene.
   - The panel shows ahead and behind counts that match `vkr_depot status`.
