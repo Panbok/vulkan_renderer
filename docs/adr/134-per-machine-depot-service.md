@@ -223,6 +223,11 @@ alike.
   service logged "sync mac-m1 with windows works again", `main`,
   `main.cooked.astc` and `main.cooked.bc` equal windows-d's, and the
   launchd mirror and serve jobs were retired.
+- Mac M1, the reinstall of another build then logged "no answer" again: the
+  ad hoc signature's requirement was its code hash. Signed with the
+  identifier requirement and allowed once more, the service kept syncing
+  after installing the Debug `vkr_depot` and then the Release one, two
+  different binaries.
 
 ## Revisit when
 
