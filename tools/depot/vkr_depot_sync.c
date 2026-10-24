@@ -733,13 +733,16 @@ void vkr_depot_cooked_branch(const char *branch, char *out, uint32_t capacity) {
   snprintf(out, capacity, "%s.cooked.%s", branch, family);
 }
 
-/* Stores a commit of `tree` with `parent` (none when zero) by this user's
-   identity. */
-static bool8_t depot_make_commit(const VkrDepotStore *store,
-                                 const VkrDepotId *tree,
-                                 const VkrDepotId *parent, const char *message,
-                                 VkrDepotId *out_commit, char *error,
-                                 uint32_t capacity) {
+bool8_t vkr_depot_make_commit(const VkrDepotStore *store,
+                              const VkrDepotId *tree, const VkrDepotId *parents,
+                              uint32_t parent_count, const char *message,
+                              VkrDepotId *out_commit, char *error,
+                              uint32_t capacity) {
+  if (parent_count > VKR_DEPOT_PARENTS_MAX) {
+    snprintf(error, capacity, "a commit has at most %u parents",
+             VKR_DEPOT_PARENTS_MAX);
+    return false_v;
+  }
   VkrNetKeyPair identity;
   if (!vkr_depot_identity(&identity, true_v)) {
     snprintf(error, capacity, "no depot identity key");
@@ -752,9 +755,10 @@ static bool8_t depot_make_commit(const VkrDepotStore *store,
                            .message_size = (uint32_t)strlen(message)};
   memcpy(commit.author, identity.public_key, 32u);
   vkr_net_random(identity.secret_key, sizeof(identity.secret_key));
-  if (parent && !vkr_depot_id_zero(parent)) {
-    commit.parents[0] = *parent;
-    commit.parent_count = 1u;
+  for (uint32_t i = 0u; i < parent_count; ++i) {
+    if (!vkr_depot_id_zero(&parents[i])) {
+      commit.parents[commit.parent_count++] = parents[i];
+    }
   }
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
@@ -769,6 +773,17 @@ static bool8_t depot_make_commit(const VkrDepotStore *store,
     snprintf(error, capacity, "the commit could not be stored");
   }
   return stored;
+}
+
+/* Stores a commit of `tree` with `parent` (none when zero) by this user's
+   identity. */
+static bool8_t depot_make_commit(const VkrDepotStore *store,
+                                 const VkrDepotId *tree,
+                                 const VkrDepotId *parent, const char *message,
+                                 VkrDepotId *out_commit, char *error,
+                                 uint32_t capacity) {
+  return vkr_depot_make_commit(store, tree, parent, parent ? 1u : 0u, message,
+                               out_commit, error, capacity);
 }
 
 bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
@@ -1573,6 +1588,48 @@ bool8_t vkr_depot_ahead_behind(const VkrDepotStore *store,
   depot_set_free(&mine);
   depot_set_free(&theirs);
   return true_v;
+}
+
+bool8_t vkr_depot_merge_base(const VkrDepotStore *store, const VkrDepotId *a,
+                             const VkrDepotId *b, VkrDepotId *out_base) {
+  MemZero(out_base, sizeof(*out_base));
+  DepotCommitSet mine;
+  if (!depot_ancestors(store, NULL, a, NULL, &mine)) {
+    return false_v;
+  }
+  /* Breadth first from `b`: the first commit `a` also reaches is the
+     nearest common ancestor on `b`'s side. */
+  VkrDepotId *queue = malloc(VKR_DEPOT_HISTORY_MAX * sizeof(*queue));
+  DepotCommitSet seen = {
+      .ids = malloc(VKR_DEPOT_HISTORY_MAX * sizeof(VkrDepotId))};
+  uint32_t head = 0u;
+  uint32_t tail = 0u;
+  bool8_t ok = queue && seen.ids;
+  if (ok && !vkr_depot_id_zero(b)) {
+    queue[tail++] = *b;
+  }
+  while (ok && head < tail) {
+    const VkrDepotId id = queue[head++];
+    if (depot_set_has(&mine, &id)) {
+      *out_base = id;
+      break;
+    }
+    if (depot_set_has(&seen, &id) || seen.count == VKR_DEPOT_HISTORY_MAX) {
+      continue;
+    }
+    seen.ids[seen.count++] = id;
+    VkrDepotId parents[VKR_DEPOT_PARENTS_MAX];
+    uint32_t parent_count = 0u;
+    (void)depot_commit_parents(store, &id, parents, &parent_count);
+    for (uint32_t i = 0u; i < parent_count && tail < VKR_DEPOT_HISTORY_MAX;
+         ++i) {
+      queue[tail++] = parents[i];
+    }
+  }
+  free(queue);
+  depot_set_free(&seen);
+  depot_set_free(&mine);
+  return ok;
 }
 
 // =============================================================================

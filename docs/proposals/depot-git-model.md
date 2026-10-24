@@ -268,7 +268,9 @@ store.
   `project`). A line that names any other driver is ignored with a
   warning. A pulled file can never make the depot run a command.
 - A merge first decides each path against the merge base. A unit goes to
-  its driver when one of its paths changed on both sides. The driver gets
+  its driver when each side changed at least one of its paths, even
+  different ones: two jobs add different inventories and both move
+  `scene.json`. The driver gets
   the unit's member files of each side, written to `base/`, `mine/` and
   `theirs/` under a temporary folder, and returns one of three results:
   merged (files to write and delete under the anchor's folder), conflicts

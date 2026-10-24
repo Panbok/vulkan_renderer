@@ -294,8 +294,11 @@ its close frame is sent rather than 200 ms.
   (snapshot and move the branch in the working copy's store; `--push` also
   pushes, or leaves the branch as it was when the push is refused), `push`,
   `fetch`, `pull` (fetches and fast-forwards, keeps local changes, refuses
-  conflicts unless `--take-theirs` or `--keep-mine`), `remote`, `branch`,
-  `switch`, `refs`, `log`, `lock`, `unlock`, `locks`. The store holds the
+  conflicts unless `--take-theirs` or `--keep-mine`, and merges when both
+  sides moved the branch), `merge` (a branch or a fetched remote branch, per
+  file, with the units of `.vkrdepotmerge` through `vkr_bakery`;
+  [vkr_depot_merge.h](../../tools/depot/vkr_depot_merge.h)), `remote`,
+  `branch`, `switch`, `refs`, `log`, `lock`, `unlock`, `locks`. The store holds the
   branches, remotes and tracked remote branches
   ([vkr_depot_repository.h](../../tools/depot/vkr_depot_repository.h)), and
   a working copy of the older form gets them on open; the model and its

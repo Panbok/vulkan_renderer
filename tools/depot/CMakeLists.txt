@@ -11,6 +11,7 @@ add_library(vkr_depot_lib STATIC
     vkr_depot_server.c
     vkr_depot_client.c
     vkr_depot_sync.c
+    vkr_depot_merge.c
     vkr_depot_discovery.c
     vkr_depot_service.c
     vkr_depot_remote.c)

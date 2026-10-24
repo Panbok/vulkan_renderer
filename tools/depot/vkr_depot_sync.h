@@ -362,6 +362,19 @@ bool8_t vkr_depot_ahead_behind(const VkrDepotStore *store,
                                const VkrDepotId *local, const VkrDepotId *other,
                                uint32_t *out_ahead, uint32_t *out_behind);
 
+/* The nearest commit both `a` and `b` reach through parents; zero when they
+   share none in the store. */
+bool8_t vkr_depot_merge_base(const VkrDepotStore *store, const VkrDepotId *a,
+                             const VkrDepotId *b, VkrDepotId *out_base);
+
+/* Stores a commit of `tree` with up to VKR_DEPOT_PARENTS_MAX `parents`
+   (zero ones skipped), by this user's identity. */
+bool8_t vkr_depot_make_commit(const VkrDepotStore *store,
+                              const VkrDepotId *tree, const VkrDepotId *parents,
+                              uint32_t parent_count, const char *message,
+                              VkrDepotId *out_commit, char *error,
+                              uint32_t capacity);
+
 typedef struct VkrDepotCommitResult {
   VkrDepotId commit;
   uint32_t files;

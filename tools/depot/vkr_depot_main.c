@@ -14,6 +14,9 @@
  *   vkr_depot commit [DIR] -m MESSAGE [--push] [--remote NAME]
  *   vkr_depot push|fetch [DIR] [--remote NAME] [--branch NAME]
  *   vkr_depot pull [DIR] [--remote NAME] [--take-theirs|--keep-mine]
+ *                  [--bakery PATH]
+ *   vkr_depot merge BRANCH|REMOTE/BRANCH [--dir DIR] [--take-theirs|
+ *                   --keep-mine] [--bakery PATH]
  *   vkr_depot remote [list|add NAME ADDR KEY|remove NAME] [--dir DIR]
  *   vkr_depot branch [NAME [--delete [--force]]] [--dir DIR]
  *   vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]
@@ -27,7 +30,10 @@
  * `commit` snapshots the directory and moves the branch there, with no
  * network; `push` uploads the commits a remote lacks and moves its branch
  * when that is a fast-forward, `fetch` brings the remotes' branches in and
- * `pull` fetches and fast-forwards the working copy's branch. `commit
+ * `pull` fetches and fast-forwards the working copy's branch, or merges when
+ * both sides moved it (vkr_depot_merge.h; units of `.vkrdepotmerge` go to
+ * `vkr_bakery`, found beside this program, through `$VKR_BAKERY` or
+ * `--bakery`). `commit
  * --push` commits and pushes, or, when the push is refused, leaves the
  * branch and the working copy as they were, as `commit` did before
  * repositories. A remote defaults to `origin`, the server a clone came from.
@@ -43,6 +49,7 @@
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
 #include "vkr_depot_discovery.h"
+#include "vkr_depot_merge.h"
 #include "vkr_depot_remote.h"
 #include "vkr_depot_repository.h"
 #include "vkr_depot_server.h"
@@ -595,22 +602,72 @@ static int depot_stream(const char *address, const char *key_hex,
   return fetched ? 0 : 1;
 }
 
+static void depot_print_conflicts(const VkrDepotChangeList *conflicts,
+                                  VkrDepotConflictPolicy policy) {
+  static const char *const sides[] = {"conflict", "took theirs", "kept mine"};
+  for (uint32_t i = 0u; i < conflicts->count; ++i) {
+    printf("%s %s\n", sides[policy], conflicts->entries[i].path);
+  }
+}
+
+/* Prints a merge's outcome; 0 when it merged, fast-forwarded or had
+   nothing to do. */
+static int depot_print_merge(const VkrDepotMergeResult *merged,
+                             VkrDepotConflictPolicy policy, const char *what) {
+  depot_print_conflicts(&merged->conflicts, policy);
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&merged->commit, hex);
+  if (merged->status == VKR_DEPOT_MERGE_CONFLICTS) {
+    fprintf(stderr,
+            "%u conflicts with %s; nothing changed. Merge again with "
+            "--take-theirs or --keep-mine\n",
+            merged->conflicts.count, what);
+    return 1;
+  }
+  if (merged->status == VKR_DEPOT_MERGE_UP_TO_DATE) {
+    printf("already holds %s\n", what);
+  } else if (merged->status == VKR_DEPOT_MERGE_FAST_FORWARD) {
+    printf("fast-forwarded to %s at %.12s\n", what, hex);
+  } else {
+    printf("merged %s at %.12s: %u files taken, %u units merged\n", what, hex,
+           merged->taken, merged->units_merged);
+  }
+  return 0;
+}
+
+static VkrDepotMergeConfig depot_merge_config(const char *bakery_override,
+                                              char *bakery, uint32_t capacity,
+                                              VkrDepotConflictPolicy policy) {
+  const bool8_t found =
+      vkr_depot_bakery_path(bakery_override, bakery, capacity);
+  return (VkrDepotMergeConfig){.driver =
+                                   found ? vkr_depot_merge_bakery_driver : NULL,
+                               .driver_context = bakery,
+                               .policy = policy};
+}
+
 static int depot_pull(const char *directory, const char *remote,
-                      VkrDepotConflictPolicy policy) {
+                      VkrDepotConflictPolicy policy,
+                      const char *bakery_override) {
   VkrDepotWorkspace workspace;
   if (depot_open(&workspace, directory)) {
     return 1;
   }
+  char bakery[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const VkrDepotMergeConfig config =
+      depot_merge_config(bakery_override, bakery, sizeof(bakery), policy);
   VkrDepotPullResult pulled;
+  VkrDepotMergeResult merged;
   char error[256];
-  const bool8_t ok = vkr_depot_pull(&depot_allocator, &workspace, remote,
-                                    policy, &pulled, error, sizeof(error));
-  static const char *const sides[] = {"conflict", "took theirs", "kept mine"};
-  for (uint32_t i = 0u; i < pulled.conflicts.count; ++i) {
-    printf("%s %s\n", sides[policy], pulled.conflicts.entries[i].path);
-  }
+  const bool8_t ok =
+      vkr_depot_pull_merge(&depot_allocator, &workspace, remote, &config,
+                           &pulled, &merged, error, sizeof(error));
+  depot_print_conflicts(&pulled.conflicts, policy);
   char hex[VKR_DEPOT_ID_HEX];
   vkr_depot_id_hex(&pulled.commit, hex);
+  char what[VKR_DEPOT_REMOTE_NAME + VKR_DEPOT_BRANCH_NAME + 2u];
+  snprintf(what, sizeof(what), "%s/%s", remote ? remote : VKR_DEPOT_ORIGIN,
+           workspace.branch);
   int result = 1;
   if (!ok) {
     fprintf(stderr, "%s\n", error);
@@ -625,17 +682,56 @@ static int depot_pull(const char *directory, const char *remote,
            pulled.kept);
     result = 0;
   } else if (pulled.status == VKR_DEPOT_PULL_AHEAD) {
-    printf("%s is ahead of %s; push it\n", workspace.branch,
-           remote ? remote : VKR_DEPOT_ORIGIN);
+    printf("%s is ahead of %s; push it\n", workspace.branch, what);
     result = 0;
   } else {
-    fprintf(stderr,
-            "%s and %s/%s both have new commits (theirs at %.12s); they wait "
-            "for a merge\n",
-            workspace.branch, remote ? remote : VKR_DEPOT_ORIGIN,
-            workspace.branch, hex);
+    result = depot_print_merge(&merged, policy, what);
   }
   vkr_depot_change_list_free(&pulled.conflicts);
+  vkr_depot_change_list_free(&merged.conflicts);
+  vkr_depot_workspace_close(&workspace);
+  return result;
+}
+
+/* Merges a local branch, or `<remote>/<branch>` as last fetched. */
+static int depot_merge_command(const char *directory, const char *name,
+                               VkrDepotConflictPolicy policy,
+                               const char *bakery_override) {
+  VkrDepotWorkspace workspace;
+  if (depot_open(&workspace, directory)) {
+    return 1;
+  }
+  VkrDepotId theirs;
+  const char *slash = strchr(name, '/');
+  char remote[VKR_DEPOT_REMOTE_NAME] = {0};
+  bool8_t found = false_v;
+  if (slash && (size_t)(slash - name) < sizeof(remote)) {
+    MemCopy(remote, name, (size_t)(slash - name));
+    found = vkr_depot_tracking_read(workspace.store.root, remote, slash + 1,
+                                    &theirs);
+  } else {
+    found = vkr_depot_ref_read(workspace.store.root, name, &theirs);
+  }
+  int result = 1;
+  if (!found) {
+    fprintf(stderr, "no branch %s; fetch it first\n", name);
+  } else {
+    char bakery[VKR_DEPOT_PATH_CAPACITY] = {0};
+    VkrDepotMergeConfig config =
+        depot_merge_config(bakery_override, bakery, sizeof(bakery), policy);
+    char message[VKR_DEPOT_REMOTE_NAME + VKR_DEPOT_BRANCH_NAME + 16u];
+    snprintf(message, sizeof(message), "Merge %s", name);
+    config.message = message;
+    VkrDepotMergeResult merged;
+    char error[256];
+    if (vkr_depot_merge(&workspace, &theirs, &config, &merged, error,
+                        sizeof(error))) {
+      result = depot_print_merge(&merged, policy, name);
+    } else {
+      fprintf(stderr, "%s\n", error);
+    }
+    vkr_depot_change_list_free(&merged.conflicts);
+  }
   vkr_depot_workspace_close(&workspace);
   return result;
 }
@@ -898,6 +994,9 @@ static void depot_usage(void) {
       "  vkr_depot commit [DIR] -m MESSAGE [--push] [--remote NAME]\n"
       "  vkr_depot push|fetch [DIR] [--remote NAME] [--branch NAME]\n"
       "  vkr_depot pull [DIR] [--remote NAME] [--take-theirs|--keep-mine]\n"
+      "                 [--bakery PATH]\n"
+      "  vkr_depot merge BRANCH|REMOTE/BRANCH [--dir DIR] [--take-theirs|\n"
+      "                  --keep-mine] [--bakery PATH]\n"
       "  vkr_depot remote [list|add NAME ADDR KEY|remove NAME] [--dir DIR]\n"
       "  vkr_depot branch [NAME [--delete [--force]]] [--dir DIR]\n"
       "  vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]\n"
@@ -934,6 +1033,7 @@ static int depot_main(int argc, char **argv) {
   bool8_t push = false_v;
   bool8_t remove = false_v;
   const char *remote = NULL;
+  const char *bakery = NULL;
   VkrDepotConflictPolicy policy = VKR_DEPOT_CONFLICT_FAIL;
   for (int i = 2; i < argc; ++i) {
     const char *arg = argv[i];
@@ -950,6 +1050,9 @@ static int depot_main(int argc, char **argv) {
       remove = true_v;
     } else if (value && strcmp(arg, "--remote") == 0) {
       remote = value;
+      ++i;
+    } else if (value && strcmp(arg, "--bakery") == 0) {
+      bakery = value;
       ++i;
     } else if (strcmp(arg, "--take-theirs") == 0) {
       policy = VKR_DEPOT_CONFLICT_TAKE_THEIRS;
@@ -1042,7 +1145,10 @@ static int depot_main(int argc, char **argv) {
     return depot_fetch_command(first, remote, branch_given ? branch : NULL);
   }
   if (strcmp(command, "pull") == 0) {
-    return depot_pull(first, remote, policy);
+    return depot_pull(first, remote, policy, bakery);
+  }
+  if (strcmp(command, "merge") == 0 && positional[0]) {
+    return depot_merge_command(dir ? dir : ".", positional[0], policy, bakery);
   }
   if (strcmp(command, "remote") == 0) {
     return depot_remote_command(dir ? dir : ".", positional[0], positional[1],

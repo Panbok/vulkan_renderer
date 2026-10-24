@@ -9,6 +9,7 @@
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
+#include "vkr_depot_merge.h"
 #include "vkr_depot_remote.h"
 #include "vkr_depot_repository.h"
 #include "vkr_depot_server.h"
@@ -1856,7 +1857,24 @@ static void test_depot_repositories(void) {
   assert(vkr_depot_ahead_behind(&bob.store, &bob_main, &bob_tracked, &ahead,
                                 &behind));
   assert(ahead == 1u && behind == 1u);
-  assert(depot_repo_pull(&world, &alice) == VKR_DEPOT_PULL_UP_TO_DATE);
+
+  /* Pull merges the divergence, and the merge pushes as a fast-forward
+     with both histories. */
+  const VkrDepotMergeConfig merge_config = {.policy = VKR_DEPOT_CONFLICT_FAIL};
+  VkrDepotPullResult pulled;
+  VkrDepotMergeResult merged;
+  assert(vkr_depot_pull_merge(&allocator, &bob, NULL, &merge_config, &pulled,
+                              &merged, error, sizeof(error)));
+  assert(pulled.status == VKR_DEPOT_PULL_DIVERGED &&
+         merged.status == VKR_DEPOT_MERGE_MERGED);
+  vkr_depot_change_list_free(&pulled.conflicts);
+  vkr_depot_change_list_free(&merged.conflicts);
+  assert(depot_repo_file_is(&bob, "c.txt", "bob"));
+  assert(depot_repo_file_is(&bob, "d.txt", "alice"));
+  assert(depot_repo_push(&world, &bob, &pushed) == VKR_DEPOT_PUSH_OK);
+  assert(pushed == 2u);
+  assert(depot_repo_pull(&world, &alice) == VKR_DEPOT_PULL_FAST_FORWARD);
+  assert(depot_repo_file_is(&alice, "c.txt", "bob"));
 
   /* A branch carries its own files, and only --force deletes it unmerged. */
   assert(vkr_depot_branch_create(&alice, "feature", error, sizeof(error)));
@@ -1924,6 +1942,230 @@ static void test_depot_repositories(void) {
   }
   assert(vkr_bakery_remove_tree(server_store));
   printf("  test_depot_repositories PASSED\n");
+}
+
+typedef struct DepotTestDriver {
+  uint32_t calls;
+  char driver[VKR_DEPOT_MERGE_DRIVER_NAME];
+  bool8_t saw_both_inventories;
+} DepotTestDriver;
+
+static bool8_t depot_test_side_has(const char *root, const char *relative) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(path, sizeof(path), root, relative));
+  return vkr_bakery_is_file(path);
+}
+
+/* Writes a scene.json naming both sides' anchors, as a scene driver would
+   merge two jobs' inventories. */
+static VkrDepotMergeUnitStatus
+depot_test_driver(void *context, const VkrDepotMergeUnitRequest *request,
+                  VkrDepotChangeList *out_changes,
+                  VkrDepotChangeList *out_conflicts, char *detail,
+                  uint32_t capacity) {
+  (void)out_conflicts;
+  (void)detail;
+  (void)capacity;
+  DepotTestDriver *driver = context;
+  driver->calls++;
+  snprintf(driver->driver, sizeof(driver->driver), "%s", request->driver);
+  driver->saw_both_inventories =
+      depot_test_side_has(request->mine_root, "inventory/a.json") &&
+      depot_test_side_has(request->theirs_root, "inventory/b.json") &&
+      !depot_test_side_has(request->base_root, "inventory/a.json");
+  depot_test_write(request->output_root, "scene.json", "a+b", 3u);
+  VkrDepotChangeEntry *entry = malloc(sizeof(*entry));
+  char *path = malloc(sizeof("scene.json"));
+  assert(entry && path);
+  MemCopy(path, "scene.json", sizeof("scene.json"));
+  *entry =
+      (VkrDepotChangeEntry){.path = path, .change = VKR_DEPOT_CHANGE_MODIFIED};
+  out_changes->entries = entry;
+  out_changes->count = 1u;
+  out_changes->capacity = 1u;
+  return VKR_DEPOT_MERGE_UNIT_MERGED;
+}
+
+static VkrDepotMergeResult depot_test_merge(VkrDepotWorkspace *workspace,
+                                            const char *branch,
+                                            VkrDepotConflictPolicy policy,
+                                            DepotTestDriver *driver) {
+  VkrDepotId theirs;
+  assert(vkr_depot_ref_read(workspace->store.root, branch, &theirs));
+  const VkrDepotMergeConfig config = {.driver =
+                                          driver ? depot_test_driver : NULL,
+                                      .driver_context = driver,
+                                      .policy = policy,
+                                      .message = "merge"};
+  VkrDepotMergeResult result;
+  char error[256];
+  if (!vkr_depot_merge(workspace, &theirs, &config, &result, error,
+                       sizeof(error))) {
+    printf("    merge failed: %s\n", error);
+    assert(false && "merge");
+  }
+  return result;
+}
+
+/* Two branches of one repository, each with commits from `fork`: `main`
+   gets `mine`, `side` gets `theirs`, and the working copy ends on main. */
+static void depot_test_fork(VkrDepotWorkspace *workspace, const char *fork_tag,
+                            const char *mine_path, const char *mine_text,
+                            const char *theirs_path, const char *theirs_text) {
+  char error[256];
+  uint32_t kept = 0u;
+  char side[32];
+  snprintf(side, sizeof(side), "side-%s", fork_tag);
+  assert(vkr_depot_branch_create(workspace, side, error, sizeof(error)));
+  assert(vkr_depot_switch(workspace, side, VKR_DEPOT_CONFLICT_FAIL, &kept, NULL,
+                          error, sizeof(error)));
+  (void)depot_repo_commit(workspace, theirs_path, theirs_text);
+  assert(vkr_depot_switch(workspace, "main", VKR_DEPOT_CONFLICT_FAIL, &kept,
+                          NULL, error, sizeof(error)));
+  (void)depot_repo_commit(workspace, mine_path, mine_text);
+}
+
+/* Fails when a merge of changes to different files loses one side or does
+   not record both parents, when a conflict under FAIL changes anything,
+   when Theirs or Mine do not settle it, when a unit both sides changed
+   reaches no driver, reaches it without each side's members, or is settled
+   per file instead of whole when no driver merges it, when a unit's file
+   added on one side is lost after the driver merged the unit, or when a
+   driver name other than scene or project runs anything. */
+static void test_depot_merge(void) {
+  printf("  Running test_depot_merge...\n");
+  char root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("merge", root, sizeof(root));
+  VkrDepotWorkspace workspace;
+  assert(vkr_depot_workspace_create(&workspace, root, NULL,
+                                    vkr_depot_zstd_codec()));
+  (void)depot_repo_commit(&workspace, "a.txt", "base");
+  const char *rules = "# units\n"
+                      "unit scene scenes/*/scene.json inventory/*.json\n";
+  depot_test_write(root, VKR_DEPOT_MERGE_FILE, rules, strlen(rules));
+  (void)depot_repo_commit(&workspace, "b.txt", "base");
+
+  /* Different files: both sides land, with two parents. */
+  depot_test_fork(&workspace, "files", "a.txt", "mine", "b.txt", "theirs");
+  const VkrDepotId before = workspace.base;
+  VkrDepotMergeResult result =
+      depot_test_merge(&workspace, "side-files", VKR_DEPOT_CONFLICT_FAIL, NULL);
+  assert(result.status == VKR_DEPOT_MERGE_MERGED && result.taken == 1u);
+  assert(depot_repo_file_is(&workspace, "a.txt", "mine"));
+  assert(depot_repo_file_is(&workspace, "b.txt", "theirs"));
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  VkrDepotCommit commit;
+  assert(vkr_depot_store_get(&workspace.store, &workspace.base, &bytes, &size));
+  assert(vkr_depot_commit_parse(bytes, size, &commit));
+  assert(commit.parent_count == 2u &&
+         vkr_depot_id_equal(&commit.parents[0], &before));
+  free(bytes);
+  vkr_depot_change_list_free(&result.conflicts);
+
+  /* One file both sides changed: FAIL lists it and changes nothing. */
+  depot_test_fork(&workspace, "conflict", "a.txt", "mine2", "a.txt", "theirs2");
+  const VkrDepotId held = workspace.base;
+  result = depot_test_merge(&workspace, "side-conflict",
+                            VKR_DEPOT_CONFLICT_FAIL, NULL);
+  assert(result.status == VKR_DEPOT_MERGE_CONFLICTS &&
+         result.conflicts.count == 1u &&
+         strcmp(result.conflicts.entries[0].path, "a.txt") == 0);
+  assert(vkr_depot_id_equal(&workspace.base, &held));
+  assert(depot_repo_file_is(&workspace, "a.txt", "mine2"));
+  vkr_depot_change_list_free(&result.conflicts);
+  result = depot_test_merge(&workspace, "side-conflict",
+                            VKR_DEPOT_CONFLICT_TAKE_THEIRS, NULL);
+  assert(result.status == VKR_DEPOT_MERGE_MERGED);
+  assert(depot_repo_file_is(&workspace, "a.txt", "theirs2"));
+  vkr_depot_change_list_free(&result.conflicts);
+  depot_test_fork(&workspace, "mine", "a.txt", "mine3", "a.txt", "theirs3");
+  result = depot_test_merge(&workspace, "side-mine",
+                            VKR_DEPOT_CONFLICT_KEEP_MINE, NULL);
+  assert(result.status == VKR_DEPOT_MERGE_MERGED);
+  assert(depot_repo_file_is(&workspace, "a.txt", "mine3"));
+  vkr_depot_change_list_free(&result.conflicts);
+
+  /* Each side runs a job in one scene: a new inventory and the scene file
+     naming it. Without a driver the unit conflicts whole, by its anchor. */
+  depot_test_write(root, "scenes/s1/scene.json", "base", 4u);
+  (void)depot_repo_commit(&workspace, "scenes/s1/edits/e.json", "edit");
+  char error[256];
+  uint32_t kept = 0u;
+  assert(
+      vkr_depot_branch_create(&workspace, "side-unit", error, sizeof(error)));
+  assert(vkr_depot_switch(&workspace, "side-unit", VKR_DEPOT_CONFLICT_FAIL,
+                          &kept, NULL, error, sizeof(error)));
+  depot_test_write(root, "scenes/s1/inventory/b.json", "b", 1u);
+  (void)depot_repo_commit(&workspace, "scenes/s1/scene.json", "b");
+  assert(vkr_depot_switch(&workspace, "main", VKR_DEPOT_CONFLICT_FAIL, &kept,
+                          NULL, error, sizeof(error)));
+  depot_test_write(root, "scenes/s1/inventory/a.json", "a", 1u);
+  (void)depot_repo_commit(&workspace, "scenes/s1/scene.json", "a");
+  result =
+      depot_test_merge(&workspace, "side-unit", VKR_DEPOT_CONFLICT_FAIL, NULL);
+  assert(result.status == VKR_DEPOT_MERGE_CONFLICTS &&
+         result.conflicts.count == 1u &&
+         strcmp(result.conflicts.entries[0].path, "scenes/s1/scene.json") == 0);
+  vkr_depot_change_list_free(&result.conflicts);
+
+  /* The driver gets each side's members and its scene file lands, with both
+     inventories beside it. */
+  DepotTestDriver driver = {0};
+  result = depot_test_merge(&workspace, "side-unit", VKR_DEPOT_CONFLICT_FAIL,
+                            &driver);
+  assert(result.status == VKR_DEPOT_MERGE_MERGED && result.units_merged == 1u);
+  assert(driver.calls == 1u && strcmp(driver.driver, "scene") == 0 &&
+         driver.saw_both_inventories);
+  assert(depot_repo_file_is(&workspace, "scenes/s1/scene.json", "a+b"));
+  assert(depot_repo_file_is(&workspace, "scenes/s1/inventory/a.json", "a"));
+  assert(depot_repo_file_is(&workspace, "scenes/s1/inventory/b.json", "b"));
+  assert(depot_repo_file_is(&workspace, "scenes/s1/edits/e.json", "edit"));
+  vkr_depot_change_list_free(&result.conflicts);
+
+  /* Without a driver, Theirs settles the unit whole: their scene file and
+     inventory, and this side's inventory goes. */
+  assert(
+      vkr_depot_branch_create(&workspace, "side-whole", error, sizeof(error)));
+  assert(vkr_depot_switch(&workspace, "side-whole", VKR_DEPOT_CONFLICT_FAIL,
+                          &kept, NULL, error, sizeof(error)));
+  depot_test_write(root, "scenes/s1/inventory/d.json", "d", 1u);
+  (void)depot_repo_commit(&workspace, "scenes/s1/scene.json", "d");
+  assert(vkr_depot_switch(&workspace, "main", VKR_DEPOT_CONFLICT_FAIL, &kept,
+                          NULL, error, sizeof(error)));
+  depot_test_write(root, "scenes/s1/inventory/c.json", "c", 1u);
+  (void)depot_repo_commit(&workspace, "scenes/s1/scene.json", "c");
+  result = depot_test_merge(&workspace, "side-whole",
+                            VKR_DEPOT_CONFLICT_TAKE_THEIRS, NULL);
+  assert(result.status == VKR_DEPOT_MERGE_MERGED);
+  assert(depot_repo_file_is(&workspace, "scenes/s1/scene.json", "d"));
+  assert(depot_repo_file_is(&workspace, "scenes/s1/inventory/d.json", "d"));
+  assert(!depot_test_side_has(root, "scenes/s1/inventory/c.json"));
+  vkr_depot_change_list_free(&result.conflicts);
+
+  /* A driver name from a pulled file is only a key: the Bakery driver runs
+     nothing for an unknown one. */
+  const VkrDepotMergeUnitRequest request = {.driver = "rm -rf",
+                                            .output_root = root};
+  VkrDepotChangeList changes = {0};
+  VkrDepotChangeList conflicts = {0};
+  char detail[128];
+  assert(vkr_depot_merge_bakery_driver("/bin/sh", &request, &changes,
+                                       &conflicts, detail, sizeof(detail)) ==
+         VKR_DEPOT_MERGE_UNIT_FAILED);
+  assert(changes.count == 0u);
+
+  /* A merge with local changes is refused. */
+  depot_test_write(root, "a.txt", "dirty", 5u);
+  VkrDepotId side;
+  assert(vkr_depot_ref_read(workspace.store.root, "side-files", &side));
+  const VkrDepotMergeConfig config = {.policy = VKR_DEPOT_CONFLICT_FAIL};
+  assert(!vkr_depot_merge(&workspace, &side, &config, &result, error,
+                          sizeof(error)));
+
+  vkr_depot_workspace_close(&workspace);
+  assert(vkr_bakery_remove_tree(root));
+  printf("  test_depot_merge PASSED\n");
 }
 
 typedef struct DepotRemoteReader {
@@ -3348,6 +3590,7 @@ bool32_t run_depot_tests(void) {
   test_depot_discovery_versions();
   test_depot_service();
   test_depot_repositories();
+  test_depot_merge();
   test_depot_remote();
   test_depot_remote_ranges();
   test_depot_sparse();
