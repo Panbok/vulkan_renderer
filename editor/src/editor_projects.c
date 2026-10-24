@@ -3188,6 +3188,29 @@ static void project_overlay_workspace(const char *directory) {
     log_warn("Workspace assets are not overlaid: the path is too long: %s",
              directory ? directory : "");
   }
+  /* A workspace that is a depot repository holds what it reads: assets it
+     lacks stay missing unless they are engine content (git-tracked under
+     the content root's assets/), as on the machine it goes to. */
+  char depot_state[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  const int32_t length = directory
+                             ? string_format(depot_state, sizeof(depot_state),
+                                             "%s/.vkrdepot", directory)
+                             : 0;
+  const FilePath state = {.path = project_string(depot_state),
+                          .type = FILE_PATH_TYPE_ABSOLUTE};
+  const bool8_t repository = length > 0 &&
+                             (uint32_t)length < sizeof(depot_state) &&
+                             file_exists(&state);
+  if (repository && !vkr_vfs_engine_content_load()) {
+    log_warn("Engine content is unknown (git ls-files failed); every asset "
+             "of the content root stays readable");
+  }
+  vkr_vfs_set_strict_overlay(repository);
+  if (repository) {
+    log_info("Workspace %s is a depot repository: assets it does not hold "
+             "are missing unless they are engine content",
+             directory);
+  }
 }
 
 static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
@@ -3439,7 +3462,7 @@ static void project_publish_imported_assets(VkrEditorProjects *projects,
   VkrJsonReader reader = vkr_json_reader_from_string(result);
   uint32_t imported = 0u;
   uint32_t id_capacity = 0u;
-  char(*ids)[37] = NULL;
+  char (*ids)[37] = NULL;
   if (vkr_json_find_array(&reader, "imported_assets")) {
     /* Each quoted identity and its separator take at least 38 bytes. */
     id_capacity = (uint32_t)Min(reader.length / 38u + 1u, 65536u);

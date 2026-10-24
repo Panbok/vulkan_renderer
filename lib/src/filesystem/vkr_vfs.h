@@ -156,9 +156,35 @@ bool8_t vkr_vfs_set_content_root(const char *directory);
  * vkr_vfs_unmount_all(). Returns false when `directory` is too long.
  */
 bool8_t vkr_vfs_set_overlay_root(const char *directory);
+/**
+ * Ends the overlay's fallback to the content root for a project that is a
+ * depot repository (docs/proposals/depot-git-model.md, "A project holds what
+ * it reads"): while `strict`, a read of an `assets/` identity the overlay
+ * lacks finds nothing unless the identity is engine content, so a project
+ * that reads an asset it does not hold fails here as it would on another
+ * machine. Engine content is every file git tracks under the content root's
+ * `assets/` (vkr_vfs_engine_content_load). Without that list, as on a
+ * content root that is not a git checkout, every identity passes. Call from
+ * one thread; loaders may run meanwhile.
+ */
+void vkr_vfs_set_strict_overlay(bool8_t strict);
+bool8_t vkr_vfs_strict_overlay(void);
+/**
+ * Lists engine content: `git ls-files assets` in the content root, once.
+ * False when git or the checkout is unavailable. The list stays until
+ * vkr_vfs_unmount_all().
+ */
+bool8_t vkr_vfs_engine_content_load(void);
+/** Whether `identity` (`assets/...`) is engine content; false before the
+ * list loads. */
+bool8_t vkr_vfs_is_engine_content(const char *identity);
 /** The environment variable naming an overlay directory for a process the
  * editor starts, such as a project bake's tools (ADR-077). */
 #define VKR_VFS_ASSET_OVERLAY_VARIABLE "VKR_ASSET_OVERLAY"
+/** Set to 1 beside VKR_VFS_ASSET_OVERLAY_VARIABLE for a strict overlay;
+ * vkr_vfs_overlay_from_environment applies it and loads the engine
+ * content list. */
+#define VKR_VFS_STRICT_OVERLAY_VARIABLE "VKR_ASSET_OVERLAY_STRICT"
 /**
  * Sets the overlay from VKR_VFS_ASSET_OVERLAY_VARIABLE when it names one;
  * an unset variable keeps the current overlay. vkr_vfs_mount_startup calls

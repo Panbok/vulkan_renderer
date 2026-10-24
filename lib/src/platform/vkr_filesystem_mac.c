@@ -50,11 +50,12 @@ bool8_t file_exists(const FilePath *path) {
   }
   FilePath overlay;
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  struct stat buffer;
   if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
-    return true_v;
+    /* A strict overlay names its own copy even when it holds none. */
+    return stat((char *)overlay.path.str, &buffer) == 0;
   }
   fs_vfs_remote(path);
-  struct stat buffer;
   return stat((char *)path->path.str, &buffer) == 0 ||
          vkr_vfs_remote_directory(path);
 }

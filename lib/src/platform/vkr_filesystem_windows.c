@@ -129,11 +129,13 @@ bool8_t file_exists(const FilePath *path) {
   }
   FilePath overlay;
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
-    return true_v;
+    /* A strict overlay names its own copy even when it holds none. */
+    return file_windows_native_path(&overlay, native) &&
+           GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES;
   }
   fs_vfs_remote(path);
-  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   return (file_windows_native_path(path, native) &&
           GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES) ||
          vkr_vfs_remote_directory(path);

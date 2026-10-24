@@ -68,6 +68,15 @@ typedef struct VkrVfsState {
      one published, newest first, freed at unmount. */
   VkrAtomicUint64 remote;
   VkrVfsRemote *remotes;
+  /* vkr_vfs_set_strict_overlay. */
+  VkrAtomicUint32 strict;
+  /* Engine content, sorted without ASCII case: identities into
+     `engine_text`, both malloc-owned until vkr_vfs_unmount_all; published
+     by `engine_ready` before strict mode reads them. */
+  char *engine_text;
+  const char **engine;
+  uint32_t engine_count;
+  VkrAtomicUint32 engine_ready;
 } VkrVfsState;
 
 vkr_global VkrVfsState vkr_vfs = {0};
@@ -554,6 +563,13 @@ void vkr_vfs_unmount_all(void) {
     free(vkr_vfs.overlays);
     vkr_vfs.overlays = previous;
   }
+  vkr_vfs_set_strict_overlay(false_v);
+  vkr_atomic_uint32_store(&vkr_vfs.engine_ready, 0u, VKR_MEMORY_ORDER_RELEASE);
+  free(vkr_vfs.engine);
+  free(vkr_vfs.engine_text);
+  vkr_vfs.engine = NULL;
+  vkr_vfs.engine_text = NULL;
+  vkr_vfs.engine_count = 0u;
   vkr_atomic_uint64_store(&vkr_vfs.remote, 0u, VKR_MEMORY_ORDER_RELEASE);
   while (vkr_vfs.remotes) {
     VkrVfsRemote *previous = vkr_vfs.remotes->previous;
@@ -680,7 +696,17 @@ bool8_t vkr_vfs_overlay_from_environment(void) {
     vkr_vfs_report("%s does not fit", VKR_VFS_ASSET_OVERLAY_VARIABLE);
     return false_v;
   }
-  return !directory[0] || vkr_vfs_set_overlay_root(directory);
+  if (!directory[0]) {
+    return true_v;
+  }
+  char strict[8];
+  if (vkr_platform_environment_variable(VKR_VFS_STRICT_OVERLAY_VARIABLE, strict,
+                                        sizeof(strict)) &&
+      strcmp(strict, "1") == 0) {
+    (void)vkr_vfs_engine_content_load();
+    vkr_vfs_set_strict_overlay(true_v);
+  }
+  return vkr_vfs_set_overlay_root(directory);
 }
 
 bool8_t vkr_vfs_mount_startup(void) {
@@ -883,7 +909,164 @@ bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,
   if (vkr_vfs_overlay_identity(out_path->path, again, &again_length)) {
     return false_v;
   }
-  return file_exists(out_path);
+  if (file_exists(out_path)) {
+    return true_v;
+  }
+  /* A strict overlay keeps the read on its own missing copy, so it finds
+     nothing, unless the identity is engine content. */
+  return vkr_atomic_uint32_load(&vkr_vfs.strict, VKR_MEMORY_ORDER_ACQUIRE) &&
+         vkr_atomic_uint32_load(&vkr_vfs.engine_ready,
+                                VKR_MEMORY_ORDER_ACQUIRE) &&
+         !vkr_vfs_is_engine_content(identity);
+}
+
+// =============================================================================
+// Strict overlay and engine content
+// =============================================================================
+
+vkr_internal int vkr_vfs_fold_compare(const char *lhs, const char *rhs) {
+  for (;; ++lhs, ++rhs) {
+    uint8_t a = (uint8_t)*lhs;
+    uint8_t b = (uint8_t)*rhs;
+    a = a >= 'A' && a <= 'Z' ? (uint8_t)(a - 'A' + 'a') : a;
+    b = b >= 'A' && b <= 'Z' ? (uint8_t)(b - 'A' + 'a') : b;
+    if (a != b || !a) {
+      return (int)a - (int)b;
+    }
+  }
+}
+
+vkr_internal int vkr_vfs_engine_order(const void *lhs, const void *rhs) {
+  return vkr_vfs_fold_compare(*(const char *const *)lhs,
+                              *(const char *const *)rhs);
+}
+
+typedef struct VkrVfsCapture {
+  char *bytes;
+  uint64_t size;
+  uint64_t capacity;
+} VkrVfsCapture;
+
+vkr_internal bool8_t vkr_vfs_capture(void *context, const uint8_t *bytes,
+                                     uint64_t size) {
+  VkrVfsCapture *capture = context;
+  if (capture->size + size + 1u > capture->capacity) {
+    uint64_t capacity = capture->capacity ? capture->capacity : 64u * 1024u;
+    while (capture->size + size + 1u > capacity) {
+      capacity *= 2u;
+    }
+    char *grown = realloc(capture->bytes, (size_t)capacity);
+    if (!grown) {
+      return false_v;
+    }
+    capture->bytes = grown;
+    capture->capacity = capacity;
+  }
+  MemCopy(capture->bytes + capture->size, bytes, size);
+  capture->size += size;
+  capture->bytes[capture->size] = 0;
+  return true_v;
+}
+
+void vkr_vfs_set_strict_overlay(bool8_t strict) {
+  vkr_atomic_uint32_store(&vkr_vfs.strict, strict ? 1u : 0u,
+                          VKR_MEMORY_ORDER_RELEASE);
+}
+
+bool8_t vkr_vfs_strict_overlay(void) {
+  return vkr_atomic_uint32_load(&vkr_vfs.strict, VKR_MEMORY_ORDER_ACQUIRE) !=
+         0u;
+}
+
+bool8_t vkr_vfs_engine_content_load(void) {
+  if (vkr_atomic_uint32_load(&vkr_vfs.engine_ready, VKR_MEMORY_ORDER_ACQUIRE)) {
+    return true_v;
+  }
+  vkr_vfs_default_root();
+  char root[VKR_VFS_PATH_MAX];
+  snprintf(root, sizeof(root), "%.*s", (int)vkr_vfs.root_length, vkr_vfs.root);
+  /* NUL-separated names, so no quoting of unusual ones. */
+  const char *arguments[] = {"-C", root, "ls-files", "-z", "--", "assets"};
+  VkrVfsCapture capture = {0};
+  const VkrPlatformProcessConfig config = {
+      .executable = "git",
+      .arguments = arguments,
+      .argument_count = ArrayCount(arguments),
+      .timeout_ms = 60000u,
+      .hidden = true_v,
+      .on_stdout = vkr_vfs_capture,
+      .stdout_context = &capture,
+  };
+  int32_t exit_code = -1;
+  bool8_t timed_out = false_v;
+  if (!vkr_platform_process_run(&config, &exit_code, &timed_out) || timed_out ||
+      exit_code != 0 || !capture.bytes) {
+    free(capture.bytes);
+    vkr_vfs_report("engine content is unknown: git ls-files failed in %s",
+                   root);
+    return false_v;
+  }
+  uint32_t count = 0u;
+  for (uint64_t i = 0u; i < capture.size; ++i) {
+    count += capture.bytes[i] == 0 ? 1u : 0u;
+  }
+  const char **entries = malloc(((size_t)count + 1u) * sizeof(*entries));
+  if (!entries) {
+    free(capture.bytes);
+    return false_v;
+  }
+  uint32_t used = 0u;
+  for (uint64_t start = 0u; start < capture.size && used < count;) {
+    entries[used++] = capture.bytes + start;
+    start += strlen(capture.bytes + start) + 1u;
+  }
+  qsort(entries, used, sizeof(*entries), vkr_vfs_engine_order);
+  vkr_vfs.engine_text = capture.bytes;
+  vkr_vfs.engine = entries;
+  vkr_vfs.engine_count = used;
+  vkr_atomic_uint32_store(&vkr_vfs.engine_ready, 1u, VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_vfs_engine_listed(const char *identity);
+
+bool8_t vkr_vfs_is_engine_content(const char *identity) {
+  if (!identity || !vkr_atomic_uint32_load(&vkr_vfs.engine_ready,
+                                           VKR_MEMORY_ORDER_ACQUIRE)) {
+    return false_v;
+  }
+  if (vkr_vfs_engine_listed(identity)) {
+    return true_v;
+  }
+  /* A tracked image's cooked `<image>.vkt` sibling, which the build writes
+     and git ignores, is engine content too. */
+  const uint64_t length = strlen(identity);
+  char source[VKR_PACK_IDENTITY_MAX];
+  if (length > 4u && length - 4u < sizeof(source) &&
+      vkr_vfs_fold_compare(identity + length - 4u, ".vkt") == 0) {
+    MemCopy(source, identity, length - 4u);
+    source[length - 4u] = 0;
+    return vkr_vfs_engine_listed(source);
+  }
+  return false_v;
+}
+
+vkr_internal bool8_t vkr_vfs_engine_listed(const char *identity) {
+  uint32_t low = 0u;
+  uint32_t high = vkr_vfs.engine_count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    const int order = vkr_vfs_fold_compare(vkr_vfs.engine[middle], identity);
+    if (order == 0) {
+      return true_v;
+    }
+    if (order < 0) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return false_v;
 }
 
 // =============================================================================

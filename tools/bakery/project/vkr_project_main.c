@@ -21,10 +21,10 @@ vkr_internal const char *const vkr_project_cleanup_operations[] = {
     "finalize_textures",     "finalize_project_assets"};
 
 vkr_internal const char *const vkr_project_scene_optional[] = {
-    "create_project", "delete_project",  "import_project_assets",
-    "inspect_scene",  "collect_garbage", "finalize_project_assets",
-    "package_world",  "share_project",   "recook_textures",
-    "pull_report"};
+    "create_project", "delete_project",        "import_project_assets",
+    "inspect_scene",  "collect_garbage",       "finalize_project_assets",
+    "package_world",  "share_project",         "recook_textures",
+    "pull_report",    "untracked_dependencies"};
 
 vkr_internal bool8_t vkr_project_listed(const char *value,
                                         const char *const *items,
@@ -138,6 +138,16 @@ vkr_internal bool8_t vkr_project_job_init(VkrProjectJob *job) {
        !vkr_vfs_set_overlay_root(job->asset_overlay))) {
     return vkr_project_fail(job, "The asset overlay '%s' does not resolve",
                             overlay);
+  }
+  /* A depot repository holds what it reads: its jobs read no asset of the
+     content root but engine content, as on a machine without that copy. */
+  char depot_state[VKR_PROJECT_PATH];
+  if (job->asset_overlay[0] &&
+      vkr_bakery_path_join(depot_state, sizeof(depot_state), job->asset_overlay,
+                           ".vkrdepot") &&
+      vkr_bakery_is_directory(depot_state)) {
+    (void)vkr_vfs_engine_content_load();
+    vkr_vfs_set_strict_overlay(true_v);
   }
   (void)snprintf(job->generated_root, sizeof(job->generated_root),
                  "%s/cache/generated", job->workspace);
@@ -423,6 +433,13 @@ vkr_internal bool8_t vkr_project_execute(VkrProjectJob *job) {
     return result && vkr_project_atomic_json(job, job->result_path, result) &&
            vkr_project_write_status(job, "complete", "Pulled scenes checked",
                                     1.0, NULL);
+  }
+  if (strcmp(operation, "untracked_dependencies") == 0) {
+    /* Reads the workspace; with adopt, copies into its own assets/. */
+    VkrBakeryJson *result = vkr_project_dependencies(job);
+    return result && vkr_project_atomic_json(job, job->result_path, result) &&
+           vkr_project_write_status(job, "complete", "Dependencies listed", 1.0,
+                                    NULL);
   }
   if (strcmp(operation, "share_project") == 0) {
     /* Reads the source workspace only; writes go to the destination. */

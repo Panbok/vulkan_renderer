@@ -2306,7 +2306,8 @@ bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
                                 int32_t *out_code) {
   /* A tool reads the workspace's assets as the job does. */
   const VkrPlatformEnvironmentVariable overlay[] = {
-      {VKR_VFS_ASSET_OVERLAY_VARIABLE, job->asset_overlay}};
+      {VKR_VFS_ASSET_OVERLAY_VARIABLE, job->asset_overlay},
+      {VKR_VFS_STRICT_OVERLAY_VARIABLE, vkr_vfs_strict_overlay() ? "1" : "0"}};
   const bool8_t overlaid = job->asset_overlay[0] != '\0';
   VkrPlatformProcessError error = {0};
   const VkrPlatformProcessConfig config = {
@@ -2314,7 +2315,7 @@ bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
       .arguments = arguments,
       .argument_count = count,
       .environment = overlaid ? overlay : NULL,
-      .environment_count = overlaid ? 1u : 0u,
+      .environment_count = overlaid ? ArrayCount(overlay) : 0u,
       .working_directory = job->config->root[0] ? job->config->root : NULL,
       .stdout_path = stdout_path,
       .stderr_path = stdout_path,
@@ -2400,7 +2401,8 @@ bool8_t vkr_project_run_bakery_pair(VkrProjectJob *job,
                                     const VkrProjectBakeryRun runs[2],
                                     int32_t out_codes[2]) {
   const VkrPlatformEnvironmentVariable overlay[] = {
-      {VKR_VFS_ASSET_OVERLAY_VARIABLE, job->asset_overlay}};
+      {VKR_VFS_ASSET_OVERLAY_VARIABLE, job->asset_overlay},
+      {VKR_VFS_STRICT_OVERLAY_VARIABLE, vkr_vfs_strict_overlay() ? "1" : "0"}};
   const bool8_t overlaid = job->asset_overlay[0] != '\0';
   VkrProjectPairedRun paired[2];
   for (uint32_t i = 0u; i < 2u; ++i) {
@@ -2413,7 +2415,7 @@ bool8_t vkr_project_run_bakery_pair(VkrProjectJob *job,
                 .arguments = runs[i].arguments,
                 .argument_count = runs[i].count,
                 .environment = overlaid ? overlay : NULL,
-                .environment_count = overlaid ? 1u : 0u,
+                .environment_count = overlaid ? ArrayCount(overlay) : 0u,
                 .working_directory =
                     job->config->root[0] ? job->config->root : NULL,
                 .termination_grace_ms = 5000u,

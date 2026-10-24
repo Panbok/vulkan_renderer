@@ -1201,6 +1201,39 @@ vkr_internal void test_vfs_workspace_overlay(void) {
          mapping.size == 9u && MemCompare(mapping.data, "workspace", 9u) == 0);
   file_unmap(&mapping);
 
+  /* A strict overlay, as for a depot repository: the root's own file is
+     missing to every reader, while the overlay's copies and engine content
+     (files git tracks under assets/) still read. */
+  if (vkr_vfs_engine_content_load()) {
+    vkr_vfs_set_strict_overlay(true_v);
+    assert(!file_exists(&only_root));
+    FileStats missing = {0};
+    assert(file_stats(&only_root, &missing) != FILE_ERROR_NONE);
+    FileMode read = bitset8_create();
+    bitset8_set(&read, FILE_MODE_READ);
+    FileHandle blocked = {0};
+    assert(file_open(&only_root, read, &blocked) != FILE_ERROR_NONE);
+    FileMapping blocked_mapping = {0};
+    assert(file_map_readonly(&only_root, &blocked_mapping) != FILE_ERROR_NONE);
+    assert(!file_fopen((const char *)only_root.path.str, "rb"));
+    assert(fs_test_reads(&both, &allocator, "workspace"));
+    assert(fs_test_reads(&only_ws, &allocator, "workspace only"));
+    FilePath engine = file_path_create("assets/materials/default.world.mt",
+                                       &allocator, FILE_PATH_TYPE_RELATIVE);
+    assert(vkr_vfs_is_engine_content("assets/materials/default.world.mt") &&
+           !vkr_vfs_is_engine_content("assets/zz_vfs_overlay_test/root.txt"));
+    /* The cooked sibling of a tracked image, which git ignores. */
+    assert(vkr_vfs_is_engine_content(
+               "assets/textures/greybox/greybox_grid.png.vkt") &&
+           !vkr_vfs_is_engine_content("assets/textures/greybox/none.png.vkt"));
+    assert(file_exists(&engine));
+    vkr_vfs_set_strict_overlay(false_v);
+    assert(fs_test_reads(&only_root, &allocator, "root only"));
+  } else {
+    printf("    git ls-files is unavailable; the strict overlay check is "
+           "skipped\n");
+  }
+
   /* Writes still go to the root. */
   FileMode write = bitset8_create();
   bitset8_set(&write, FILE_MODE_WRITE);
