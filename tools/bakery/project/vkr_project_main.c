@@ -23,7 +23,8 @@ vkr_internal const char *const vkr_project_cleanup_operations[] = {
 vkr_internal const char *const vkr_project_scene_optional[] = {
     "create_project", "delete_project",  "import_project_assets",
     "inspect_scene",  "collect_garbage", "finalize_project_assets",
-    "package_world",  "share_project",   "recook_textures"};
+    "package_world",  "share_project",   "recook_textures",
+    "pull_report"};
 
 vkr_internal bool8_t vkr_project_listed(const char *value,
                                         const char *const *items,
@@ -416,6 +417,13 @@ vkr_internal bool8_t vkr_project_execute(VkrProjectJob *job) {
            vkr_project_write_status(job, "complete", "Textures ready", 1.0,
                                     NULL);
   }
+  if (strcmp(operation, "pull_report") == 0) {
+    /* Each scene's re-cook and preparation run as child jobs. */
+    VkrBakeryJson *result = vkr_project_pull_report(job);
+    return result && vkr_project_atomic_json(job, job->result_path, result) &&
+           vkr_project_write_status(job, "complete", "Pulled scenes checked",
+                                    1.0, NULL);
+  }
   if (strcmp(operation, "share_project") == 0) {
     /* Reads the source workspace only; writes go to the destination. */
     VkrBakeryJson *result = vkr_project_share(job);
@@ -511,6 +519,32 @@ int vkr_project_main(const VkrBakeryConfig *config, const char *request_path,
                  "%s.progress.json", job->result_path);
   job->request =
       vkr_project_load_json(job, request_path, VKR_PROJECT_MAX_JSON_BYTES);
+  /* The depot's merge drivers read and write only the request's folders. */
+  const char *operation =
+      job->request ? vkr_project_json_text(job->request, "operation") : NULL;
+  if (operation && (strcmp(operation, "merge_scene_unit") == 0 ||
+                    strcmp(operation, "merge_project_document") == 0)) {
+    job->operation = operation;
+    int64_t version = 0;
+    VkrBakeryJson *result =
+        vkr_project_integer(vkr_bakery_json_get(job->request, "version"),
+                            &version) &&
+                version == VKR_PROJECT_VERSION
+            ? vkr_project_merge(job)
+            : NULL;
+    if (!result && !job->failed) {
+      vkr_project_fail(job, "Unsupported project job request version");
+    }
+    const bool8_t merged =
+        result && vkr_project_atomic_json(job, job->result_path, result);
+    if (!merged) {
+      vkr_project_write_failure(job, "failed");
+      fprintf(stderr, "%s\n", job->error);
+    }
+    vkr_bakery_index_close(job->index);
+    arena_destroy(arena);
+    return merged ? 0 : 1;
+  }
   if (!job->request || !vkr_project_job_init(job)) {
     /* A read-only request must not write inside the workspace it opens. */
     bool8_t safe = true_v;

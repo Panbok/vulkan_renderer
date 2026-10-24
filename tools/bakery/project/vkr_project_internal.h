@@ -637,6 +637,16 @@ VkrBakeryJson *vkr_project_recook_textures(VkrProjectJob *job);
  * asset closure into a new self-contained workspace at the request's
  * `destination` (vkr_project_share.c). */
 VkrBakeryJson *vkr_project_share(VkrProjectJob *job);
+/** `merge_scene_unit` and `merge_project_document`: the depot's merge
+ * drivers, which merge one unit of the request's `base`, `mine` and
+ * `theirs` folders into its `output` folder (vkr_project_merge.c). They
+ * read no workspace, so they need no project. */
+VkrBakeryJson *vkr_project_merge(VkrProjectJob *job);
+/** `pull_report`: after a depot pull, re-cooks the textures of each scene
+ * the request's `scenes` lists (every scene when it lists none) and prepares
+ * it, each step a child job, and reports per scene whether it opens
+ * (vkr_project_merge.c). */
+VkrBakeryJson *vkr_project_pull_report(VkrProjectJob *job);
 /** Removes workspace data no listed scene can reach; reports what it freed.
  * Unreferenced revisions and cache entries go once VKR_PROJECT_UNREFERENCED_
  * GRACE_SECONDS old, unlisted scenes and projects once VKR_PROJECT_ORPHAN_
