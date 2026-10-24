@@ -219,11 +219,13 @@ static void fuzz_depot_message(const uint8_t *bytes, uint32_t size) {
 
 static void fuzz_depot_probe(const uint8_t *bytes, uint32_t size) {
   uint64_t nonce = 0u;
-  if (!vkr_depot_discovery_read_probe(bytes, size, &nonce)) {
+  uint8_t version = 0u;
+  if (!vkr_depot_discovery_read_probe(bytes, size, &nonce, &version)) {
     return;
   }
-  uint8_t written[192];
-  const uint32_t written_size = vkr_depot_discovery_probe(nonce, written);
+  uint8_t written[VKR_DEPOT_DISCOVERY_DATAGRAM_MAX];
+  const uint32_t written_size =
+      vkr_depot_discovery_probe(version, nonce, written);
   fuzz_depot_check_equal(written, written_size, bytes, size);
 }
 
@@ -243,13 +245,23 @@ static void fuzz_depot_answer(const uint8_t *bytes, uint32_t size) {
   FUZZ_CHECK(found.address.port != 0u);
   FUZZ_CHECK(memchr(found.name, 0, sizeof(found.name)));
   FUZZ_CHECK(memchr(found.host, 0, sizeof(found.host)));
+  FUZZ_CHECK(found.repository_count <= VKR_DEPOT_DISCOVERY_REPOSITORIES);
+  for (uint32_t i = 0u; i < found.repository_count; ++i) {
+    FUZZ_CHECK(memchr(found.repositories[i].name, 0,
+                      sizeof(found.repositories[i].name)));
+    FUZZ_CHECK(memchr(found.repositories[i].default_branch, 0,
+                      sizeof(found.repositories[i].default_branch)));
+  }
   VkrDepotResponder responder = {.service_port = found.address.port};
   MemCopy(responder.server_key, found.server_key, 32u);
   MemCopy(responder.name, found.name, sizeof(found.name));
   MemCopy(responder.host, found.host, sizeof(found.host));
-  uint8_t written[192];
+  vkr_depot_responder_set_repositories(&responder, found.repositories,
+                                       found.repository_count,
+                                       found.outbound_only);
+  uint8_t written[VKR_DEPOT_DISCOVERY_DATAGRAM_MAX];
   const uint32_t written_size =
-      vkr_depot_discovery_answer(&responder, nonce, written);
+      vkr_depot_discovery_answer(&responder, found.version, nonce, written);
   /* Unprintable text bytes come back as '?'; everything else matches. */
   FUZZ_CHECK(written_size == size);
   for (uint32_t i = 0u; i < size; ++i) {
@@ -484,16 +496,30 @@ static void fuzz_depot_seed_messages(FuzzSeedWriter *writer) {
 }
 
 static void fuzz_depot_seed_discovery(FuzzSeedWriter *writer) {
-  uint8_t bytes[192];
-  uint32_t size = vkr_depot_discovery_probe(0x1122334455667788ull, bytes);
-  fuzz_depot_seed(writer, FUZZ_DEPOT_PROBE, bytes, size);
-
+  uint8_t bytes[VKR_DEPOT_DISCOVERY_DATAGRAM_MAX];
   VkrDepotResponder responder = {.service_port = 7320u};
   MemSet(responder.server_key, 0x33, sizeof(responder.server_key));
   snprintf(responder.name, sizeof(responder.name), "studio depot");
   snprintf(responder.host, sizeof(responder.host), "mac-m1.local");
-  size = vkr_depot_discovery_answer(&responder, 0x1122334455667788ull, bytes);
-  fuzz_depot_seed(writer, FUZZ_DEPOT_ANSWER, bytes, size);
+  VkrDepotDiscoveredRepository repositories[2] = {0};
+  MemSet(repositories[0].id, 0x44, sizeof(repositories[0].id));
+  snprintf(repositories[0].name, sizeof(repositories[0].name), "Testbed");
+  snprintf(repositories[0].default_branch,
+           sizeof(repositories[0].default_branch), "main");
+  MemSet(repositories[1].id, 0x55, sizeof(repositories[1].id));
+  snprintf(repositories[1].name, sizeof(repositories[1].name), "Arena");
+  snprintf(repositories[1].default_branch,
+           sizeof(repositories[1].default_branch), "level-blockout");
+  vkr_depot_responder_set_repositories(&responder, repositories, 2u, true_v);
+  for (uint8_t version = 1u; version <= VKR_DEPOT_DISCOVERY_VERSION;
+       ++version) {
+    uint32_t size =
+        vkr_depot_discovery_probe(version, 0x1122334455667788ull, bytes);
+    fuzz_depot_seed(writer, FUZZ_DEPOT_PROBE, bytes, size);
+    size = vkr_depot_discovery_answer(&responder, version,
+                                      0x1122334455667788ull, bytes);
+    fuzz_depot_seed(writer, FUZZ_DEPOT_ANSWER, bytes, size);
+  }
 
   static const char id_hex[] =
       "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";

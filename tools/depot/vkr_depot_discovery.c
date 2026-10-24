@@ -13,11 +13,10 @@
 #include <unistd.h>
 #endif
 
-#define DISCOVERY_VERSION 1u
 #define DISCOVERY_PROBE 1u
 #define DISCOVERY_ANSWER 2u
 #define DISCOVERY_PROBE_SIZE 14u
-#define DISCOVERY_DATAGRAM_MAX 192u
+#define DISCOVERY_OUTBOUND_ONLY 1u
 /* How often a client sends its probes again while it waits. */
 #define DISCOVERY_RESEND_MS 400u
 
@@ -41,22 +40,25 @@ static uint64_t discovery_get_u64(const uint8_t *bytes) {
   return value;
 }
 
-static uint32_t discovery_header(uint8_t kind, uint64_t nonce, uint8_t *out) {
+static uint32_t discovery_header(uint8_t kind, uint8_t version, uint64_t nonce,
+                                 uint8_t *out) {
   MemCopy(out, discovery_magic, 4u);
   out[4] = kind;
-  out[5] = DISCOVERY_VERSION;
+  out[5] = version;
   discovery_put_u64(out + 6, nonce);
   return DISCOVERY_PROBE_SIZE;
 }
 
 static bool8_t discovery_read_header(const uint8_t *bytes, uint32_t size,
-                                     uint8_t kind, uint64_t *out_nonce) {
+                                     uint8_t kind, uint64_t *out_nonce,
+                                     uint8_t *out_version) {
   if (size < DISCOVERY_PROBE_SIZE ||
       MemCompare(bytes, discovery_magic, 4u) != 0 || bytes[4] != kind ||
-      bytes[5] != DISCOVERY_VERSION) {
+      bytes[5] == 0u || bytes[5] > VKR_DEPOT_DISCOVERY_VERSION) {
     return false_v;
   }
   *out_nonce = discovery_get_u64(bytes + 6);
+  *out_version = bytes[5];
   return true_v;
 }
 
@@ -89,46 +91,94 @@ static bool8_t discovery_read_text(const uint8_t *bytes, uint32_t size,
   return true_v;
 }
 
-uint32_t vkr_depot_discovery_probe(uint64_t nonce, uint8_t *out) {
-  return discovery_header(DISCOVERY_PROBE, nonce, out);
+uint32_t vkr_depot_discovery_probe(uint8_t version, uint64_t nonce,
+                                   uint8_t *out) {
+  return discovery_header(DISCOVERY_PROBE, version, nonce, out);
 }
 
 uint32_t vkr_depot_discovery_answer(const VkrDepotResponder *responder,
-                                    uint64_t nonce, uint8_t *out) {
-  uint32_t size = discovery_header(DISCOVERY_ANSWER, nonce, out);
+                                    uint8_t version, uint64_t nonce,
+                                    uint8_t *out) {
+  uint32_t size = discovery_header(DISCOVERY_ANSWER, version, nonce, out);
   out[size++] = (uint8_t)(responder->service_port & 0xffu);
   out[size++] = (uint8_t)(responder->service_port >> 8u);
   MemCopy(out + size, responder->server_key, 32u);
   size += 32u;
   size += discovery_put_text(out + size, responder->name);
   size += discovery_put_text(out + size, responder->host);
+  if (version < 2u) {
+    return size;
+  }
+  const uint32_t count = Min(responder->repository_count,
+                             (uint32_t)VKR_DEPOT_DISCOVERY_REPOSITORIES);
+  out[size++] = responder->outbound_only ? DISCOVERY_OUTBOUND_ONLY : 0u;
+  out[size++] = (uint8_t)count;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrDepotDiscoveredRepository *repository =
+        &responder->repositories[i];
+    MemCopy(out + size, repository->id, VKR_DEPOT_REPOSITORY_ID_SIZE);
+    size += VKR_DEPOT_REPOSITORY_ID_SIZE;
+    size += discovery_put_text(out + size, repository->name);
+    size += discovery_put_text(out + size, repository->default_branch);
+  }
   return size;
 }
 
 bool8_t vkr_depot_discovery_read_probe(const uint8_t *bytes, uint32_t size,
-                                       uint64_t *out_nonce) {
+                                       uint64_t *out_nonce,
+                                       uint8_t *out_version) {
   return size == DISCOVERY_PROBE_SIZE &&
-         discovery_read_header(bytes, size, DISCOVERY_PROBE, out_nonce);
+         discovery_read_header(bytes, size, DISCOVERY_PROBE, out_nonce,
+                               out_version);
 }
 
 bool8_t vkr_depot_discovery_read_answer(const uint8_t *bytes, uint32_t size,
                                         uint64_t nonce,
                                         VkrDepotDiscovered *out) {
   uint64_t answered = 0u;
-  if (!discovery_read_header(bytes, size, DISCOVERY_ANSWER, &answered) ||
+  uint8_t version = 0u;
+  if (!discovery_read_header(bytes, size, DISCOVERY_ANSWER, &answered,
+                             &version) ||
       answered != nonce || size < DISCOVERY_PROBE_SIZE + 2u + 32u) {
     return false_v;
   }
   MemZero(out, sizeof(*out));
+  out->version = version;
   uint32_t offset = DISCOVERY_PROBE_SIZE;
   out->address.port =
       (uint16_t)(bytes[offset] | ((uint16_t)bytes[offset + 1u] << 8u));
   offset += 2u;
   MemCopy(out->server_key, bytes + offset, 32u);
   offset += 32u;
-  return out->address.port != 0u &&
-         discovery_read_text(bytes, size, &offset, out->name) &&
-         discovery_read_text(bytes, size, &offset, out->host) && offset == size;
+  if (out->address.port == 0u ||
+      !discovery_read_text(bytes, size, &offset, out->name) ||
+      !discovery_read_text(bytes, size, &offset, out->host)) {
+    return false_v;
+  }
+  if (version < 2u) {
+    return offset == size;
+  }
+  if (offset + 2u > size || (bytes[offset] & ~DISCOVERY_OUTBOUND_ONLY) != 0u ||
+      bytes[offset + 1u] > VKR_DEPOT_DISCOVERY_REPOSITORIES) {
+    return false_v;
+  }
+  out->outbound_only = (bytes[offset] & DISCOVERY_OUTBOUND_ONLY) != 0u;
+  out->repository_count = bytes[offset + 1u];
+  offset += 2u;
+  for (uint32_t i = 0u; i < out->repository_count; ++i) {
+    VkrDepotDiscoveredRepository *repository = &out->repositories[i];
+    if (offset + VKR_DEPOT_REPOSITORY_ID_SIZE > size) {
+      return false_v;
+    }
+    MemCopy(repository->id, bytes + offset, VKR_DEPOT_REPOSITORY_ID_SIZE);
+    offset += VKR_DEPOT_REPOSITORY_ID_SIZE;
+    if (!discovery_read_text(bytes, size, &offset, repository->name) ||
+        !discovery_read_text(bytes, size, &offset,
+                             repository->default_branch)) {
+      return false_v;
+    }
+  }
+  return offset == size;
 }
 
 // =============================================================================
@@ -172,12 +222,23 @@ void vkr_depot_responder_close(VkrDepotResponder *responder) {
   vkr_udp_socket_close(&responder->socket);
 }
 
+void vkr_depot_responder_set_repositories(
+    VkrDepotResponder *responder,
+    const VkrDepotDiscoveredRepository *repositories, uint32_t count,
+    bool8_t outbound_only) {
+  responder->repository_count =
+      Min(count, (uint32_t)VKR_DEPOT_DISCOVERY_REPOSITORIES);
+  MemCopy(responder->repositories, repositories,
+          (uint64_t)responder->repository_count * sizeof(*repositories));
+  responder->outbound_only = outbound_only;
+}
+
 void vkr_depot_responder_update(VkrDepotResponder *responder) {
   if (responder->socket.handle == VKR_UDP_SOCKET_INVALID) {
     return;
   }
   for (uint32_t round = 0u; round < 16u; ++round) {
-    uint8_t bytes[DISCOVERY_DATAGRAM_MAX];
+    uint8_t bytes[VKR_DEPOT_DISCOVERY_DATAGRAM_MAX];
     VkrUdpDatagram datagram = {.data = bytes, .capacity = sizeof(bytes)};
     uint32_t received = 0u;
     if (vkr_udp_socket_receive(responder->socket, &datagram, 1u, &received,
@@ -186,14 +247,17 @@ void vkr_depot_responder_update(VkrDepotResponder *responder) {
       return;
     }
     uint64_t nonce = 0u;
-    if (!vkr_depot_discovery_read_probe(bytes, datagram.size, &nonce)) {
+    uint8_t version = 0u;
+    if (!vkr_depot_discovery_read_probe(bytes, datagram.size, &nonce,
+                                        &version)) {
       continue;
     }
-    uint8_t answer[DISCOVERY_DATAGRAM_MAX];
+    /* Each probe in its own version: a version 1 client reads no other. */
+    uint8_t answer[VKR_DEPOT_DISCOVERY_DATAGRAM_MAX];
     const VkrUdpDatagram reply = {
         .address = datagram.address,
         .data = answer,
-        .size = vkr_depot_discovery_answer(responder, nonce, answer)};
+        .size = vkr_depot_discovery_answer(responder, version, nonce, answer)};
     uint32_t sent = 0u;
     (void)vkr_udp_socket_send(responder->socket, &reply, 1u, &sent);
   }
@@ -254,22 +318,28 @@ void vkr_depot_browser_probe(VkrDepotBrowser *browser, bool8_t broadcast) {
   if (browser->socket.handle == VKR_UDP_SOCKET_INVALID) {
     return;
   }
-  uint8_t probe[DISCOVERY_PROBE_SIZE];
-  (void)vkr_depot_discovery_probe(browser->nonce, probe);
-  discovery_send_probes(browser->socket, probe, browser->targets,
-                        browser->target_count);
-  if (!broadcast) {
-    return;
+  /* A probe of each version: a version 1 server ignores the other. */
+  uint8_t probes[VKR_DEPOT_DISCOVERY_VERSION][DISCOVERY_PROBE_SIZE];
+  for (uint32_t i = 0u; i < ArrayCount(probes); ++i) {
+    (void)vkr_depot_discovery_probe((uint8_t)(i + 1u), browser->nonce,
+                                    probes[i]);
   }
-  /* Every subnet this machine is on and the limited broadcast address. */
   VkrNetAddress targets[17];
-  uint32_t count = vkr_net_ipv4_broadcast_addresses(
-      browser->discovery_port, targets, ArrayCount(targets) - 1u);
-  VkrNetAddress limited = {.family = VKR_NET_ADDRESS_IPV4,
-                           .port = browser->discovery_port};
-  MemSet(limited.bytes, 0xff, 4u);
-  targets[count++] = limited;
-  discovery_send_probes(browser->socket, probe, targets, count);
+  uint32_t count = 0u;
+  if (broadcast) {
+    /* Every subnet this machine is on and the limited broadcast address. */
+    count = vkr_net_ipv4_broadcast_addresses(browser->discovery_port, targets,
+                                             ArrayCount(targets) - 1u);
+    VkrNetAddress limited = {.family = VKR_NET_ADDRESS_IPV4,
+                             .port = browser->discovery_port};
+    MemSet(limited.bytes, 0xff, 4u);
+    targets[count++] = limited;
+  }
+  for (uint32_t i = 0u; i < ArrayCount(probes); ++i) {
+    discovery_send_probes(browser->socket, probes[i], browser->targets,
+                          browser->target_count);
+    discovery_send_probes(browser->socket, probes[i], targets, count);
+  }
 }
 
 uint32_t vkr_depot_browser_update(VkrDepotBrowser *browser) {
@@ -278,7 +348,7 @@ uint32_t vkr_depot_browser_update(VkrDepotBrowser *browser) {
   }
   uint32_t added = 0u;
   for (;;) {
-    uint8_t bytes[DISCOVERY_DATAGRAM_MAX];
+    uint8_t bytes[VKR_DEPOT_DISCOVERY_DATAGRAM_MAX];
     VkrUdpDatagram datagram = {.data = bytes, .capacity = sizeof(bytes)};
     uint32_t received = 0u;
     if (vkr_udp_socket_receive(browser->socket, &datagram, 1u, &received,
@@ -303,7 +373,10 @@ uint32_t vkr_depot_browser_update(VkrDepotBrowser *browser) {
         known = entry;
       }
     }
-    if (known) {
+    if (known && found.version < known->version) {
+      /* The version 1 answer to the same server's other probe. */
+      known->last_seen = found.last_seen;
+    } else if (known) {
       *known = found;
     } else if (browser->found_count < VKR_DEPOT_BROWSE_MAX) {
       browser->found[browser->found_count++] = found;

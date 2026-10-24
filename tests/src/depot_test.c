@@ -1447,6 +1447,98 @@ static void test_depot_identity_migration(void) {
   printf("  test_depot_identity_migration PASSED\n");
 }
 
+/* Fails when a version 1 answer carries more than a version 1 client reads
+   (it rejects trailing bytes), when a version 2 answer does not bring back
+   the repositories and the outbound-only flag, or when a reader accepts a
+   trailing byte, an unknown flag, more than
+   VKR_DEPOT_DISCOVERY_REPOSITORIES repositories or a newer version. */
+static void test_depot_discovery_versions(void) {
+  printf("  Running test_depot_discovery_versions...\n");
+  const uint64_t nonce = 0x0123456789abcdefull;
+  VkrDepotResponder responder = {.service_port = 7320u};
+  MemSet(responder.server_key, 0x5a, sizeof(responder.server_key));
+  snprintf(responder.name, sizeof(responder.name), "windows-d");
+  snprintf(responder.host, sizeof(responder.host), "DESKTOP");
+  VkrDepotDiscoveredRepository
+      repositories[VKR_DEPOT_DISCOVERY_REPOSITORIES + 1u] = {0};
+  for (uint32_t i = 0u; i < ArrayCount(repositories); ++i) {
+    MemSet(repositories[i].id, (int)(0x10u + i), sizeof(repositories[i].id));
+    snprintf(repositories[i].name, sizeof(repositories[i].name), "Project %u",
+             i);
+    snprintf(repositories[i].default_branch,
+             sizeof(repositories[i].default_branch), "main");
+  }
+  vkr_depot_responder_set_repositories(&responder, repositories, 2u, true_v);
+
+  uint8_t probe[VKR_DEPOT_DISCOVERY_DATAGRAM_MAX];
+  uint64_t read_nonce = 0u;
+  uint8_t read_version = 0u;
+  for (uint8_t version = 1u; version <= VKR_DEPOT_DISCOVERY_VERSION;
+       ++version) {
+    const uint32_t size = vkr_depot_discovery_probe(version, nonce, probe);
+    assert(vkr_depot_discovery_read_probe(probe, size, &read_nonce,
+                                          &read_version));
+    assert(read_nonce == nonce && read_version == version);
+  }
+
+  /* Version 1: exactly the fields a version 1 client reads. */
+  uint8_t answer[VKR_DEPOT_DISCOVERY_DATAGRAM_MAX];
+  uint32_t size = vkr_depot_discovery_answer(&responder, 1u, nonce, answer);
+  assert(size ==
+         14u + 2u + 32u + 1u + strlen("windows-d") + 1u + strlen("DESKTOP"));
+  VkrDepotDiscovered found;
+  assert(vkr_depot_discovery_read_answer(answer, size, nonce, &found));
+  assert(found.version == 1u && found.repository_count == 0u &&
+         !found.outbound_only && found.address.port == 7320u &&
+         strcmp(found.name, "windows-d") == 0);
+
+  /* Version 2: the repositories and the flag come back. */
+  size = vkr_depot_discovery_answer(&responder, 2u, nonce, answer);
+  assert(vkr_depot_discovery_read_answer(answer, size, nonce, &found));
+  assert(found.version == 2u && found.outbound_only &&
+         found.repository_count == 2u &&
+         memcmp(found.repositories[1].id, repositories[1].id,
+                VKR_DEPOT_REPOSITORY_ID_SIZE) == 0 &&
+         strcmp(found.repositories[1].name, "Project 1") == 0 &&
+         strcmp(found.repositories[1].default_branch, "main") == 0);
+  assert(!vkr_depot_discovery_read_answer(answer, size, nonce + 1u, &found));
+  answer[size] = 0u;
+  assert(!vkr_depot_discovery_read_answer(answer, size + 1u, nonce, &found));
+  const uint32_t flags_offset =
+      14u + 2u + 32u + 1u + strlen("windows-d") + 1u + strlen("DESKTOP");
+  answer[flags_offset] = 0x03u;
+  assert(!vkr_depot_discovery_read_answer(answer, size, nonce, &found));
+  answer[flags_offset] = 0x01u;
+  answer[flags_offset + 1u] = VKR_DEPOT_DISCOVERY_REPOSITORIES + 1u;
+  assert(!vkr_depot_discovery_read_answer(answer, size, nonce, &found));
+  answer[flags_offset + 1u] = 2u;
+  assert(vkr_depot_discovery_read_answer(answer, size, nonce, &found));
+  answer[5] = VKR_DEPOT_DISCOVERY_VERSION + 1u;
+  assert(!vkr_depot_discovery_read_answer(answer, size, nonce, &found));
+  probe[5] = VKR_DEPOT_DISCOVERY_VERSION + 1u;
+  assert(
+      !vkr_depot_discovery_read_probe(probe, 14u, &read_nonce, &read_version));
+
+  /* A full answer fits the datagram limit and lists no more than the
+     limit, even from a longer list. */
+  for (uint32_t i = 0u; i < ArrayCount(repositories); ++i) {
+    MemSet(repositories[i].name, 'n', sizeof(repositories[i].name) - 1u);
+    MemSet(repositories[i].default_branch, 'b',
+           sizeof(repositories[i].default_branch) - 1u);
+  }
+  MemSet(responder.name, 'x', sizeof(responder.name) - 1u);
+  MemSet(responder.host, 'y', sizeof(responder.host) - 1u);
+  vkr_depot_responder_set_repositories(&responder, repositories,
+                                       ArrayCount(repositories), false_v);
+  size = vkr_depot_discovery_answer(&responder, 2u, nonce, answer);
+  assert(size <= VKR_DEPOT_DISCOVERY_DATAGRAM_MAX);
+  assert(vkr_depot_discovery_read_answer(answer, size, nonce, &found));
+  assert(found.repository_count == VKR_DEPOT_DISCOVERY_REPOSITORIES);
+  printf("    largest answer %u of %u bytes\n", size,
+         VKR_DEPOT_DISCOVERY_DATAGRAM_MAX);
+  printf("  test_depot_discovery_versions PASSED\n");
+}
+
 /* Fails when the service does not move to a free port beside a taken one,
    including a port another socket holds only for IPv4,
    when an unknown machine's connect does not report DENIED or leaves no
@@ -1532,6 +1624,16 @@ static void test_depot_service(void) {
     assert(browser.found_count == 1u &&
            browser.found[0].address.port == info.address.port &&
            memcmp(browser.found[0].server_key, info.server_key, 32u) == 0);
+    /* The service answers the version 2 probe in version 2. */
+    for (uint32_t i = 0u;
+         i < 40u && browser.found[0].version != VKR_DEPOT_DISCOVERY_VERSION;
+         ++i) {
+      vkr_depot_browser_probe(&browser, false_v);
+      vkr_platform_sleep(50u);
+      (void)vkr_depot_browser_update(&browser);
+    }
+    assert(browser.found_count == 1u &&
+           browser.found[0].version == VKR_DEPOT_DISCOVERY_VERSION);
     vkr_depot_browser_close(&browser);
     printf("    a browser found the service on UDP %u\n", discovery_port);
   } else {
@@ -3079,6 +3181,7 @@ bool32_t run_depot_tests(void) {
   test_depot_conflicts();
   test_depot_cancel();
   test_depot_identity_migration();
+  test_depot_discovery_versions();
   test_depot_service();
   test_depot_repositories();
   test_depot_remote();
