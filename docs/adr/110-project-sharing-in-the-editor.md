@@ -124,8 +124,10 @@ thread reads finished results and progress counters only.
 - A remote at a numeric address from which an outbound-only peer last
   connected to this computer's service (`peer-address` in `service.status`)
   shows "reachable only when it connects, last N min ago" instead of a
-  failure, unless an exchange with it works; its host is the remote's
-  machine, which drops connections from outside.
+  failure, also before any try, unless an exchange with it works; its host
+  is the remote's machine, which drops connections from outside. The status
+  check every 20 s does not try such a remote, and a step that fails against
+  it says that it takes no connections instead of showing the timeout.
 - Discovery is not authenticated: each found repository shows its key's
   first digits and whether it was used before, and an answer with a known
   name but another key says it is not that computer.

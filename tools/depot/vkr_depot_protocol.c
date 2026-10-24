@@ -368,12 +368,61 @@ bool8_t vkr_depot_branch_valid(const char *name) {
   return true_v;
 }
 
+/* The length of the valid UTF-8 sequence at `bytes` (at most `size`
+   bytes): 1 to 4, or 0 for a stray, overlong, surrogate or cut sequence. */
+static uint32_t depot_utf8_length(const uint8_t *bytes, uint32_t size) {
+  const uint8_t lead = bytes[0];
+  uint32_t length = 0u;
+  uint32_t codepoint = 0u;
+  if (lead < 0x80u) {
+    return 1u;
+  } else if ((lead & 0xe0u) == 0xc0u) {
+    length = 2u;
+    codepoint = lead & 0x1fu;
+  } else if ((lead & 0xf0u) == 0xe0u) {
+    length = 3u;
+    codepoint = lead & 0x0fu;
+  } else if ((lead & 0xf8u) == 0xf0u) {
+    length = 4u;
+    codepoint = lead & 0x07u;
+  } else {
+    return 0u;
+  }
+  if (length > size) {
+    return 0u;
+  }
+  for (uint32_t i = 1u; i < length; ++i) {
+    if ((bytes[i] & 0xc0u) != 0x80u) {
+      return 0u;
+    }
+    codepoint = (codepoint << 6) | (bytes[i] & 0x3fu);
+  }
+  static const uint32_t smallest[] = {0u, 0u, 0x80u, 0x800u, 0x10000u};
+  if (codepoint < smallest[length] || codepoint > 0x10ffffu ||
+      (codepoint >= 0xd800u && codepoint <= 0xdfffu)) {
+    return 0u;
+  }
+  return length;
+}
+
 uint32_t vkr_depot_display_name_clean(const uint8_t *bytes, uint32_t size,
                                       char out[VKR_DEPOT_DISPLAY_NAME]) {
-  const uint32_t length = Min(size, VKR_DEPOT_DISPLAY_NAME - 1u);
-  for (uint32_t i = 0u; i < length; ++i) {
-    const uint8_t c = bytes[i];
-    out[i] = c >= 0x20u && c < 0x7fu ? (char)c : '?';
+  uint32_t length = 0u;
+  for (uint32_t i = 0u; i < size;) {
+    const uint32_t sequence = depot_utf8_length(bytes + i, size - i);
+    /* A character that would not fit ends the name whole. */
+    if (length + Max(sequence, 1u) > VKR_DEPOT_DISPLAY_NAME - 1u) {
+      break;
+    }
+    if (sequence == 1u && (bytes[i] < 0x20u || bytes[i] == 0x7fu)) {
+      out[length++] = '?';
+    } else if (sequence) {
+      MemCopy(out + length, bytes + i, sequence);
+      length += sequence;
+    } else {
+      out[length++] = '?';
+    }
+    i += Max(sequence, 1u);
   }
   out[length] = '\0';
   return length;

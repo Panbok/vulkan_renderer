@@ -142,6 +142,9 @@ typedef struct DepotJob {
      first, or commit without them. */
   bool8_t adopt;
   bool8_t ignore_untracked;
+  /* Status: the remote takes no connections, so the check reads its branch
+     as last fetched instead of waiting out a try. */
+  bool8_t skip_fetch;
   char branch[VKR_DEPOT_BRANCH_NAME];
   char source[DEPOT_PATH];
   char project_id[40];
@@ -1459,7 +1462,7 @@ static void depot_job_status(DepotWorker *worker) {
   job->ok = true_v;
   /* The remote's branches, so the window shows what there is to pull; an
      unreachable remote leaves the last fetch's view. */
-  if (job->remote[0] &&
+  if (job->remote[0] && !job->skip_fetch &&
       !vkr_depot_fetch(&worker->allocator, ws, job->remote, NULL,
                        depot_job_fetch_visit, NULL, &job->connect, job->error,
                        sizeof(job->error))) {
@@ -2180,6 +2183,7 @@ static void depot_job_inputs(VkrEditorDepot *depot, const char *remote) {
   const VkrDepotRemoteEntry *entry = depot_remote_entry(depot, remote);
   job->remote[0] = '\0';
   job->address[0] = '\0';
+  job->skip_fetch = false_v;
   MemZero(job->server_key, sizeof(job->server_key));
   MemZero(job->repository, sizeof(job->repository));
   if (entry) {
@@ -2637,13 +2641,17 @@ static void depot_take_results(VkrEditorDepot *depot) {
     depot->ahead = job->ahead;
     depot->behind = job->behind;
   }
+  /* A status check that skipped the remote learned nothing about it. */
   const uint32_t remote = depot_remote_index(depot, job->remote);
-  if (remote != UINT32_MAX && job->kind != DEPOT_JOB_COMMIT) {
+  if (remote != UINT32_MAX && job->kind != DEPOT_JOB_COMMIT &&
+      !job->skip_fetch) {
     depot->remote_connect[remote] = job->connect;
     depot->remote_tried[remote] = true_v;
   }
-  depot->connect = job->connect;
-  depot->connected = job->connect == VKR_DEPOT_CONNECT_OK && job->remote[0];
+  if (!job->skip_fetch) {
+    depot->connect = job->connect;
+    depot->connected = job->connect == VKR_DEPOT_CONNECT_OK && job->remote[0];
+  }
   depot->status_known = depot->status_known || job->ok;
   if (job->kind == DEPOT_JOB_STATUS && job->ok) {
     depot->access_count = Min(job->access_count, DEPOT_ACCESS_MAX);
@@ -2680,7 +2688,18 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
     depot->retry_at = now + DEPOT_RETRY_SECONDS;
   } else if (!job->ok && job->kind != DEPOT_JOB_STATUS &&
              !vkr_depot_progress_canceled(&job->progress)) {
-    string_format(depot->error, sizeof(depot->error), "%s", job->error);
+    /* A remote that takes no connections fails by timing out; say why. */
+    const uint32_t tried = depot_remote_index(depot, job->remote);
+    if (tried != UINT32_MAX && depot->remote_outbound[tried] &&
+        job->connect == VKR_DEPOT_CONNECT_UNREACHABLE) {
+      string_format(depot->error, sizeof(depot->error),
+                    "%s takes no connections from other computers. Its "
+                    "depot service brings its commits to the computers it "
+                    "syncs with and takes theirs while it is connected.",
+                    job->remote);
+    } else {
+      string_format(depot->error, sizeof(depot->error), "%s", job->error);
+    }
   }
   if (job->ok && job->scene_error[0]) {
     string_format(depot->error, sizeof(depot->error), "%s", job->scene_error);
@@ -2858,6 +2877,8 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
       depot->waiting_kind == DEPOT_JOB_NONE && now >= depot->next_status) {
     depot_load_remotes(depot);
     depot_job_inputs(depot, NULL);
+    depot->job->skip_fetch = depot->selected_remote < depot->remote_count &&
+                             depot->remote_outbound[depot->selected_remote];
     depot->next_status = now + DEPOT_STATUS_SECONDS;
     (void)depot_start(depot, DEPOT_JOB_STATUS);
   }
@@ -3593,15 +3614,16 @@ static const VkrDepotRemoteEntry *depot_selected(const VkrEditorDepot *depot) {
              : NULL;
 }
 
-/* What a remote's last exchange says about reaching it. */
-/* Whether the remote is an outbound-only machine this one cannot reach:
-   its state says so instead of a failure. */
+/* Whether the remote is an outbound-only machine this one cannot reach,
+   known before any try: its state says so instead of a failure. */
 static bool8_t depot_remote_outbound(const VkrEditorDepot *depot,
                                      uint32_t index) {
   return depot->remote_outbound[index] &&
-         depot->remote_connect[index] != VKR_DEPOT_CONNECT_OK;
+         (!depot->remote_tried[index] ||
+          depot->remote_connect[index] != VKR_DEPOT_CONNECT_OK);
 }
 
+/* What a remote's last exchange says about reaching it. */
 static const char *depot_remote_state(const VkrEditorDepot *depot,
                                       uint32_t index) {
   if (depot_remote_outbound(depot, index)) {

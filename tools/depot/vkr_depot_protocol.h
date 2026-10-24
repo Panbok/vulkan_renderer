@@ -232,11 +232,13 @@ bool8_t vkr_depot_branch_valid(const char *name);
 
 /* The handshake credential is the client's display name, `user@computer`
    by default, so a server can show who asks for access: at most
-   VKR_DEPOT_DISPLAY_NAME - 1 bytes of printable ASCII. */
+   VKR_DEPOT_DISPLAY_NAME - 1 bytes of UTF-8 without control characters. */
 #define VKR_DEPOT_DISPLAY_NAME 65u
 
-/* Copies `size` bytes of a name into `out`, cut to 64 bytes, with every
-   byte outside printable ASCII replaced by '?'. Returns its length. */
+/* Copies `size` bytes of a name into `out`, cut to 64 bytes at a character
+   boundary: valid UTF-8 stays, so a Cyrillic user name reaches an owner's
+   Allow prompt as written, and each control character or byte of an
+   invalid sequence becomes '?'. Returns its length. */
 uint32_t vkr_depot_display_name_clean(const uint8_t *bytes, uint32_t size,
                                       char out[VKR_DEPOT_DISPLAY_NAME]);
 

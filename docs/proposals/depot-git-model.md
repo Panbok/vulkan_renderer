@@ -141,6 +141,31 @@ editor is in ADR-133 and ADR-110; these gates need both machines.
 - **D5:** two machines each move different Bistro entities in one scene,
   and pull merges both with no conflict.
 
+Results so far, 2026-10-24, Release on both machines:
+
+- **D5 passed.** The Mac moved `titlecard1` (0:7:1) and committed
+  `8558a377de75` without pushing. Windows moved `titlecard2` (0:10:1) and
+  committed `5acc5ef59fd5` into windows-d. The Mac's `depot.sync` made
+  `b5ae9450f793` "Merge origin/main" (two parents) with no conflict and
+  pushed it, and the Mac's service passed it on to windows-d. On both
+  machines Bistro then has `titlecard1` at world y 14.5 and `titlecard2` at
+  13.1288.
+- **D1, the outbound-only label, passed** on Windows: a scratch clone with
+  the Mac as remote `mac` showed "reachable only when it connects" after a
+  pull failed. The label now shows before any try, and the status check no
+  longer tries such a remote (unverified on Windows).
+- **D3, the service without an editor:** the Mac's service fetched Bistro's
+  `aa61c38a6fbd` from windows-d with no editor running. Not yet after a
+  reboot. The Source Control window's ahead and behind counts (1 and 1
+  before the D5 sync) matched `vkr_depot status`.
+- **D4, a clone that opens:** Bistro reached the Mac with its textures
+  cooked there only after two fixes: Bistro's builds were rebuilt with
+  texture recipes (`b72db602`), and `!probe.vkt` let the baked probe cube
+  travel (git `c1dc11b6`). It then opened with 5987 entities.
+- Left: D1's commits offline and clone hash; D2; D3 after a reboot, the
+  Windows service install and the editor round trip with the scene open; D4's
+  untracked-materials case and non-ASCII root.
+
 ## Open questions
 
 - Which history operations are worth adding: reset, revert, stash?

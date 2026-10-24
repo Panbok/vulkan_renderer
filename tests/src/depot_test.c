@@ -938,6 +938,32 @@ static void test_depot_log_graph(void) {
   printf("  test_depot_log_graph PASSED\n");
 }
 
+/* Fails when a cleaned display name loses a valid UTF-8 user name (a
+   Cyrillic one reached an owner's Allow prompt as '?'), keeps a control
+   character or an invalid byte, or cuts a character at the 64-byte limit. */
+static void test_depot_display_name(void) {
+  printf("  Running test_depot_display_name...\n");
+  char out[VKR_DEPOT_DISPLAY_NAME];
+  const char *cyrillic =
+      "\xd0\xaf\xd1\x80\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb0\xd0\xb2@DESKTOP";
+  assert(vkr_depot_display_name_clean((const uint8_t *)cyrillic,
+                                      (uint32_t)strlen(cyrillic),
+                                      out) == strlen(cyrillic));
+  assert(strcmp(out, cyrillic) == 0);
+  /* A tab, a stray continuation byte, an overlong '/' and a cut sequence. */
+  const uint8_t bad[] = {'a', '\t', 0x80u, 0xc0u, 0xafu, 'b', 0xe2u, 0x82u};
+  (void)vkr_depot_display_name_clean(bad, sizeof(bad), out);
+  assert(strcmp(out, "a????b??") == 0);
+  /* 63 ASCII bytes and a two-byte letter: the letter does not fit. */
+  uint8_t long_name[65];
+  memset(long_name, 'x', 63u);
+  long_name[63] = 0xd0u;
+  long_name[64] = 0xafu;
+  assert(vkr_depot_display_name_clean(long_name, sizeof(long_name), out) ==
+         63u);
+  printf("  test_depot_display_name PASSED\n");
+}
+
 /* Fails when a push over a lossy path does not reach the server whole, a
    fetch into an empty store does not reproduce every file, a second push
    resends unchanged objects, a stale compare-and-swap or a commit with
@@ -4226,6 +4252,7 @@ bool32_t run_depot_tests(void) {
   test_depot_workspace();
   test_depot_ignore();
   test_depot_log_graph();
+  test_depot_display_name();
   test_depot_transfer();
   test_depot_runtime_access();
   test_depot_conflicts();
