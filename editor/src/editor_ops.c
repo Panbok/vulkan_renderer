@@ -17095,9 +17095,13 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
                                sizeof(error));
     break;
   case OPS_DEPOT_COMMIT:
-    ok = vkr_editor_depot_commit(depot, first,
-                                 ops_arg_bool(args, "sync", false_v), error,
-                                 sizeof(error));
+    ok = vkr_editor_depot_commit(
+        depot, first, ops_arg_bool(args, "sync", false_v),
+        ops_arg_bool(args, "adopt", false_v) ? VKR_EDITOR_DEPOT_UNTRACKED_ADOPT
+        : ops_arg_bool(args, "ignore_untracked", false_v)
+            ? VKR_EDITOR_DEPOT_UNTRACKED_IGNORE
+            : VKR_EDITOR_DEPOT_UNTRACKED_STOP,
+        error, sizeof(error));
     break;
   case OPS_DEPOT_PUSH:
     ok = vkr_editor_depot_push(depot, first, error, sizeof(error));
@@ -21024,9 +21028,13 @@ static const OpsDef s_ops[] = {
      ops_run_depot_init, NULL, OPS_NO_SCENE},
     {"depot.commit",
      "Commits every local change with 'message' in the repository; 'sync' "
-     "then pulls and pushes the branch with the selected remote.",
+     "then pulls and pushes the branch with the selected remote. Files the "
+     "project reads from outside itself stop it and are listed in "
+     "depot.status 'untracked'; 'adopt' copies them in and commits them, "
+     "'ignore_untracked' commits without them.",
      "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":"
-     "\"string\"},\"sync\":{\"type\":\"boolean\"}}}",
+     "\"string\"},\"sync\":{\"type\":\"boolean\"},\"adopt\":{\"type\":"
+     "\"boolean\"},\"ignore_untracked\":{\"type\":\"boolean\"}}}",
      ops_run_depot_commit, NULL, OPS_NO_SCENE},
     {"depot.push",
      "Pushes the branch to 'remote' (default the selected one) when that is "

@@ -114,10 +114,22 @@ bool8_t vkr_editor_depot_init(VkrEditorDepot *depot, VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame,
                               const char *destination, bool8_t serve,
                               char *error, uint32_t capacity);
+typedef enum VkrEditorDepotUntracked {
+  /* Stop and list the files the project reads from outside itself. */
+  VKR_EDITOR_DEPOT_UNTRACKED_STOP = 0,
+  /* Copy them into the project's own assets/, then commit them too. */
+  VKR_EDITOR_DEPOT_UNTRACKED_ADOPT,
+  /* Commit without them. */
+  VKR_EDITOR_DEPOT_UNTRACKED_IGNORE,
+} VkrEditorDepotUntracked;
+
 /* Commits every local change with `message`; `sync` then pulls and pushes
-   the branch with the remote. */
+   the branch with the remote. Files the project reads from outside itself,
+   which a clone elsewhere would lack, stop the commit unless `untracked`
+   copies them in or ignores them. */
 bool8_t vkr_editor_depot_commit(VkrEditorDepot *depot, const char *message,
-                                bool8_t sync, char *error, uint32_t capacity);
+                                bool8_t sync, VkrEditorDepotUntracked untracked,
+                                char *error, uint32_t capacity);
 /* `remote`: a remote's name, or NULL or empty for the selected one. */
 bool8_t vkr_editor_depot_push(VkrEditorDepot *depot, const char *remote,
                               char *error, uint32_t capacity);

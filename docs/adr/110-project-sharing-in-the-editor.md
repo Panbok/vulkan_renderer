@@ -132,7 +132,14 @@ writes no ignored path (ADR-105).
   remotes with Add remote (filled by one click from a service found on the
   network) and Remove; Let others fetch and push with the server's state,
   the access requests and the access list; and the history.
+- A step the user starts stops a running status check first, so a remote
+  that does not answer never holds the user's step behind its timeout.
 - **Commit** needs saved scenes and records the changes in the repository.
+  It first asks Bakery for the files the project reads from outside itself
+  (`untracked_dependencies`): with any, it stops and lists them with their
+  size, and **Copy in and commit** copies them into the repository's own
+  `assets/` and commits them, or **Commit without them** goes on
+  (`depot.commit` `adopt` and `ignore_untracked`).
   **Push** pushes the branch when that is a fast-forward and publishes this
   computer's cooked textures to the remote's side branch
   ([ADR-123](123-asset-streaming-from-a-depot.md#project-sharing)).
@@ -228,7 +235,12 @@ and switched to `feature`; a window capture showed the top bar button and
 the window with its branches, remote state, Sync, Pull, Push, Fetch, the
 commit to pull, the remotes and the history. Make repository on a project
 whose scene names a missing `source.glb` stopped at Bakery's
-`share_project` (VKR-IDX-0001), as intended.
+`share_project` (VKR-IDX-0001), as intended. With a cube pointing at the
+git-ignored `assets/materials/bm/concrete_floor.mt`, Commit stopped and
+listed 8 files (the material, its graph and 6 textures, 37.3 MB), and Copy
+in and commit copied them into the repository's `assets/` and committed
+them. A pull that changed one scene reported "1 of 1 pulled scenes open"
+through Bakery's `pull_report`.
 
 Unverified: the editor part on Windows; Source Control between two
 computers; serving through `vkr_depot service`; the Local Network prompt for

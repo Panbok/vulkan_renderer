@@ -116,6 +116,10 @@ typedef struct DepotJob {
   bool8_t then_sync;
   bool8_t serve;
   bool8_t create_branch;
+  /* Commit: copy the files the project reads from outside it into it
+     first, or commit without them. */
+  bool8_t adopt;
+  bool8_t ignore_untracked;
   char branch[VKR_DEPOT_BRANCH_NAME];
   char source[DEPOT_PATH];
   char project_id[40];
@@ -141,6 +145,11 @@ typedef struct DepotJob {
   char changed_scenes[DEPOT_LIST_MAX][40];
   /* The first scene the pull report found that does not open. */
   char scene_error[DEPOT_TEXT];
+  /* Files the project reads from outside it, which another computer
+     lacks (Bakery's untracked_dependencies). */
+  uint32_t untracked_count;
+  uint64_t untracked_bytes;
+  DepotText untracked[DEPOT_LIST_MAX];
   uint32_t textures_cooked;
   uint32_t textures_failed;
   /* Cooked textures the side branch for this computer brought instead. */
@@ -256,6 +265,9 @@ struct VkrEditorDepot {
   DepotText changes[DEPOT_LIST_MAX];
   uint32_t conflict_count;
   DepotText conflicts[DEPOT_LIST_MAX];
+  uint32_t untracked_count;
+  uint64_t untracked_bytes;
+  DepotText untracked[DEPOT_LIST_MAX];
   VkrDepotId base;
   VkrDepotId remote_head;
   bool8_t remote_known;
@@ -1165,9 +1177,75 @@ static void depot_job_push(DepotWorker *worker) {
 /* Records every local change in the repository; a served repository
    publishes its cooked textures to its own side branch, for the computers
    that clone it. */
+static bool8_t depot_project_job(DepotJob *job, const char *folder,
+                                 Arena *arena, VkrBakeryJson *request,
+                                 const char *what,
+                                 const VkrBakeryJson **out_result);
+static void depot_first_project(const char *directory, char out[40]);
+
+/* Lists, and with the job's `adopt` copies into the project, the files it
+   reads from outside itself; false when the commit should stop for them. */
+static bool8_t depot_job_untracked(DepotJob *job, const char *folder) {
+  char project_id[40];
+  depot_first_project(folder, project_id);
+  Arena *arena = project_id[0] ? arena_create(MB(1), KB(256)) : NULL;
+  if (!arena) {
+    return true_v;
+  }
+  char project_path[DEPOT_PATH];
+  string_format(project_path, sizeof(project_path),
+                "%s/.vkreditor/projects/%s/project.json", folder, project_id);
+  VkrBakeryJson *request = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, request, "operation",
+                      vkr_bakery_json_cstr(arena, "untracked_dependencies"));
+  vkr_bakery_json_set(arena, request, "project_path",
+                      vkr_bakery_json_cstr(arena, project_path));
+  vkr_bakery_json_set(arena, request, "legacy_root",
+                      vkr_bakery_json_cstr(arena, vkr_content_root()));
+  vkr_bakery_json_set(arena, request, "adopt",
+                      vkr_bakery_json_bool(arena, job->adopt));
+  const VkrBakeryJson *result = NULL;
+  bool8_t proceed = true_v;
+  if (depot_project_job(job, folder, arena, request,
+                        "Looking for files from outside the project",
+                        &result)) {
+    const VkrBakeryJson *list = vkr_bakery_json_get(result, "untracked");
+    int64_t bytes = 0;
+    (void)vkr_bakery_json_get_int(result, "untracked_bytes", &bytes);
+    job->untracked_bytes = (uint64_t)bytes;
+    job->untracked_count = 0u;
+    for (const VkrBakeryJson *entry = list ? list->first : NULL; entry;
+         entry = entry->next) {
+      char path[DEPOT_TEXT] = {0};
+      (void)depot_json_text(entry, "path", path, sizeof(path));
+      depot_job_add_text(job->untracked, &job->untracked_count, path);
+    }
+    if (job->untracked_count && !job->adopt) {
+      string_format(job->error, sizeof(job->error),
+                    "%u files this project uses come from outside it; "
+                    "another computer lacks them",
+                    job->untracked_count);
+      proceed = false_v;
+    } else if (job->adopt) {
+      job->untracked_count = 0u;
+    }
+  } else {
+    /* An older Bakery or a content root without git: the commit goes on,
+       as it did before this check. */
+    log_warn("Source control: %s", job->error);
+    job->error[0] = '\0';
+  }
+  arena_destroy(arena);
+  return proceed;
+}
+
 static void depot_job_commit(DepotWorker *worker) {
   DepotJob *job = worker->job;
   VkrDepotWorkspace *ws = worker->workspace;
+  if (!job->ignore_untracked && !ws->sparse &&
+      !depot_job_untracked(job, ws->root)) {
+    return;
+  }
   VkrDepotCommitResult committed;
   job->ok = vkr_depot_commit_local(ws, job->message, &committed, job->error,
                                    sizeof(job->error));
@@ -1760,6 +1838,8 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   job->merged = false_v;
   job->changed_scene_count = 0u;
   job->scene_error[0] = '\0';
+  job->untracked_count = 0u;
+  job->untracked_bytes = 0u;
   job->branch_count = 0u;
   job->outgoing_count = 0u;
   job->incoming_count = 0u;
@@ -2092,6 +2172,12 @@ static void depot_take_results(VkrEditorDepot *depot) {
     MemCopy(depot->conflicts, job->conflicts,
             Min(job->conflict_count, DEPOT_LIST_MAX) * sizeof(DepotText));
   }
+  if (job->kind == DEPOT_JOB_COMMIT) {
+    depot->untracked_count = job->untracked_count;
+    depot->untracked_bytes = job->untracked_bytes;
+    MemCopy(depot->untracked, job->untracked,
+            Min(job->untracked_count, DEPOT_LIST_MAX) * sizeof(DepotText));
+  }
   if (!vkr_depot_id_zero(&job->base)) {
     depot->base = job->base;
   }
@@ -2403,13 +2489,27 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
 // Actions
 // =============================================================================
 
+/* A user's step goes before a status check: the check, which may wait
+   seconds for a remote that does not answer, stops and its results are
+   dropped. */
+static void depot_preempt_status(VkrEditorDepot *depot) {
+  DepotJob *job = depot->job;
+  if (!job->running || job->kind != DEPOT_JOB_STATUS) {
+    return;
+  }
+  vkr_depot_progress_cancel(&job->progress);
+  depot_job_join(depot);
+  depot->next_status = vkr_platform_get_absolute_time() + DEPOT_STATUS_SECONDS;
+}
+
 /* Whether a step on the open repository may start; false with the reason. */
-static bool8_t depot_can_start(const VkrEditorDepot *depot, char *error,
+static bool8_t depot_can_start(VkrEditorDepot *depot, char *error,
                                uint32_t capacity) {
   if (!depot || !depot->repository) {
     string_format(error, capacity, "This project is not a repository");
     return false_v;
   }
+  depot_preempt_status(depot);
   if (depot_busy(depot)) {
     string_format(error, capacity, "Wait for the current step to finish");
     return false_v;
@@ -2456,6 +2556,7 @@ bool8_t vkr_editor_depot_init(VkrEditorDepot *depot, VkrEditorUi *editor,
                   "Open a project that is not a repository yet");
     return false_v;
   }
+  depot_preempt_status(depot);
   if (depot_busy(depot)) {
     string_format(error, capacity, "Wait for the current step to finish");
     return false_v;
@@ -2499,10 +2600,13 @@ bool8_t vkr_editor_depot_init(VkrEditorDepot *depot, VkrEditorUi *editor,
 }
 
 bool8_t vkr_editor_depot_commit(VkrEditorDepot *depot, const char *message,
-                                bool8_t sync, char *error, uint32_t capacity) {
+                                bool8_t sync, VkrEditorDepotUntracked untracked,
+                                char *error, uint32_t capacity) {
   if (!depot_can_start(depot, error, capacity)) {
     return false_v;
   }
+  depot->job->adopt = untracked == VKR_EDITOR_DEPOT_UNTRACKED_ADOPT;
+  depot->job->ignore_untracked = untracked == VKR_EDITOR_DEPOT_UNTRACKED_IGNORE;
   const char *text = message && message[0] ? message : depot->message;
   string_format(depot->job->message, sizeof(depot->job->message), "%s",
                 text[0] ? text : "Changes");
@@ -2657,6 +2761,7 @@ bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
   if (!depot) {
     return false_v;
   }
+  depot_preempt_status(depot);
   if (depot_busy(depot)) {
     string_format(error, capacity, "Wait for the current step to finish");
     return false_v;
@@ -3024,10 +3129,9 @@ static const char *depot_remote_state(const VkrEditorDepot *depot,
   case VKR_DEPOT_CONNECT_OK:
     return "reachable";
   case VKR_DEPOT_CONNECT_DENIED:
-    return "waiting for its owner to allow this computer";
+    return "waiting for its owner's Allow";
   case VKR_DEPOT_CONNECT_UNREACHABLE:
-    return "not answering: its editor or service is stopped, or a firewall "
-           "blocks it";
+    return "not answering: stopped or blocked";
   case VKR_DEPOT_CONNECT_REFUSED:
     return "refused the connection";
   default:
@@ -3375,6 +3479,60 @@ static void depot_window_conflicts(VkrEditorDepot *depot, VkrEditorUi *editor,
   *y += 38;
 }
 
+/* Files the project reads from outside itself, which the last commit
+   stopped for: copy them in and commit, or commit without them. */
+static void depot_window_untracked(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                   VkrUiSystem *ui, float32_t *y,
+                                   float32_t width, bool8_t busy) {
+  if (!depot->untracked_count) {
+    return;
+  }
+  const VkrUiTheme *theme = vkr_ui_theme();
+  char text[DEPOT_TEXT];
+  char size[32];
+  depot_format_size(depot->untracked_bytes, size, sizeof(size));
+  string_format(text, sizeof(text), "%u file%s from outside the project (%s)",
+                depot->untracked_count, depot->untracked_count == 1u ? "" : "s",
+                size);
+  depot_label(ui, "untracked.title", text, 12, *y, width - 24, theme->warning);
+  *y += 24;
+  for (uint32_t i = 0u; i < Min(depot->untracked_count, 6u); ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    depot_caption(ui, "untracked", depot->untracked[i].text, 24, *y,
+                  width - 36);
+    (void)vkr_ui_pop_id(ui);
+    *y += 18;
+  }
+  if (depot->untracked_count > 6u) {
+    string_format(text, sizeof(text), "and %u more",
+                  depot->untracked_count - 6u);
+    depot_caption(ui, "untracked.more", text, 24, *y, width - 36);
+    *y += 18;
+  }
+  *y += 4;
+  *y += depot_paragraph(ui, "untracked.text",
+                        "The project reads them from the engine's folder, so "
+                        "a clone on another computer would miss them.",
+                        12, *y, width - 24);
+  *y += 4;
+  char error[DEPOT_TEXT] = {0};
+  if (depot_button(editor, ui, "untracked.adopt", "Copy in and commit", 12, *y,
+                   170, true_v, busy) &&
+      !vkr_editor_depot_commit(depot, depot->message, false_v,
+                               VKR_EDITOR_DEPOT_UNTRACKED_ADOPT, error,
+                               sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  if (depot_button(editor, ui, "untracked.ignore", "Commit without them", 190,
+                   *y, 170, false_v, busy) &&
+      !vkr_editor_depot_commit(depot, depot->message, false_v,
+                               VKR_EDITOR_DEPOT_UNTRACKED_IGNORE, error,
+                               sizeof(error))) {
+    string_format(depot->error, sizeof(depot->error), "%s", error);
+  }
+  *y += 38;
+}
+
 static void depot_window_changes(VkrEditorDepot *depot, VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame, VkrUiSystem *ui,
                                  float32_t *y, float32_t width, bool8_t busy) {
@@ -3425,14 +3583,16 @@ static void depot_window_changes(VkrEditorDepot *depot, VkrEditorUi *editor,
   const bool8_t unsaved = !depot_journals_saved(frame);
   if (depot_button(editor, ui, "commit", "Commit", 12, *y, 120, true_v,
                    busy || unsaved) &&
-      !vkr_editor_depot_commit(depot, depot->message, false_v, error,
+      !vkr_editor_depot_commit(depot, depot->message, false_v,
+                               VKR_EDITOR_DEPOT_UNTRACKED_STOP, error,
                                sizeof(error))) {
     string_format(depot->error, sizeof(depot->error), "%s", error);
   }
   if (depot->remote_count &&
       depot_button(editor, ui, "commit.sync", "Commit & Sync", 140, *y, 140,
                    false_v, busy || unsaved) &&
-      !vkr_editor_depot_commit(depot, depot->message, true_v, error,
+      !vkr_editor_depot_commit(depot, depot->message, true_v,
+                               VKR_EDITOR_DEPOT_UNTRACKED_STOP, error,
                                sizeof(error))) {
     string_format(depot->error, sizeof(depot->error), "%s", error);
   }
@@ -3772,6 +3932,7 @@ void vkr_editor_depot_window_build(VkrEditorUi *editor,
     depot_window_branch(depot, editor, ui, &y, width, busy);
     depot_window_sync(depot, editor, ui, &y, width, busy);
     depot_window_conflicts(depot, editor, ui, &y, width, busy);
+    depot_window_untracked(depot, editor, ui, &y, width, busy);
     depot_window_changes(depot, editor, frame, ui, &y, width, busy);
     depot_commit_rows(ui, "outgoing", "To push", depot->outgoing,
                       depot->outgoing_count, depot->ahead, &y, width);
@@ -4526,6 +4687,12 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
         conflicts, vkr_bakery_json_cstr(arena, depot->conflicts[i].text));
   }
   vkr_bakery_json_set(arena, result, "conflicts", conflicts);
+  VkrBakeryJson *untracked = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < Min(depot->untracked_count, DEPOT_LIST_MAX); ++i) {
+    vkr_bakery_json_append(
+        untracked, vkr_bakery_json_cstr(arena, depot->untracked[i].text));
+  }
+  vkr_bakery_json_set(arena, result, "untracked", untracked);
   VkrBakeryJson *job = vkr_bakery_json_object(arena);
   const bool8_t busy = depot_busy(depot);
   vkr_bakery_json_set(arena, job, "running", vkr_bakery_json_bool(arena, busy));
