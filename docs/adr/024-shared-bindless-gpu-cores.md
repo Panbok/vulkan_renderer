@@ -269,13 +269,14 @@ first, and only then every texture by size; a raise stops at the need, and
 without pressure nothing changes (owner decisions, 2026-10-22). Every loaded
 world source touches its material's epoch before the GPU culls it
 (`vkr_scene_emit_world_sources`), so the epoch alone does not tell the
-camera's materials from the rest. Once demand has run for
-`VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS` (64) without a gap that long, a
-texture none of whose materials a frame measured in that time, being out of
-the camera's view or drawn only by shadows, reflections or probes, goes
+camera's materials from the rest. While demand runs without a gap of
+`VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS` (64), a texture none of whose
+materials a frame measured in that time is out of the camera's view or drawn
+only by shadows, reflections or probes, and a raise skips it until demand
+measures it again or stops. One idle as well, unmeasured for
+`VKR_MATERIAL_TEXTURE_IDLE_EPOCHS` (600, about 10 s) of running demand, goes
 toward the floor, largest first, after the measured surplus and before any
-measured texture loses a mip it needs; a raise skips it until demand measures
-it again or stops (owner decision, 2026-10-25). Once loading ends, resident
+measured texture loses a mip it needs (owner decision, 2026-10-25). Once loading ends, resident
 bytes within the budget run no shrink pass, so each raise scan
 (`vkr_material_system_make_room_for_need`) also lowers idle textures, at most
 `VKR_MATERIAL_TEXTURE_ROOM_STEPS` (8) halvings a scan, until the bytes that

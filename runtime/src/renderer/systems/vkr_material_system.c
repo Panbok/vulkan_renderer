@@ -1104,16 +1104,16 @@ vkr_material_system_lower_candidate(VkrMaterialSystem *system,
   return true_v;
 }
 
-/* Lowers the unmeasured textures among `candidates`, sorted by size, one
- * halving per pass, largest first, until `projected` fits `limit`. */
-static void vkr_material_system_lower_unmeasured(
+/* Lowers the idle textures among `candidates`, sorted by size, one halving
+ * per pass, largest first, until `projected` fits `limit`. */
+static void vkr_material_system_lower_idle(
     VkrMaterialSystem *system, VkrMaterialTextureCandidate *candidates,
     uint32_t candidate_count, uint64_t limit, uint64_t *projected) {
   bool8_t lowered = true_v;
   while (lowered && *projected > limit) {
     lowered = false_v;
     for (uint32_t i = 0u; i < candidate_count && *projected > limit; ++i) {
-      if (!candidates[i].unmeasured) {
+      if (!candidates[i].idle) {
         continue;
       }
       lowered = vkr_material_system_lower_candidate(system, &candidates[i], 0u,
@@ -1126,9 +1126,11 @@ static void vkr_material_system_lower_unmeasured(
 /* Halves the caps of `candidates`, sorted for shrinking, down to the floor
  * until `projected` fits `limit`: the oldest demand epoch goes to the floor
  * before a newer one is touched. Within an epoch, textures first lose the
- * mips the GPU measured their materials do not need, then unmeasured ones
- * (out of the camera's view while demand runs) go toward the floor, largest
- * first, and then every texture loses one mip before any loses two. */
+ * mips the GPU measured their materials do not need, then idle ones (out of
+ * the camera's view for VKR_MATERIAL_TEXTURE_IDLE_EPOCHS while demand runs)
+ * go toward the floor, largest first, and then every texture loses one mip
+ * before any loses two. A texture out of view for less keeps the one-mip
+ * order, so a camera that turns back finds it as it left it. */
 static void vkr_material_system_shrink_textures(
     VkrMaterialSystem *system, VkrMaterialTextureCandidate *candidates,
     uint32_t candidate_count, uint64_t limit, uint64_t *projected) {
@@ -1156,12 +1158,12 @@ static void vkr_material_system_shrink_textures(
     if (*projected <= limit) {
       break;
     }
-    /* Past their measured need, the largest textures go first: unmeasured
-       ones, then every texture. */
+    /* Past their measured need, the largest textures go first: idle ones,
+       then every texture. */
     vkr_sort(candidates + begin, end - begin, sizeof(*candidates),
              vkr_material_system_candidate_compare_size);
-    vkr_material_system_lower_unmeasured(system, candidates + begin,
-                                         end - begin, limit, projected);
+    vkr_material_system_lower_idle(system, candidates + begin, end - begin,
+                                   limit, projected);
     lowered = true_v;
     while (lowered && *projected > limit) {
       lowered = false_v;

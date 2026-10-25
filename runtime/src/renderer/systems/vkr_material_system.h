@@ -122,13 +122,14 @@ typedef struct VkrMaterialTextureCandidate {
   uint32_t required_mip_levels;
   /* While demand runs, no frame measured any of the texture's materials for
      VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS: they are out of the camera's
-     view, so the budget lowers the texture before measured ones. */
+     view, so a raise leaves the texture where the budget put it. */
   bool8_t unmeasured;
   /* Unmeasured, and no frame measured its materials for
-     VKR_MATERIAL_TEXTURE_IDLE_EPOCHS of running demand: only such a texture
-     gives room to measured textures below their need without pressure, so
-     one the camera left a moment ago, or has not reached yet, does not
-     reload back and forth. */
+     VKR_MATERIAL_TEXTURE_IDLE_EPOCHS of running demand: the budget lowers
+     such a texture before measured ones lose mips they need, and takes room
+     for measured textures below their need from it alone, so one the camera
+     left a moment ago, or has not reached yet, does not reload back and
+     forth. */
   bool8_t idle;
 } VkrMaterialTextureCandidate;
 

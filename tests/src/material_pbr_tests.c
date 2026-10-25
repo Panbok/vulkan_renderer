@@ -1536,13 +1536,13 @@ vkr_internal void test_unmeasured_frame(VkrMaterialSystem *system,
   vkr_material_system_pump_texture_streams(system, 1u);
 }
 
-/* While demand runs, a drawn texture whose material no frame measured is
-   out of the camera's view (every loaded world source counts as drawn): it
-   goes toward the floor before a measured texture loses a mip it needs,
-   though size order would halve both, and it grows back only once demand
-   stops. */
+/* While demand runs, a drawn texture whose material no frame measured for
+   the idle window is out of the camera's view (every loaded world source
+   counts as drawn): it goes toward the floor before a measured texture
+   loses a mip it needs, though size order would halve both, and it grows
+   back only once demand stops. */
 vkr_internal void
-test_material_texture_unmeasured_lowers_first(MaterialPbrTestContext *ctx) {
+test_material_texture_idle_lowers_first(MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
   VkrMaterialHandle measured_material = {0};
   VkrMaterialHandle unmeasured_material = {0};
@@ -1565,7 +1565,7 @@ test_material_texture_unmeasured_lowers_first(MaterialPbrTestContext *ctx) {
 
   /* Demand runs long enough to tell the unmeasured material out of view. */
   vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
-  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS; ++i) {
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_IDLE_EPOCHS; ++i) {
     test_unmeasured_frame(system, measured_material, unmeasured_material,
                           true_v);
   }
@@ -1606,7 +1606,60 @@ test_material_texture_unmeasured_lowers_first(MaterialPbrTestContext *ctx) {
       texture->limit_source_mip_levels = 0u;
     }
   }
-  printf("  test_material_texture_unmeasured_lowers_first PASSED\n");
+  printf("  test_material_texture_idle_lowers_first PASSED\n");
+}
+
+/* Under pressure, a texture out of view for less than the idle window keeps
+   the size order, one mip from each texture before any loses two, so a
+   camera that turns back finds it as it left it rather than at the floor. */
+vkr_internal void
+test_material_texture_recent_keeps_size_order(MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialHandle measured_material = {0};
+  VkrMaterialHandle recent_material = {0};
+  VkrTextureHandle measured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrTextureHandle recent_texture = VKR_TEXTURE_HANDLE_INVALID;
+  /* As in test_material_texture_idle_lowers_first. */
+  VkrMaterialTextureStream *stream =
+      test_demand_resident_stream(ctx, "size_order_measured", 1024u, 11u, 4096u,
+                                  &measured_material, &measured_texture);
+  const uint32_t measured_index = (uint32_t)(stream - system->texture_streams);
+  stream =
+      test_demand_resident_stream(ctx, "size_order_recent", 2048u, 12u, 8192u,
+                                  &recent_material, &recent_texture);
+  const uint32_t recent_index = (uint32_t)(stream - system->texture_streams);
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+
+  /* Unmeasured for longer than the unmeasured window, short of idle. */
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  for (uint32_t i = 0u; i <= 2u * VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS; ++i) {
+    test_unmeasured_frame(system, measured_material, recent_material, true_v);
+  }
+
+  /* 12288 bytes over 6000: the larger texture halves to 1024 (6144 in all),
+     then the measured one to 512 (3072). */
+  vkr_material_system_set_texture_residency_budget(system, 6000u);
+  test_unmeasured_frame(system, measured_material, recent_material, true_v);
+  assert(system->texture_streams[recent_index].extent_cap == 1024u);
+  assert(system->texture_streams[measured_index].extent_cap == 512u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, measured_material);
+  vkr_material_system_cancel_texture_streams(system, recent_material);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  const VkrTextureHandle textures[] = {measured_texture, recent_texture};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i]);
+    if (texture) {
+      texture->description.mip_levels = 1u;
+      texture->limit_source_extent = 0u;
+      texture->limit_source_mip_levels = 0u;
+    }
+  }
+  printf("  test_material_texture_recent_keeps_size_order PASSED\n");
 }
 
 /* A budget that holds everything but leaves no room under the raise
@@ -3152,7 +3205,8 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_residency_evicts_to_budget(&context);
   test_material_texture_residency_lowers_mips_before_evicting(&context);
   test_material_texture_demand_orders_mip_lowering(&context);
-  test_material_texture_unmeasured_lowers_first(&context);
+  test_material_texture_idle_lowers_first(&context);
+  test_material_texture_recent_keeps_size_order(&context);
   test_material_texture_need_takes_room_from_unmeasured(&context);
   test_material_texture_room_spares_recent_textures(&context);
   test_material_texture_reload_priority_follows_demand(&context);
