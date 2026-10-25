@@ -8683,6 +8683,33 @@ bool8_t vkr_editor_projects_switch_ready(const VkrEditorProjects *projects) {
          !projects->waiting_activation;
 }
 
+bool8_t vkr_editor_projects_reload(VkrEditorProjects *projects,
+                                   VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame) {
+  if (!projects || !projects->project ||
+      !vkr_editor_projects_switch_ready(projects)) {
+    return false_v;
+  }
+  char id[37];
+  char scene[sizeof(projects->project->scenes[0].id)] = {0};
+  string_format(id, sizeof(id), "%s", projects->project->id);
+  if (projects->active_scene < projects->project->scene_count) {
+    string_format(scene, sizeof(scene), "%s",
+                  projects->project->scenes[projects->active_scene].id);
+  }
+  if (!project_load(projects, id, editor, frame)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; scene[0] && i < projects->project->scene_count; ++i) {
+    if (string_equals(projects->project->scenes[i].id, scene)) {
+      projects->pending_scene = i;
+      project_start_job(projects, editor, frame, false_v);
+      break;
+    }
+  }
+  return true_v;
+}
+
 bool8_t vkr_editor_projects_show_scene(VkrEditorProjects *projects,
                                        VkrEditorUi *editor,
                                        const VkrSampleUiFrame *frame,

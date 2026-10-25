@@ -72,12 +72,12 @@ thread reads finished results and progress counters only.
   reads from outside itself stop it with the copy-in card.
 - A computer that takes connections serves each project's repository to
   the others: after Add version control, and when a status check finds the
-  service running and the open repository not yet served, the editor adds
-  the repository's store to the stores the machine's service serves
-  (`vkr_depot_service_add`, under the project's name in the letters a store
-  name takes), once per opened workspace; a running service follows
-  within a second. An outbound-only computer serves nothing; its service
-  syncs the project's store with the remotes that have an interval.
+  service running and the open repository not yet served, the editor asks
+  the machine's service to serve the repository's own store
+  (`vkr_depot_service_serve_project`, ADR-134), once per opened workspace;
+  a running service follows within a second. An outbound-only computer
+  serves nothing; its service syncs the project's store with the remotes
+  that have an interval.
   `depot.serve` still adds or removes a store for agents. The
   editor takes the store from the working copy's `store-root`, so a copy
   cloned with `--store` beside a served store reads as served. When the
@@ -206,6 +206,10 @@ writes no ignored path (ADR-105).
     on the network); then This computer: whether its service runs (Start
     when not), its host, port, key and connections, whether it serves the
     project, and the computers with access.
+- A pull or switch that writes a project's `project.json` opens the
+  project again once its scenes are saved (`vkr_editor_projects_reload`),
+  so a scene another computer added, renamed or removed shows, and the
+  scene that was open opens again from the pulled files.
 - A step the user starts stops a running status check first, so a remote
   that does not answer never holds the user's step behind its timeout.
 - **Commit** needs saved scenes and records the changes in the repository.

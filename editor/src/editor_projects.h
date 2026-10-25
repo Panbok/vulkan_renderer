@@ -155,6 +155,13 @@ bool8_t vkr_editor_projects_open_scene(VkrEditorProjects *projects,
    (ADR-089). */
 String8 vkr_editor_projects_scene_id(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_switch_ready(const VkrEditorProjects *projects);
+/* Reads the open project's document again, as opening it does, after
+   another computer's commit changed it (a scene added, renamed or
+   removed), and opens the scene that was open; false while a job or a
+   switch runs. */
+bool8_t vkr_editor_projects_reload(VkrEditorProjects *projects,
+                                   VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame);
 /* Open the scene with `scene_id`, or with an empty id close the open scene
    so only the World shows. Unsaved edits ask first. */
 bool8_t vkr_editor_projects_show_scene(VkrEditorProjects *projects,

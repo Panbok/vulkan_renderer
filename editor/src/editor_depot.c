@@ -194,6 +194,8 @@ typedef struct DepotJob {
   bool8_t materials_changed;
   /* A project's Scripts folder changed: native code someone else wrote. */
   bool8_t scripts_changed;
+  /* A project document changed: its scenes may differ. */
+  bool8_t project_changed;
   /* A pull merged both sides, or fast-forwarded. */
   bool8_t merged;
   /* Scenes whose files a pull or switch wrote, for Bakery's pull report;
@@ -421,8 +423,10 @@ struct VkrEditorDepot {
   char store_root[DEPOT_PATH];
   char error[DEPOT_TEXT];
   char notice[DEPOT_TEXT];
-  /* A scene reload the last pull asked for, sent once the scene is saved. */
+  /* A scene reload the last pull asked for, sent once the scene is saved;
+     a changed project document reloads the project and its open scene. */
   bool8_t reload_pending;
+  bool8_t project_reload_pending;
   /* The scripts prompt was dismissed for this run of the editor. */
   bool8_t scripts_prompt_dismissed;
   /* The job to repeat once a server allows this computer. */
@@ -1393,6 +1397,10 @@ static bool8_t depot_pull_visit(void *context, const char *path,
   }
   if (string_find(path, "/Scripts/")) {
     job->scripts_changed = true_v;
+  }
+  if (string_n_equals(path, ".vkreditor/projects/", 20u) &&
+      depot_ends_with(path, "/project.json")) {
+    job->project_changed = true_v;
   }
   return true_v;
 }
@@ -2433,6 +2441,7 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   job->scene_files_changed = false_v;
   job->materials_changed = false_v;
   job->scripts_changed = false_v;
+  job->project_changed = false_v;
   job->merged = false_v;
   job->changed_scene_count = 0u;
   job->scene_error[0] = '\0';
@@ -2557,49 +2566,25 @@ static bool8_t depot_machine_serves(const char *store) {
   return serves;
 }
 
-static bool8_t depot_name_char(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-         (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
-}
-
-static bool8_t depot_machine_name_taken(const VkrDepotServiceSettings *settings,
-                                        const char *name) {
-  for (uint32_t i = 0u; i < settings->store_count; ++i) {
-    if (string_equals(settings->stores[i].name, name)) {
-      return true_v;
-    }
-  }
-  return false_v;
-}
-
-/* The name discovery lists the project under: the project's name in the
-   letters a store name takes, numbered when another store has it. */
-static void depot_machine_name(const VkrDepotServiceSettings *settings,
-                               const char *project, char *out,
-                               uint32_t capacity) {
-  char base[VKR_DEPOT_BRANCH_NAME - 4u];
-  uint32_t length = 0u;
-  for (const char *c = project; *c && length + 1u < sizeof(base); ++c) {
-    base[length++] = depot_name_char(*c) ? *c : '-';
-  }
-  base[length] = '\0';
-  if (!length) {
-    string_format(base, sizeof(base), "project");
-  } else if (base[0] == '.') {
-    base[0] = '-';
-  }
-  string_format(out, capacity, "%s", base);
-  for (uint32_t n = 2u; n < 100u && depot_machine_name_taken(settings, out);
-       ++n) {
-    string_format(out, capacity, "%s-%u", base, n);
-  }
-}
-
-/* Adds `store` to the stores the machine's service serves, or removes it;
-   a running service follows within a second. */
+/* Serves `store` from the machine's service as the project's repository,
+   unless the machine takes no connections (vkr_depot_service_serve_project),
+   or stops serving it; a running service follows within a second. */
 static bool8_t depot_machine_set(const char *store, const char *project,
                                  bool8_t serve, char *error,
                                  uint32_t capacity) {
+  char message[DEPOT_TEXT] = {0};
+  if (serve) {
+    bool8_t served = false_v;
+    if (!vkr_depot_service_serve_project(store, project, &served, message,
+                                         sizeof(message))) {
+      string_format(error, capacity, "%s", message);
+      return false_v;
+    }
+    if (message[0]) {
+      log_info("Source control: depot service: %s", message);
+    }
+    return true_v;
+  }
   VkrDepotServicePaths paths;
   VkrDepotServiceSettings *settings =
       vkr_heap_alloc_zeroed(1u, sizeof(*settings));
@@ -2610,15 +2595,8 @@ static bool8_t depot_machine_set(const char *store, const char *project,
                   "The depot service's settings could not be read");
     return false_v;
   }
-  const bool8_t listed = vkr_depot_service_find(settings, store) >= 0;
-  char message[DEPOT_TEXT] = {0};
   bool8_t ok = true_v;
-  if (serve && !listed) {
-    char name[VKR_DEPOT_BRANCH_NAME];
-    depot_machine_name(settings, project, name, sizeof(name));
-    ok = vkr_depot_service_add(&paths, settings, store, name, message,
-                               sizeof(message));
-  } else if (!serve && listed) {
+  if (vkr_depot_service_find(settings, store) >= 0) {
     ok = vkr_depot_service_remove(&paths, settings, store, message,
                                   sizeof(message));
   }
@@ -2809,6 +2787,7 @@ static void depot_follow_workspace(VkrEditorDepot *depot, VkrEditorUi *editor) {
   depot->repository = false_v;
   depot->serving = false_v;
   depot->serve_asked = false_v;
+  depot->project_reload_pending = false_v;
   depot->remote_count = 0u;
   depot->selected_remote = 0u;
   MemZero(depot->repository_id, sizeof(depot->repository_id));
@@ -3053,9 +3032,11 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
     depot->textures_failed = job->textures_failed;
   }
   const bool8_t wrote_files = job->scene_files_changed ||
-                              job->materials_changed || job->scripts_changed;
+                              job->materials_changed || job->scripts_changed ||
+                              job->project_changed;
   if (job->ok && wrote_files && job->kind != DEPOT_JOB_CLONE) {
     depot->reload_pending = job->scene_files_changed;
+    depot->project_reload_pending = job->project_changed;
     if (job->scripts_changed) {
       /* Someone else's native code: it runs once this user trusts it. */
       depot_set_trusted(depot, depot->workspace, false_v);
@@ -3175,8 +3156,7 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
       char store[DEPOT_PATH];
       char error[DEPOT_TEXT] = {0};
       depot_store_root(job->directory, store, sizeof(store));
-      if (depot->machine_known && !depot->machine_outbound_only &&
-          !depot_machine_set(store, depot->project_name, true_v, error,
+      if (!depot_machine_set(store, depot->project_name, true_v, error,
                              sizeof(error))) {
         string_format(depot->error, sizeof(depot->error), "%s", error);
       }
@@ -3295,6 +3275,13 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
     (void)depot_start(depot, DEPOT_JOB_STATUS);
   }
 
+  if (depot->project_reload_pending && depot_journals_saved(frame) &&
+      !frame->scene_loading &&
+      vkr_editor_projects_reload(editor->projects, editor, frame)) {
+    /* Opening the project again opens its scene from the pulled files. */
+    depot->project_reload_pending = false_v;
+    depot->reload_pending = false_v;
+  }
   if (depot->reload_pending && frame->scene_edit &&
       frame->scene_edit->action == VKR_SCENE_EDIT_NONE &&
       depot_journals_saved(frame) && !frame->scene_loading) {
@@ -3593,7 +3580,7 @@ bool8_t vkr_editor_depot_serve(VkrEditorDepot *depot, bool8_t serve,
   if (!depot_machine_set(store, depot->project_name, serve, error, capacity)) {
     return false_v;
   }
-  depot->serving = serve;
+  depot->serving = depot_machine_serves(store);
   if (!serve) {
     depot->address[0] = '\0';
     MemZero(depot->server_key, sizeof(depot->server_key));
