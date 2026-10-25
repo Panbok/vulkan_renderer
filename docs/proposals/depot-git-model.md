@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-24
+updated: 2026-10-25
 authority: proposal
 ---
 
@@ -141,7 +141,7 @@ editor is in ADR-133 and ADR-110; these gates need both machines.
 - **D5:** two machines each move different Bistro entities in one scene,
   and pull merges both with no conflict.
 
-Results so far, 2026-10-24, Release on both machines:
+Results so far, 2026-10-24 to 2026-10-25, Release on both machines:
 
 - **D5 passed.** The Mac moved `titlecard1` (0:7:1) and committed
   `8558a377de75` without pushing. Windows moved `titlecard2` (0:10:1) and
@@ -152,18 +152,32 @@ Results so far, 2026-10-24, Release on both machines:
   13.1288.
 - **D1, the outbound-only label, passed** on Windows: a scratch clone with
   the Mac as remote `mac` showed "reachable only when it connects" after a
-  pull failed. The label now shows before any try, and the status check no
-  longer tries such a remote (unverified on Windows).
+  pull failed. After `69f73d01` the label shows before any try, which
+  Windows confirmed, and the status check no longer tries such a remote.
 - **D3, the service without an editor:** the Mac's service fetched Bistro's
-  `aa61c38a6fbd` from windows-d with no editor running. Not yet after a
-  reboot. The Source Control window's ahead and behind counts (1 and 1
-  before the D5 sync) matched `vkr_depot status`.
+  `aa61c38a6fbd` from windows-d with no editor running. After Windows was
+  shut down overnight (Fast Startup, so close to a resume, not a full
+  reboot), its service ran again 6 s after logon and the Mac's service
+  resumed on its own. The Source Control window's ahead and behind counts
+  (1 and 1 before the D5 sync) matched `vkr_depot status`.
 - **D4, a clone that opens:** Bistro reached the Mac with its textures
   cooked there only after two fixes: Bistro's builds were rebuilt with
   texture recipes (`b72db602`), and `!probe.vkt` let the baked probe cube
   travel (git `c1dc11b6`). It then opened with 5987 entities.
-- Left: D1's commits offline and clone hash; D2; D3 after a reboot, the
-  Windows service install and the editor round trip with the scene open; D4's
+- **D2, different files, passed.** The Mac committed `5558257ff58b` (two
+  new files under `notes/`) and Windows `749574a96259` (a line added to its
+  own note). The Mac's `depot.sync` made `fe630f3e06b8` "Merge origin/main"
+  (two parents) with no conflict, and Windows fast-forwarded to it with all
+  three changes.
+- **D2, one file with Mine, passed.** Each machine replaced
+  `notes/d2-shared.txt`: the Mac in `c57deaf892f1`, Windows in
+  `f1706fc8d1ef`. The Mac's `depot.sync` listed the file as a conflict
+  ("1 files changed here and on origin; choose whose to keep") and merged
+  nothing. `depot.pull` with `conflicts: mine` made `f1851a370f53` (two
+  parents) with the Mac's line, and the push reached windows-d.
+- Left: D1's commits offline and clone hash; D2 with Theirs, the import job
+  and `prepare_scene` after pulls; D3 after a full reboot, the Windows
+  service install and the editor round trip with the scene open; D4's
   untracked-materials case and non-ASCII root.
 
 ## Open questions
