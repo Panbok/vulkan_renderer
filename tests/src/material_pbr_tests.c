@@ -1638,13 +1638,20 @@ vkr_internal void test_material_texture_need_takes_room_from_unmeasured(
   system->texture_stream_active_count =
       VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
 
-  /* 9216 bytes fit 9600, above its 8400 raise ceiling. Once demand has run
-     long enough, raising the measured texture to its need (3072 bytes more)
-     takes the unmeasured one to 1024 (2048 bytes) first. */
+  /* 9216 bytes fit 9600, above its 8400 raise ceiling. A texture the camera
+     has not reached yet keeps its mips while demand is young; once it has
+     gone unmeasured for the idle window, raising the measured texture to its
+     need (3072 bytes more) takes it to 1024 (2048 bytes) first. */
   vkr_material_system_set_texture_residency_budget(system, 9600u);
   for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS +
                                  2u * VKR_MATERIAL_TEXTURE_DEMAND_WINDOW;
        ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          true_v);
+  }
+  assert(system->texture_streams[unmeasured_index].extent_cap == 0u);
+  assert(system->texture_streams[measured_index].extent_cap == 512u);
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_IDLE_EPOCHS; ++i) {
     test_unmeasured_frame(system, measured_material, unmeasured_material,
                           true_v);
   }

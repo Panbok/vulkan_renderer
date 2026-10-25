@@ -909,9 +909,10 @@ vkr_material_system_material_unmeasured(const VkrMaterialSystem *system,
          VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS;
 }
 
-/* Whether no frame ever measured `material`, or none did for
- * VKR_MATERIAL_TEXTURE_IDLE_EPOCHS; meaningful only while demand is
- * settled. */
+/* Whether no frame measured `material` for VKR_MATERIAL_TEXTURE_IDLE_EPOCHS
+ * of running demand: a material the camera has not reached yet waits as
+ * long as one it left, so a first pass around a scene lowers nothing it is
+ * about to raise. Meaningful only while demand is settled. */
 static bool8_t
 vkr_material_system_material_idle(const VkrMaterialSystem *system,
                                   VkrMaterialHandle material) {
@@ -919,10 +920,11 @@ vkr_material_system_material_idle(const VkrMaterialSystem *system,
       material.id > system->config.max_material_count) {
     return false_v;
   }
-  const uint64_t measured =
-      system->texture_demand[material.id - 1u].measured_epoch;
-  return measured == 0u || system->texture_stream_epoch - measured >=
-                               VKR_MATERIAL_TEXTURE_IDLE_EPOCHS;
+  const uint64_t since =
+      Max(system->texture_demand[material.id - 1u].measured_epoch,
+          system->texture_demand_run_epoch);
+  return system->texture_stream_epoch - since >=
+         VKR_MATERIAL_TEXTURE_IDLE_EPOCHS;
 }
 
 /* The extent a material's textures need from its demand window, zero when

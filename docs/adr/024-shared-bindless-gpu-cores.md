@@ -280,9 +280,10 @@ bytes within the budget run no shrink pass, so each raise scan
 (`vkr_material_system_make_room_for_need`) also lowers idle textures, at most
 `VKR_MATERIAL_TEXTURE_ROOM_STEPS` (8) halvings a scan, until the bytes that
 bring measured ones to their need fit under the raise ceiling, 7/8 of the
-budget. A texture is idle when no frame measured its materials since demand
-settled, or none did for `VKR_MATERIAL_TEXTURE_IDLE_EPOCHS` (600, about 10 s):
-a first version that took the room from any texture unmeasured for 64 epochs
+budget. A texture is idle when no frame measured its materials for
+`VKR_MATERIAL_TEXTURE_IDLE_EPOCHS` (600, about 10 s) of running demand, so a
+texture the camera has not reached yet waits as long as one it left: a first
+version that took the room from any texture unmeasured for 64 epochs
 lowered and raised textures each time Bistro's 5-second orbit turned away and
 back, about 300 reloads in 25 s, and took the orbit's wall frame at p95 from
 14.6 to 17.2 ms on the RX 6700 XT and from 32.7 to 55.4 ms on the M1 Pro,

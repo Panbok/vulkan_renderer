@@ -124,10 +124,11 @@ typedef struct VkrMaterialTextureCandidate {
      VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS: they are out of the camera's
      view, so the budget lowers the texture before measured ones. */
   bool8_t unmeasured;
-  /* Unmeasured, and either no frame ever measured its materials or none did
-     for VKR_MATERIAL_TEXTURE_IDLE_EPOCHS: only such a texture gives room to
-     measured textures below their need without pressure, so one the camera
-     left a moment ago does not reload back and forth. */
+  /* Unmeasured, and no frame measured its materials for
+     VKR_MATERIAL_TEXTURE_IDLE_EPOCHS of running demand: only such a texture
+     gives room to measured textures below their need without pressure, so
+     one the camera left a moment ago, or has not reached yet, does not
+     reload back and forth. */
   bool8_t idle;
 } VkrMaterialTextureCandidate;
 
