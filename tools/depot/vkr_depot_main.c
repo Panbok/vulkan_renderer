@@ -25,6 +25,7 @@
  *   vkr_depot switch NAME [--dir DIR] [--take-theirs|--keep-mine]
  *   vkr_depot refs [DIR]
  *   vkr_depot log [DIR] [--count N]
+ *   vkr_depot show COMMIT [--dir DIR]
  *   vkr_depot lock PATH [--dir DIR]
  *   vkr_depot unlock PATH [--dir DIR] [--force]
  *   vkr_depot locks [DIR]
@@ -1056,6 +1057,85 @@ static int depot_log(const char *directory, uint32_t count) {
   return 0;
 }
 
+typedef struct DepotShow {
+  const char *prefix;
+  uint32_t prefix_size;
+  uint32_t matches;
+  VkrDepotId commit;
+} DepotShow;
+
+/* Finds the commits whose ID starts with the hex prefix. */
+static bool8_t depot_show_match(void *context, const VkrDepotLogEntry *entry) {
+  DepotShow *show = context;
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&entry->id, hex);
+  if (strncmp(hex, show->prefix, show->prefix_size) == 0) {
+    show->matches += 1u;
+    show->commit = entry->id;
+  }
+  return true_v;
+}
+
+static bool8_t depot_show_commit(void *context, const VkrDepotLogEntry *entry) {
+  (void)context;
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&entry->id, hex);
+  printf("commit %s\n", hex);
+  for (uint32_t i = 0u; i < entry->parent_count; ++i) {
+    vkr_depot_id_hex(&entry->parents[i], hex);
+    printf("parent %s\n", hex);
+  }
+  printf("author ");
+  for (uint32_t k = 0u; k < 6u; ++k) {
+    printf("%02x", entry->author[k]);
+  }
+  printf("\ntime %llu\n\n%.*s\n\n",
+         (unsigned long long)(entry->time_us / 1000000u),
+         (int)entry->message_size, entry->message);
+  return false_v;
+}
+
+static bool8_t depot_show_change(void *context, const char *path,
+                                 VkrDepotChange change) {
+  (void)context;
+  const char *mark = change == VKR_DEPOT_CHANGE_ADDED     ? "A"
+                     : change == VKR_DEPOT_CHANGE_DELETED ? "D"
+                                                          : "M";
+  printf("%s %s\n", mark, path);
+  return true_v;
+}
+
+/* A commit the working copy's history reaches, by an ID prefix: its
+   parents, message and the files it changed against its first parent. */
+static int depot_show(const char *directory, const char *prefix) {
+  VkrDepotWorkspace workspace;
+  if (!vkr_depot_workspace_open(&workspace, directory,
+                                vkr_depot_zstd_codec())) {
+    fprintf(stderr, "no working copy at %s\n", directory);
+    return 1;
+  }
+  DepotShow show = {.prefix = prefix, .prefix_size = (uint32_t)strlen(prefix)};
+  /* The walk sizes its frontier by the count, so it takes a bound. */
+  (void)vkr_depot_log_graph(&workspace.store, &workspace.base, 1u, 65536u,
+                            depot_show_match, &show);
+  int result = 1;
+  if (show.matches == 0u) {
+    fprintf(stderr, "no commit %s in this working copy's history\n", prefix);
+  } else if (show.matches > 1u) {
+    fprintf(stderr, "%u commits start with %s; give more digits\n",
+            show.matches, prefix);
+  } else if (vkr_depot_log(&workspace.store, &show.commit, 1u,
+                           depot_show_commit, NULL) == 1u &&
+             vkr_depot_commit_changes(&workspace.store, &show.commit,
+                                      depot_show_change, NULL)) {
+    result = 0;
+  } else {
+    fprintf(stderr, "this working copy's store lacks the commit's files\n");
+  }
+  vkr_depot_workspace_close(&workspace);
+  return result;
+}
+
 static bool8_t depot_print_lock(void *context, const char *path,
                                 const uint8_t owner[32], uint64_t time_us) {
   (void)context;
@@ -1128,6 +1208,7 @@ static void depot_usage(void) {
       "  vkr_depot cooked [DIR]\n"
       "  vkr_depot stream ADDR SERVER-KEY DIR PATH [--branch NAME]\n"
       "  vkr_depot log [DIR] [--count N]\n"
+      "  vkr_depot show COMMIT [--dir DIR]\n"
       "  vkr_depot lock|unlock PATH [--dir DIR] [--force]\n"
       "  vkr_depot service add|remove|list|install|uninstall|status|run "
       "...\n");
@@ -1315,6 +1396,9 @@ static int depot_main(int argc, char **argv) {
   }
   if (strcmp(command, "log") == 0) {
     return depot_log(first, count);
+  }
+  if (strcmp(command, "show") == 0 && positional[0]) {
+    return depot_show(dir ? dir : ".", positional[0]);
   }
   if (strcmp(command, "locks") == 0) {
     return depot_locks_command(first, NULL, false_v, false_v, false_v);

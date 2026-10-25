@@ -303,8 +303,10 @@ its close frame is sent rather than 200 ms.
   sides moved the branch), `merge` (a branch or a fetched remote branch, per
   file, with the units of `.vkrdepotmerge` through `vkr_bakery`;
   [vkr_depot_merge.h](../../tools/depot/vkr_depot_merge.h)), `remote`,
-  `branch`, `switch`, `refs`, `log`, `lock`, `unlock`, `locks`. The store holds the
-  branches, remotes and tracked remote branches
+  `branch`, `switch`, `refs`, `log`, `show` (a commit by an ID prefix: its
+  parents, message and the files it changed against its first parent),
+  `lock`, `unlock`, `locks`. The store holds the branches, remotes and
+  tracked remote branches
   ([vkr_depot_repository.h](../../tools/depot/vkr_depot_repository.h)), and
   a working copy of the older form gets them on open; the model and its
   remaining phases are in
