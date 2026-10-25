@@ -17062,7 +17062,7 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
   char third[256] = {0};
   char fourth[1024] = {0};
   static const char *const keys[][4] = {
-      [OPS_DEPOT_INIT] = {"destination", "", "", ""},
+      [OPS_DEPOT_INIT] = {"", "", "", ""},
       [OPS_DEPOT_COMMIT] = {"message", "", "", ""},
       [OPS_DEPOT_PUSH] = {"remote", "", "", ""},
       [OPS_DEPOT_PULL] = {"remote", "conflicts", "", ""},
@@ -17092,8 +17092,7 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
   bool8_t ok = true_v;
   switch (action) {
   case OPS_DEPOT_INIT:
-    ok = vkr_editor_depot_init(depot, ctx->editor, ctx->frame, first,
-                               ops_arg_bool(args, "serve", false_v), error,
+    ok = vkr_editor_depot_init(depot, ctx->editor, ctx->frame, error,
                                sizeof(error));
     break;
   case OPS_DEPOT_COMMIT:
@@ -21034,12 +21033,12 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_status, NULL,
      OPS_NO_SCENE},
     {"depot.init",
-     "Makes the open project a repository: copies it and every file it uses "
-     "into 'destination' (default <projects folder>/<name>), commits it there "
-     "and opens it; 'serve' lets others fetch and push from the start.",
-     "{\"type\":\"object\",\"properties\":{\"destination\":{\"type\":"
-     "\"string\"},\"serve\":{\"type\":\"boolean\"}}}",
-     ops_run_depot_init, NULL, OPS_NO_SCENE},
+     "Adds version control to the open project's own folder and commits it "
+     "there; nothing is copied. Files the project reads from outside itself "
+     "stop the first commit as depot.commit does. A computer that takes "
+     "connections serves the repository to the others.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_init, NULL,
+     OPS_NO_SCENE},
     {"depot.commit",
      "Commits every local change with 'message' in the repository; 'sync' "
      "then pulls and pushes the branch with the selected remote. Files the "

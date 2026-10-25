@@ -894,6 +894,36 @@ cleanup:
   return result;
 }
 
+VkrBakeryJson *vkr_project_repository_files(VkrProjectJob *job) {
+  Arena *arena = job->arena;
+  /* The project's own folder, where Init makes the repository. */
+  char folder[VKR_PROJECT_PATH];
+  vkr_bakery_path_parent(folder, sizeof(folder), job->workspace);
+  static const char *const names[] = {".vkrdepotignore", ".vkrdepotmerge"};
+  const char *const texts[] = {vkr_share_ignore, vkr_share_merge};
+  const uint64_t sizes[] = {sizeof(vkr_share_ignore) - 1u,
+                            sizeof(vkr_share_merge) - 1u};
+  VkrBakeryJson *written = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < ArrayCount(names); ++i) {
+    const char *path = vkr_project_printf(job, "%s/%s", folder, names[i]);
+    /* A file the owner wrote stays as it is. */
+    if (vkr_bakery_is_file(path)) {
+      continue;
+    }
+    if (!vkr_project_write_text(job, path, texts[i], sizes[i])) {
+      return NULL;
+    }
+    vkr_bakery_json_append(written, vkr_bakery_json_cstr(arena, names[i]));
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, result, "version",
+                      vkr_bakery_json_int(arena, VKR_PROJECT_VERSION));
+  vkr_bakery_json_set(arena, result, "status",
+                      vkr_bakery_json_cstr(arena, "complete"));
+  vkr_bakery_json_set(arena, result, "written", written);
+  return result;
+}
+
 VkrBakeryJson *vkr_project_dependencies(VkrProjectJob *job) {
   Arena *arena = job->arena;
   /* Engine content stays where it is; the rest of what the content root

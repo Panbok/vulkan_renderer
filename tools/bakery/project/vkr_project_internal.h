@@ -651,6 +651,11 @@ VkrBakeryJson *vkr_project_share(VkrProjectJob *job);
  * lacks; with `adopt`, copies each into the working copy's own assets/
  * (vkr_project_share.c). */
 VkrBakeryJson *vkr_project_dependencies(VkrProjectJob *job);
+/** `repository_files`: writes the depot's ignore and merge files that a
+ * shared project carries into the project's own folder, where Init makes
+ * the repository, keeping either file that is already there
+ * (vkr_project_share.c). */
+VkrBakeryJson *vkr_project_repository_files(VkrProjectJob *job);
 /** `merge_scene_unit` and `merge_project_document`: the depot's merge
  * drivers, which merge one unit of the request's `base`, `mine` and
  * `theirs` folders into its `output` folder (vkr_project_merge.c). They

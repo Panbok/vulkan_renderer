@@ -21,10 +21,10 @@ vkr_internal const char *const vkr_project_cleanup_operations[] = {
     "finalize_textures",     "finalize_project_assets"};
 
 vkr_internal const char *const vkr_project_scene_optional[] = {
-    "create_project", "delete_project",        "import_project_assets",
-    "inspect_scene",  "collect_garbage",       "finalize_project_assets",
-    "package_world",  "share_project",         "recook_textures",
-    "pull_report",    "untracked_dependencies"};
+    "create_project", "delete_project",         "import_project_assets",
+    "inspect_scene",  "collect_garbage",        "finalize_project_assets",
+    "package_world",  "share_project",          "recook_textures",
+    "pull_report",    "untracked_dependencies", "repository_files"};
 
 vkr_internal bool8_t vkr_project_listed(const char *value,
                                         const char *const *items,
@@ -432,6 +432,12 @@ vkr_internal bool8_t vkr_project_execute(VkrProjectJob *job) {
     VkrBakeryJson *result = vkr_project_pull_report(job);
     return result && vkr_project_atomic_json(job, job->result_path, result) &&
            vkr_project_write_status(job, "complete", "Pulled scenes checked",
+                                    1.0, NULL);
+  }
+  if (strcmp(operation, "repository_files") == 0) {
+    VkrBakeryJson *result = vkr_project_repository_files(job);
+    return result && vkr_project_atomic_json(job, job->result_path, result) &&
+           vkr_project_write_status(job, "complete", "Repository files written",
                                     1.0, NULL);
   }
   if (strcmp(operation, "untracked_dependencies") == 0) {

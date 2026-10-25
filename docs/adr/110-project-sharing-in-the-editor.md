@@ -43,12 +43,17 @@ Owner decisions:
   repository, local commits, remotes, merge; the server becomes a service per
   machine that the editor shows and never hosts
   ([proposal](../proposals/depot-git-model.md#owner-decisions-2026-10-24)).
+- **2026-10-25:** the owner rejected copies: a project is one folder per
+  computer, and Add version control makes that folder the repository.
+  There is no list of repositories, no Sharing tab and no store apart from
+  the project's own. The Changes list names scenes and project parts, and
+  updates while the user works.
 
 ## Decision
 
 [editor_depot.c](../../editor/src/editor_depot.c) owns source control. One
 worker thread runs one step at a time (status, commit, push, pull, sync,
-fetch, clone, make repository, switch, start the service); the machine's
+fetch, clone, add version control, switch, start the service); the machine's
 depot service serves repositories in a process of its own
 ([vkr_depot_service.h](../../tools/depot/vkr_depot_service.h)). The UI
 thread reads finished results and progress counters only.
@@ -57,16 +62,23 @@ thread reads finished results and progress counters only.
 
 - A project whose workspace is a depot working copy is a repository; opening
   it adopts a working copy of the older form (ADR-133).
-- **Make repository** saves nothing itself and refuses while a scene has
-  unsaved edits. It runs Bakery's `share_project` into `~/VKR
-  Projects/<name>` (or a folder the user names, outside the git repository),
-  rebuilds each model `needs_rebuild` lists, removes the builds that
-  replaced, makes the folder a working copy, commits `Created <name>` and
-  reopens the editor there (`vkr_editor_projects_open_workspace`).
-- **Let others fetch and push** adds the repository's store to the stores
-  the machine's service serves (`vkr_depot_service_add`, under the
-  project's name in the letters a store name takes), and clearing it
-  removes the store; a running service follows within a second. The
+- **Add version control** saves nothing itself and refuses while a scene
+  has unsaved edits, and for a project inside the engine's folder, whose
+  repository would hold the engine. It copies nothing: Bakery's
+  `repository_files` writes `.vkrdepotignore` and `.vkrdepotmerge` into the
+  project's own folder (keeping either one already there), the folder
+  becomes a working copy with its store in `.vkrdepot/store`, and the
+  first commit, `Created <name>`, runs as Commit does, so files the project
+  reads from outside itself stop it with the copy-in card.
+- A computer that takes connections serves each project's repository to
+  the others: after Add version control, and when a status check finds the
+  service running and the open repository not yet served, the editor adds
+  the repository's store to the stores the machine's service serves
+  (`vkr_depot_service_add`, under the project's name in the letters a store
+  name takes), once per opened workspace; a running service follows
+  within a second. An outbound-only computer serves nothing; its service
+  syncs the project's store with the remotes that have an interval.
+  `depot.serve` still adds or removes a store for agents. The
   editor takes the store from the working copy's `store-root`, so a copy
   cloned with `--store` beside a served store reads as served. When the
   service does not run, the editor installs and starts it with the
@@ -107,10 +119,13 @@ thread reads finished results and progress counters only.
 
 ### Cloning
 
-- The project hub lists the repositories on this computer (Open) and those
-  found on the network (Clone), one row per repository a service lists in
-  its version 2 answer; Clone selects that repository and the remote
-  `origin` keeps its ID (ADR-133). Discovery is a broadcast every 2 s plus a
+- The project hub lists the projects found on the network, one row per
+  repository a service lists in its version 2 answer, with Clone; Clone
+  selects that repository and the remote `origin` keeps its ID (ADR-133).
+  A project this computer already syncs with (a remembered working copy has
+  a remote with that service's key and repository ID) shows `On this
+  computer` and Open instead, so a computer keeps one folder per project.
+  Discovery is a broadcast every 2 s plus a
   direct probe of
   every server used before, since some endpoint security drops answers to
   broadcasts but not to direct probes. A field takes a computer name or
@@ -151,9 +166,10 @@ writes no ignored path (ADR-105).
 
 ### Source Control
 
-- A status step every 20 s counts local changes (a snapshot against the
-  index), fetches the selected remote, and works out the branch's commits to
-  push and to pull. The top bar button shows the branch and its most
+- A status step every 2 s counts local changes (a snapshot against the
+  index, about 0.1 s for Testbed), at once after a scene saves; every 20 s
+  it also fetches the selected remote; and it works out the branch's
+  commits to push and to pull. The top bar button shows the branch and its most
   pressing state: `conflicts`, `waiting for access`, `N asking`, `N to
   pull`, `N changes` or `N to push`; it opens the Source Control window.
 - The window ([editor_depot.c](../../editor/src/editor_depot.c)), at least
@@ -168,8 +184,13 @@ writes no ignored path (ADR-105).
     Keep mine, files from outside the project, each access request with
     Allow, Fetch only and Deny, waiting for a remote's Allow, and held
     scripts.
-  - **Changes:** a table of changed files (change, name, folder; sortable),
-    the message, Commit and Commit & Sync.
+  - **Changes:** a table of changed items (change, item, details;
+    sortable): each scene under its name with the count of its files, the
+    project's settings, the rest of the project's folder, the editor's own
+    data, and each other file with its folder; a scene's revision files
+    modify it, and only its `scene.json` adds or deletes it. An open scene
+    with unsaved edits comes first as `Unsaved`. Then the message, Commit
+    and Commit & Sync. `depot.status` `items` lists the same rows.
   - **History:** the commits of the branch and of the remote's branch as
     last fetched, merged lines included, newest first (up to 200;
     `vkr_depot_log_graph`). An arrow marks a commit to push or to pull, a
@@ -182,9 +203,9 @@ writes no ignored path (ADR-105).
     (`vkr_depot_commit_changes`), read on a thread of their own.
   - **Remotes:** a card per remote with its address, key, state, Sync with
     it and Remove, and Add remote (filled by one click from a service found
-    on the network).
-  - **Sharing:** Let others fetch and push, the service's host, port, key
-    and connections, and the computers with access.
+    on the network); then This computer: whether its service runs (Start
+    when not), its host, port, key and connections, whether it serves the
+    project, and the computers with access.
 - A step the user starts stops a running status check first, so a remote
   that does not answer never holds the user's step behind its timeout.
 - **Commit** needs saved scenes and records the changes in the repository.
@@ -201,7 +222,7 @@ writes no ignored path (ADR-105).
   (`depot.commit` `adopt` and `ignore_untracked`). The same check lists
   models whose builds hold, or whose materials name, cooked textures that no
   texture recipe covers (`needs_rebuild`). Commit rebuilds them first
-  (`rebuild_asset`), as Make repository does, because another computer
+  (`rebuild_asset`), including the first commit, because another computer
   cannot cook their textures. Bistro's builds from before texture recipes
   reached the Mac that way on 2026-10-24, and it could not open the scene.
   **Push** pushes the branch when that is a fast-forward and publishes this
@@ -244,8 +265,9 @@ writes no ignored path (ADR-105).
 - Source control and collaboration use one working copy; a collaborative
   session ([ADR-106](106-collaborative-editing-session.md)) on a repository
   bases on its depot.
-- A repository lives outside the git repository. Editing the original after
-  Make repository does not reach the repository.
+- A repository is the project's own folder, outside the engine's git
+  repository; a project inside the engine's folder cannot add version
+  control and is made anew in the projects folder.
 - A shared repository is reachable while its user is logged in, whether an
   editor runs or not. A computer whose endpoint security drops unsolicited
   inbound traffic cannot serve; it adds another computer's repository as a

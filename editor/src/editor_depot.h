@@ -107,13 +107,12 @@ struct VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
                                                    struct Arena *arena);
 
 /* Each starts a step and returns false with the reason when it cannot. */
-/* Makes the open project a repository: copies it and every file it uses
-   into `destination` (empty for ~/VKR Projects/<name>), commits it there
-   and opens it; `serve` lets others fetch and push from the start. */
+/* Adds version control to the open project's own folder and commits it
+   there; nothing is copied. A computer that takes connections serves it
+   to the others. */
 bool8_t vkr_editor_depot_init(VkrEditorDepot *depot, VkrEditorUi *editor,
-                              const VkrSampleUiFrame *frame,
-                              const char *destination, bool8_t serve,
-                              char *error, uint32_t capacity);
+                              const VkrSampleUiFrame *frame, char *error,
+                              uint32_t capacity);
 typedef enum VkrEditorDepotUntracked {
   /* Stop and list the files the project reads from outside itself. */
   VKR_EDITOR_DEPOT_UNTRACKED_STOP = 0,
