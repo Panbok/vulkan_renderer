@@ -140,9 +140,15 @@ demand keeps resident.
    drawn; fetching only the mips its need holds would trim without pressure
    (item 1), which the owner kept deferred on 2026-10-23. The tiled pipeline
    measures demand only while the texture budget binds (ADR-024), and orders
-   by epoch otherwise. A first Windows run over a loopback depot reached
-   every texture's full file 64.0 s after the stream opened, against about
-   34 s for a local load (ADR-123); no run with the old order to compare.
+   by epoch otherwise. Over a loopback depot on Windows (2026-10-25, two
+   alternating runs each, old order rebuilt with 799f374f reverted) the last
+   full file arrived 66.6 and 67.1 s after the stream opened with the old
+   order and 68.0 and 67.2 s with the new one, and the stored bytes matched
+   at every 5 s mark: the stream is throughput-bound, and the new order
+   only fetches about 50 fewer, larger files by 45 s for the same bytes.
+   Whether visible textures reach full detail sooner was not measured. The
+   M1 Pro reached the last full file after 18.0 to 20.3 s in three runs
+   (ADR-123).
 
 **Lifetime.** The texture system owns images, levels and slots; the material
 system owns streams and demand; each backend adapter owns native images, copy
@@ -181,7 +187,12 @@ The owner accepted each recommendation below on 2026-10-20.
   (`vkr_material_system_texture_residency`). The RX 6700 XT pressure case
   at `VKR_VULKAN_MEMORY_BUDGET_MB=6000` (2026-10-23) ended with 521
   textures in 1.106 GB of a 1.106 GB budget, 278 capped, 124 measured and
-  31 below their need. A camera path's report is one run per position.
+  31 below their need. On the M1 Pro (2026-10-25, `metal_bistro_texture_pressure`,
+  `VKR_TEXTURE_STREAM_BUDGET_MB=1200`) 517 textures held 1195.6 MiB: 126
+  measured (422.5 MiB) and 26 below their need, and 391 unmeasured
+  (773.1 MiB), 278 of them at full mips (744.3 MiB), which the 128 floor
+  would hold in about 4.6 MiB. Without a budget 509 textures held
+  1778.3 MiB. A camera path's report is one run per position.
 - A hitch report while flying through Bistro on a recorded camera path at a
   fixed speed: frame time p95, p99 and maximum, and upload stalls, against
   today's load. First reading (2026-10-23, RX 6700 XT, Release,
@@ -194,7 +205,14 @@ The owner accepted each recommendation below on 2026-10-20.
   below their measured need. That case at
   `VKR_VULKAN_MEMORY_BUDGET_MB=6000`, where the texture allowance falls to 0,
   lost the device until device-address buffers were aligned to 16 bytes
-  (ADR-024).
+  (ADR-024). On the M1 Pro (2026-10-25, authoritative,
+  `bistro_material_orbit_1440`, `performance-windowed-gpu.json`, clean
+  worktree, two runs each) the wall frame took 21.08 and 20.91 ms at p50,
+  32.71 and 32.42 ms at p95, 34.95 and 33.72 ms at p99 without a budget,
+  and 20.92 and 20.97, 32.69 and 32.88, 33.95 and 34.10 ms at 1200 MiB,
+  with no pressure stall. At least one slot was below its need in 1,360 of
+  1,500 frames, at most 69. No lowering or copy landed in the measured
+  frames, so this measures the budget's steady cost, not streaming work.
 - G-buffer albedo captures along that path after streaming settles, against
   full residency, and a count of frames that sample below the required mip.
   Static camera only so far (2026-10-23): albedo at 57.8 dB PSNR against full
@@ -203,7 +221,12 @@ The owner accepted each recommendation below on 2026-10-20.
   `VKR_VULKAN_MEMORY_BUDGET_MB=10500` (1.97 GB resident, about 70 slots below
   need) albedo at frames 60, 150 and 290 stayed at 71.1 dB, bit-identical and
   59.8 dB against full residency, no pixel more than 4 of 255 apart, and final
-  colour at 62.9 dB, identical and 51.8 dB.
+  colour at 62.9 dB, identical and 51.8 dB. On the M1 Pro's orbit at
+  1200 MiB (2026-10-25) the unlit base colour at frames 60, 150 and 290
+  stayed at 69.1 dB, bit-identical and 51.8 dB against no budget, at most
+  14 of 255 apart, with identical depth and two no-budget runs bit-identical.
+  Frame 290 sits inside a room, where 22 textures held 1 to 4 mips below
+  their need.
 - A budget at half of Bistro's full-resolution texture bytes, with no
   material showing the neutral default after its first load. Met and
   exceeded on the RX 6700 XT (2026-10-23): at 1.1 GB, 35% of the 3.16 GB,

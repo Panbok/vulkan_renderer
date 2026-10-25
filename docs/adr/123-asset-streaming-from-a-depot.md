@@ -685,6 +685,23 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     texture about 15 s later. The capture differs from a local one by
     0.591 of 255, where two local loads differ by 0.518. One run; no
     earlier Windows run to compare the order against.
+- 2026-10-25, reload order, the same machine and command, two runs with
+  each order alternated, the old order built from 0e63f52c with 799f374f
+  reverted:
+  - All four pass with 775 files fetched, none failed or different. Old
+    order: scene 21.7 and 21.1 s, last preview 27.0 and 26.8 s, last file
+    66.6 and 67.1 s. Demand order: 21.2 and 21.1 s, 27.1 and 26.7 s, 68.0
+    and 67.2 s. The stored bytes at every 5 s mark match within run-to-run
+    spread, so the loopback stream is bound by throughput; at 45 s the
+    demand order had about 50 fewer, larger files for the same bytes. Each
+    seed push took 90 to 92 s.
+- 2026-10-25, Mac M1 Pro, Metal, Release, loopback, the same command on
+  0e63f52c, three runs: scene ready 5.5, 4.7 and 4.8 s, last preview 8.6,
+  7.7 and 7.8 s, last file 20.3, 18.8 and 18.0 s after the stream opened,
+  against a local load ready at 3.2 to 3.5 s with every texture about 2 s
+  later. 775 files fetched, none failed or different, `main.cooked.astc`
+  uploaded 897 MB; captures differ from local by 0.263 to 0.298 of 255,
+  where two local loads differ by 0.269 to 0.311.
 
 ## Revisit when
 
