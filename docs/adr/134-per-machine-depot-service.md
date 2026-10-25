@@ -93,7 +93,12 @@ admin when it has no access list, adopts its key when the service has none,
 saves the settings), `vkr_depot_service_remove`, `vkr_depot_service_find`
 (a store's entry, with the service's path comparison) and
 `vkr_depot_service_status` (settings, key, a loopback discovery answer from
-a service with that key, and the published peers and requests). A store's
+a service with that key, and the published peers and requests).
+`vkr_depot_service_serve_project` serves a repository project from its own
+store: it adds the store under the project's name in a store name's
+letters, numbered when another store has it, unless the machine takes no
+connections (the service's `outbound-only` or `vkr_depot_outbound_only`),
+where it serves nothing and succeeds. A store's
 access list is a file the running service rereads within a second, so
 `vkr_depot_access_set` and `vkr_depot_access_list` answer requests without
 a connection. The editor uses these instead of running the command.

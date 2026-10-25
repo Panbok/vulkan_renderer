@@ -1974,6 +1974,37 @@ static void test_depot_service_settings(void) {
   vkr_depot_service_info(service, info);
   assert(info->repository_count == 1u &&
          strcmp(info->repositories[0].name, "second") == 0);
+
+  /* A repository project is served from its own store, under its name in
+     a store name's letters, once; a name another store has is numbered,
+     and a machine that takes no connections serves nothing. */
+  char projects[2][VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("settings-c", projects[0], sizeof(projects[0]));
+  depot_test_dir("settings-d", projects[1], sizeof(projects[1]));
+  assert(vkr_depot_store_open(&store, projects[0], vkr_depot_zstd_codec()) &&
+         vkr_depot_store_open(&store, projects[1], vkr_depot_zstd_codec()));
+  depot_test_setenv("VKR_DEPOT_OUTBOUND_ONLY", NULL);
+  bool8_t project_served = false_v;
+  assert(vkr_depot_service_serve_project(roots[0], "Level Design: Test",
+                                         &project_served, message,
+                                         sizeof(message)) &&
+         project_served);
+  assert(vkr_depot_service_serve_project(roots[0], "Other", &project_served,
+                                         message, sizeof(message)) &&
+         project_served);
+  assert(vkr_depot_service_serve_project(projects[0], "second", &project_served,
+                                         message, sizeof(message)) &&
+         project_served);
+  assert(vkr_depot_service_settings_load(&paths, loaded) &&
+         loaded->store_count == 3u &&
+         strcmp(loaded->stores[1].name, "Level-Design--Test") == 0 &&
+         strcmp(loaded->stores[2].name, "second-2") == 0);
+  depot_test_setenv("VKR_DEPOT_OUTBOUND_ONLY", "1");
+  assert(vkr_depot_service_serve_project(projects[1], "Fourth", &project_served,
+                                         message, sizeof(message)) &&
+         !project_served);
+  assert(vkr_depot_service_settings_load(&paths, loaded) &&
+         loaded->store_count == 3u);
   vkr_depot_service_stop(service);
   vkr_dmemory_allocator_destroy(&allocator);
 
@@ -1985,6 +2016,8 @@ static void test_depot_service_settings(void) {
   depot_test_setenv(DEPOT_TEST_HOME_VARIABLE, had_home ? saved_home : NULL);
   depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
   assert(vkr_bakery_remove_tree(roots[0]) && vkr_bakery_remove_tree(roots[1]));
+  assert(vkr_bakery_remove_tree(projects[0]) &&
+         vkr_bakery_remove_tree(projects[1]));
   assert(vkr_bakery_remove_tree(home));
   printf("  test_depot_service_settings PASSED\n");
 }

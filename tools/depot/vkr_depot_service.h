@@ -221,6 +221,18 @@ bool8_t vkr_depot_service_remove(const VkrDepotServicePaths *paths,
                                  const char *which, char *message,
                                  uint32_t capacity);
 
+/* A repository project is served from its own store: adds `store_root` to
+   the machine's served stores unless it serves it already, under
+   `project`'s name in the letters a store name takes (numbered when
+   another store has it). A machine that takes no connections (the
+   service's `outbound-only`, or vkr_depot_outbound_only) serves nothing,
+   so `*out_served` stays false and the call succeeds. False with a message when
+   the settings cannot be read or vkr_depot_service_add refuses. */
+bool8_t vkr_depot_service_serve_project(const char *store_root,
+                                        const char *project,
+                                        bool8_t *out_served, char *message,
+                                        uint32_t capacity);
+
 /* Serves the stores `settings` lists and stops serving the others; a
    store whose name changed is served again under the new one. False when
    a store could not be served; the others still apply. */

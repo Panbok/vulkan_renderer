@@ -785,6 +785,74 @@ bool8_t vkr_depot_service_remove(const VkrDepotServicePaths *paths,
   return false_v;
 }
 
+static bool8_t service_name_taken(const VkrDepotServiceSettings *settings,
+                                  const char *name) {
+  for (uint32_t i = 0u; i < settings->store_count; ++i) {
+    if (strcmp(settings->stores[i].name, name) == 0) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* `project` in the letters a store name takes, numbered when another
+   store has it. */
+static void service_project_name(const VkrDepotServiceSettings *settings,
+                                 const char *project, char *out,
+                                 uint32_t capacity) {
+  char base[VKR_DEPOT_BRANCH_NAME - 4u];
+  uint32_t length = 0u;
+  for (const char *c = project ? project : ""; *c && length + 1u < sizeof(base);
+       ++c) {
+    const bool8_t letter =
+        (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+        (*c >= '0' && *c <= '9') || *c == '.' || *c == '_' || *c == '-';
+    base[length++] = letter ? *c : '-';
+  }
+  base[length] = '\0';
+  if (!length) {
+    snprintf(base, sizeof(base), "project");
+  } else if (base[0] == '.') {
+    base[0] = '-';
+  }
+  snprintf(out, capacity, "%s", base);
+  for (uint32_t n = 2u; n < 100u && service_name_taken(settings, out); ++n) {
+    snprintf(out, capacity, "%s-%u", base, n);
+  }
+}
+
+bool8_t vkr_depot_service_serve_project(const char *store_root,
+                                        const char *project,
+                                        bool8_t *out_served, char *message,
+                                        uint32_t capacity) {
+  *out_served = false_v;
+  message[0] = '\0';
+  VkrDepotServicePaths paths;
+  VkrDepotServiceSettings *settings = calloc(1u, sizeof(*settings));
+  if (!settings || !vkr_depot_service_paths(&paths) ||
+      !vkr_depot_service_settings_load(&paths, settings)) {
+    free(settings);
+    snprintf(message, capacity,
+             "the depot service's settings could not be read");
+    return false_v;
+  }
+  bool8_t ok = true_v;
+  if (settings->outbound_only || vkr_depot_outbound_only()) {
+    snprintf(message, capacity,
+             "this computer takes no connections, so it serves nothing");
+  } else if (vkr_depot_service_find(settings, store_root) >= 0) {
+    *out_served = true_v;
+  } else {
+    char name[VKR_DEPOT_BRANCH_NAME];
+    service_project_name(settings, project, name, sizeof(name));
+    ok = vkr_depot_service_add(&paths, settings, store_root, name, message,
+                               capacity);
+    *out_served = ok;
+  }
+  free(settings);
+  return ok;
+}
+
 bool8_t vkr_depot_service_apply(VkrDepotService *service,
                                 const VkrDepotServiceSettings *settings,
                                 char *error, uint32_t capacity) {
