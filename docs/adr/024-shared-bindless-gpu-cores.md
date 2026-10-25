@@ -289,15 +289,33 @@ lowered and raised textures each time Bistro's 5-second orbit turned away and
 back, about 300 reloads in 25 s, and took the orbit's wall frame at p95 from
 14.6 to 17.2 ms on the RX 6700 XT and from 32.7 to 55.4 ms on the M1 Pro,
 where creating and staging each reloaded texture in the submit costs about
-10 ms of CPU (reverted in 69de844e). Before the rule, Bistro's 1200 MiB
-pressure case on the M1 Pro held 278 unmeasured textures at full mips
-(744 MiB of 1196 MiB) while 26 measured ones stayed below their need. On the
-RX 6700 XT's pressure case at `VKR_TEXTURE_STREAM_BUDGET_MB=1200`
-(2026-10-25, Release, four runs before against two after) the slots below
-their need went from 33 to 41 to 0, measured textures from 306 to 322 MiB to
-421 and 427 MiB, unmeasured full chains from 682 to 715 MiB to 372 and
-390 MiB, and the resident bytes from 1198 MiB to 1031 and 1035 MiB, with
-nothing evicted, failed or stalled.
+10 ms of CPU (reverted in 69de844e). Lowering by size order until a texture
+is idle, and raising only once the resident bytes, not the projected ones,
+are under the ceiling, keep a texture the camera turns back to as it was.
+Before the rule, Bistro's 1200 MiB pressure case on the M1 Pro held 278
+unmeasured textures at full mips (744 MiB of 1196 MiB) while 26 measured
+ones stayed below their need. On the RX 6700 XT (2026-10-25, Release, at
+`VKR_TEXTURE_STREAM_BUDGET_MB=1200`):
+
+- The pressure case with a 900-frame warm-up (a temporary case, past the idle
+  window): slots below their need 31 to 0, measured textures 317 to 433 MiB,
+  unmeasured full chains 706 to 401 MiB, resident bytes 1198 to 1043 MiB,
+  nothing evicted, failed or stalled.
+- `bistro_vulkan_high_orbit_1440` with `performance-windowed-gpu.json`, five
+  runs before against two after: wall frame p50 13.22 to 13.27 ms against
+  14.29 and 14.32 ms, p95 14.60 to 14.71 ms against 17.98 and 17.45 ms, at
+  most 16.8 to 21.7 ms against 26.6 and 23.6 ms; slots below their need at
+  most 102 to 107 against 52 and 40. Each harness child renders about 1,900
+  frames of its 38-second load at the orbit's first pose, so the textures out
+  of that view are idle and lowered by the time the orbit starts, and each is
+  raised once when the camera first reaches it: about 150 lowerings, 140
+  raises and 250 level copies in the 1,500 measured frames. Budgeted orbit
+  runs are not authoritative: which mips are resident at a frame depends on
+  load timing, so the work volume differs between repetitions.
+- At the driver's budget nothing lowers: the same orbit took 15.07 and
+  15.91 ms at p95 against 15.77 and 15.39 ms before. At
+  `VKR_VULKAN_MEMORY_BUDGET_MB=6000` the texture allowance is 0 and the
+  scene never reaches readiness, before this rule as after.
 The same need orders reloads, local and remote (ADR-012), and
 `asset.material.texture_demand.below_need` counts resident texture slots
 whose texture holds fewer mips than their material's measured need within
