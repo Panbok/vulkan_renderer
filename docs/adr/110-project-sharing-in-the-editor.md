@@ -373,11 +373,23 @@ against its first parent (the Mac's: one overlay deleted, one added,
 listed one added file with its folder. The window with no project open is
 unverified.
 
-Unverified: the editor part on Windows; Source Control between two
-computers; Start (`service install`) from the editor; the Local Network
-prompt for the editor binary and for the service's bundle; scene reload
-after a pull with the scene open; Make repository end to end on a complete
-project.
+In place, Mac M1, Release, 2026-10-25, headless editors on an APFS clone
+of the one Testbed (deleted afterwards): with Bistro open, an unsaved edit
+listed `Unsaved` Bistro first with Commit off; 4 s after `scene.save`,
+with no other step, `depot.status` `items` held one row, Bistro, a scene,
+Modified, 2 files (the CLI lists `edits/<id>.json` and `scene.json`).
+Add version control refused the clone while it lay under the engine
+checkout. Moved out, it wrote `.vkrdepotignore`, `.vkrdepotmerge` and
+`.vkrdepot/store` into that folder and committed `Created Testbed`
+(5,000 files) with 0 changes left and nothing untracked; the projects
+folder still held one Testbed, and the test HOME's service, which takes
+connections, served the store. The Remotes tab showed This computer with
+its host, port, key and the serving line. `vkr_depot status` on Testbed
+takes about 0.1 s.
+
+Unverified: the editor part on Windows; Start (`service install`) from the
+editor; the Local Network prompt for the editor binary and for the
+service's bundle; Clone's `On this computer` row.
 
 ## Revisit when
 
