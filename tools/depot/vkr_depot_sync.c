@@ -294,6 +294,7 @@ VkrDepotConnection *vkr_depot_connect(VkrAllocator *allocator,
       vkr_net_address_any((VkrNetAddressFamily)server.family, 0u);
   host_config.core.sent_packet_capacity = 16384u;
   host_config.core.background = true_v;
+  host_config.core.idle_timeout_ms = VKR_DEPOT_IDLE_TIMEOUT_MS;
   link->host = vkr_net_host_create(allocator, &host_config);
   vkr_net_random(&host_config.core.static_keys,
                  sizeof(host_config.core.static_keys));

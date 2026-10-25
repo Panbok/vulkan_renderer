@@ -494,16 +494,27 @@ static bool8_t client_check_room(VkrDepotClient *client) {
   return room;
 }
 
+static bool8_t client_pump(VkrDepotClient *client, int32_t timeout_ms);
+
 /* Waits for every queued check and takes their counts into the fetch's
-   statistics; false when one failed. */
-static bool8_t client_checks_finish(VkrDepotClient *client) {
+   statistics; false when one failed. Up to CLIENT_CHECK_BYTES_MAX may wait
+   for a slow disk, so with `pump` the connection keeps answering meanwhile;
+   a closed one stops it, and the checks still finish. */
+static bool8_t client_checks_finish(VkrDepotClient *client, bool8_t pump) {
   ClientChecker *checker = client->checker;
   if (!checker) {
     return true_v;
   }
+  bool8_t pumping = pump;
   vkr_mutex_lock(checker->mutex);
   while (checker->outstanding > 0u) {
-    vkr_cond_wait(checker->done, checker->mutex);
+    if (pumping) {
+      vkr_mutex_unlock(checker->mutex);
+      pumping = client_pump(client, CLIENT_PUMP_MS);
+      vkr_mutex_lock(checker->mutex);
+    } else {
+      vkr_cond_wait(checker->done, checker->mutex);
+    }
   }
   const bool8_t ok = !checker->failed;
   checker->failed = false_v;
@@ -950,7 +961,7 @@ static bool8_t client_fetch_from(VkrDepotClient *client, const VkrDepotId *ids,
     }
   }
   /* Every chunk is in the store, or failed, before the fetch returns. */
-  ok = client_checks_finish(client) && ok;
+  ok = client_checks_finish(client, ok) && ok;
   if (ok && out_stats) {
     *out_stats = client->stats;
   }

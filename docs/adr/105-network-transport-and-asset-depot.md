@@ -148,7 +148,13 @@ its close frame is sent rather than 200 ms.
   connection moves when that address answers PATH_CHALLENGE.
 - **Lifetime.** Idle timeout with keep-alives at a third of it, CLOSE with a
   numeric code, and a drain period of three probe timeouts. A session keeps
-  state only for a connection it saw connect and not close.
+  state only for a connection it saw connect and not close. The idle
+  timeout defaults to 15 s; depot clients and services use 60 s
+  (`VKR_DEPOT_IDLE_TIMEOUT_MS`), because a thread stalled on a busy hard
+  disk sends no keep-alives, and a fetch keeps its connection answering
+  while it waits for the chunks its checker threads still store. Two Bistro
+  clones whose store and destination shared one hard disk failed at 15 s
+  with close code 6 (2026-10-25).
 
 ### Data format and sessions
 

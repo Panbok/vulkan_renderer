@@ -15,6 +15,11 @@
 
 #define VKR_DEPOT_DEFAULT_PORT 7320u
 #define VKR_DEPOT_TIMEOUT_MS 30000u
+/* The silence a depot connection outlasts, on clients and servers alike.
+   A side whose thread stalls on a busy disk sends no pings meanwhile; the
+   transport's 15 s default dropped clones of Bistro whose store and
+   destination shared one hard disk (2026-10-25). */
+#define VKR_DEPOT_IDLE_TIMEOUT_MS 60000u
 
 /* Where the user's identity key lives: `$VKR_DEPOT_IDENTITY`, else
    `<user data>/depot/identity.key` (vkr_bakery_user_data_directory). */

@@ -283,6 +283,7 @@ VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
   host_config.core.accept_context = service;
   host_config.core.max_connections = 256u;
   host_config.core.sent_packet_capacity = 16384u;
+  host_config.core.idle_timeout_ms = VKR_DEPOT_IDLE_TIMEOUT_MS;
   const bool8_t bound =
       service_bind(service, config, &host_config, error, capacity);
   vkr_net_random(&host_config.core.static_keys,
