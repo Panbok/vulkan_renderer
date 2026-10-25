@@ -1516,6 +1516,23 @@ test_material_texture_demand_orders_mip_lowering(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_demand_orders_mip_lowering PASSED\n");
 }
 
+/* Models the reload that brings `texture`, resident through stream `index`,
+   to `mip_levels` and `bytes` binding, so the resident bytes fall. */
+vkr_internal void test_land_reload(MaterialPbrTestContext *ctx, uint32_t index,
+                                   VkrTextureHandle texture,
+                                   uint32_t mip_levels, uint64_t bytes) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialTextureStream *stream = &system->texture_streams[index];
+  system->texture_stream_resident_bytes =
+      system->texture_stream_resident_bytes - stream->resident_bytes + bytes;
+  stream->resident_bytes = bytes;
+  VkrTexture *resident =
+      vkr_texture_system_get_by_handle(&ctx->texture_system, texture);
+  assert(resident != NULL);
+  resident->description.mip_levels = mip_levels;
+  resident->resident_bytes = bytes;
+}
+
 /* One epoch in which both materials draw and the GPU measures only
    `measured` (at a 1024 extent) when `demand` is set. */
 vkr_internal void test_unmeasured_frame(VkrMaterialSystem *system,
@@ -1709,6 +1726,15 @@ vkr_internal void test_material_texture_need_takes_room_from_unmeasured(
                           true_v);
   }
   assert(system->texture_streams[unmeasured_index].extent_cap == 1024u);
+
+  /* The raise waits until that lowering's reload binds and the resident
+     bytes fall under the ceiling. */
+  assert(system->texture_streams[measured_index].extent_cap == 512u);
+  test_land_reload(ctx, unmeasured_index, unmeasured_texture, 11u, 2048u);
+  for (uint32_t i = 0u; i < 2u * VKR_MATERIAL_TEXTURE_DEMAND_WINDOW; ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          true_v);
+  }
   assert(system->texture_streams[measured_index].extent_cap == 0u);
 
   system->texture_stream_active_count = active;
@@ -1798,6 +1824,11 @@ test_material_texture_room_spares_recent_textures(MaterialPbrTestContext *ctx) {
     test_room_frame(system, measured_material, recent_material, false_v);
   }
   assert(system->texture_streams[recent_index].extent_cap == 1024u);
+  assert(system->texture_streams[measured_index].extent_cap == 512u);
+  test_land_reload(ctx, recent_index, recent_texture, 11u, 2048u);
+  for (uint32_t i = 0u; i < 2u * VKR_MATERIAL_TEXTURE_DEMAND_WINDOW; ++i) {
+    test_room_frame(system, measured_material, recent_material, false_v);
+  }
   assert(system->texture_streams[measured_index].extent_cap == 0u);
 
   system->texture_stream_active_count = active;

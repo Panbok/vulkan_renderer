@@ -1255,6 +1255,12 @@ static void vkr_material_system_raise_textures(VkrMaterialSystem *system) {
     vkr_material_system_make_room_for_need(system, candidates, candidate_count,
                                            ceiling, &projected);
   }
+  /* Raises wait until the resident bytes, not only the projected ones, are
+     under the ceiling: the room a lowering frees exists once its reload has
+     bound, and a raise into a budget still full brings the pressure back. */
+  if (system->texture_stream_resident_bytes >= ceiling) {
+    return;
+  }
   vkr_sort(candidates, candidate_count, sizeof(*candidates),
            vkr_material_system_candidate_compare_raise);
   for (uint32_t i = 0u; i < candidate_count && projected < ceiling; ++i) {
