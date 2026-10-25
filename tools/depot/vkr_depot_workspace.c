@@ -481,6 +481,12 @@ bool8_t vkr_depot_workspace_open(VkrDepotWorkspace *workspace, const char *root,
                             &store_size)) {
     return false_v;
   }
+  /* A line end, as an edit by hand leaves, is not part of the path: kept,
+     it would open a new empty store beside the real one. */
+  while (store_size && (store_root[store_size - 1u] == '\n' ||
+                        store_root[store_size - 1u] == '\r')) {
+    store_root[--store_size] = '\0';
+  }
   const bool8_t opened =
       vkr_depot_store_open(&workspace->store, (const char *)store_root, codec);
   free(store_root);
