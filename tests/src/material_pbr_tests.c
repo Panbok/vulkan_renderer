@@ -1516,6 +1516,158 @@ test_material_texture_demand_orders_mip_lowering(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_demand_orders_mip_lowering PASSED\n");
 }
 
+/* One epoch in which both materials draw and the GPU measures only
+   `measured` (at a 1024 extent) when `demand` is set. */
+vkr_internal void test_unmeasured_frame(VkrMaterialSystem *system,
+                                        VkrMaterialHandle measured,
+                                        VkrMaterialHandle unmeasured,
+                                        bool8_t demand) {
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, measured);
+  vkr_material_system_touch_texture_residency(system, unmeasured);
+  if (demand) {
+    system->texture_demand_pending[0] = (VkrTextureDemand){
+        .material_id = measured.id,
+        .material_generation = measured.generation,
+        .extent_log2 = 10u,
+    };
+    system->texture_demand_pending_count = 1u;
+  }
+  vkr_material_system_pump_texture_streams(system, 1u);
+}
+
+/* While demand runs, a drawn texture whose material no frame measured is
+   out of the camera's view (every loaded world source counts as drawn): it
+   goes toward the floor before a measured texture loses a mip it needs,
+   though size order would halve both, and it grows back only once demand
+   stops. */
+vkr_internal void
+test_material_texture_unmeasured_lowers_first(MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialHandle measured_material = {0};
+  VkrMaterialHandle unmeasured_material = {0};
+  VkrTextureHandle measured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrTextureHandle unmeasured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  /* Measured: 1024 and 11 mips, needing all of them. Unmeasured: 2048 and
+     12 mips, twice the bytes. */
+  VkrMaterialTextureStream *stream =
+      test_demand_resident_stream(ctx, "unmeasured_first_measured", 1024u, 11u,
+                                  4096u, &measured_material, &measured_texture);
+  const uint32_t measured_index = (uint32_t)(stream - system->texture_streams);
+  stream = test_demand_resident_stream(ctx, "unmeasured_first_unmeasured",
+                                       2048u, 12u, 8192u, &unmeasured_material,
+                                       &unmeasured_texture);
+  const uint32_t unmeasured_index =
+      (uint32_t)(stream - system->texture_streams);
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+
+  /* Demand runs long enough to tell the unmeasured material out of view. */
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS; ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          true_v);
+  }
+
+  /* 12288 bytes over 6000: the unmeasured texture halves twice (2048 to
+     512, 4608 bytes in all) and the measured one keeps every mip. */
+  vkr_material_system_set_texture_residency_budget(system, 6000u);
+  test_unmeasured_frame(system, measured_material, unmeasured_material, true_v);
+  assert(system->texture_streams[measured_index].extent_cap == 0u);
+  assert(system->texture_streams[unmeasured_index].extent_cap == 512u);
+
+  /* Room again: while demand still runs, the unmeasured texture stays
+     through raise scans (one per 16 epochs). */
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  for (uint32_t i = 0u; i < 2u * VKR_MATERIAL_TEXTURE_DEMAND_WINDOW; ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          true_v);
+  }
+  assert(system->texture_streams[unmeasured_index].extent_cap == 512u);
+
+  /* Demand stops: the texture grows back to its source. */
+  for (uint32_t i = 0u; i <= 2u * VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS; ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          false_v);
+  }
+  assert(system->texture_streams[unmeasured_index].extent_cap == 0u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, measured_material);
+  vkr_material_system_cancel_texture_streams(system, unmeasured_material);
+  const VkrTextureHandle textures[] = {measured_texture, unmeasured_texture};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i]);
+    if (texture) {
+      texture->description.mip_levels = 1u;
+      texture->limit_source_extent = 0u;
+      texture->limit_source_mip_levels = 0u;
+    }
+  }
+  printf("  test_material_texture_unmeasured_lowers_first PASSED\n");
+}
+
+/* A budget that holds everything but leaves no room under the raise
+   ceiling runs no shrink pass; while demand runs, the measured texture held
+   below its need still grows, taking the room from the unmeasured one. */
+vkr_internal void test_material_texture_need_takes_room_from_unmeasured(
+    MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialHandle measured_material = {0};
+  VkrMaterialHandle unmeasured_material = {0};
+  VkrTextureHandle measured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrTextureHandle unmeasured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  /* Measured: 1024 and 11 mips, held at 512 (10 mips, 1024 bytes) and
+     needing all 11. Unmeasured: 2048 and 12 mips, whole (8192 bytes). */
+  VkrMaterialTextureStream *stream =
+      test_demand_resident_stream(ctx, "need_room_measured", 1024u, 11u, 1024u,
+                                  &measured_material, &measured_texture);
+  const uint32_t measured_index = (uint32_t)(stream - system->texture_streams);
+  stream->extent_cap = 512u;
+  vkr_texture_system_get_by_handle(&ctx->texture_system, measured_texture)
+      ->description.mip_levels = 10u;
+  system->texture_stream_caps_present = true_v;
+  stream = test_demand_resident_stream(ctx, "need_room_unmeasured", 2048u, 12u,
+                                       8192u, &unmeasured_material,
+                                       &unmeasured_texture);
+  const uint32_t unmeasured_index =
+      (uint32_t)(stream - system->texture_streams);
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+
+  /* 9216 bytes fit 9600, above its 8400 raise ceiling. Once demand has run
+     long enough, raising the measured texture to its need (3072 bytes more)
+     takes the unmeasured one to 1024 (2048 bytes) first. */
+  vkr_material_system_set_texture_residency_budget(system, 9600u);
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS +
+                                 2u * VKR_MATERIAL_TEXTURE_DEMAND_WINDOW;
+       ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          true_v);
+  }
+  assert(system->texture_streams[unmeasured_index].extent_cap == 1024u);
+  assert(system->texture_streams[measured_index].extent_cap == 0u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, measured_material);
+  vkr_material_system_cancel_texture_streams(system, unmeasured_material);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  const VkrTextureHandle textures[] = {measured_texture, unmeasured_texture};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i]);
+    if (texture) {
+      texture->description.mip_levels = 1u;
+      texture->limit_source_extent = 0u;
+      texture->limit_source_mip_levels = 0u;
+    }
+  }
+  printf("  test_material_texture_need_takes_room_from_unmeasured PASSED\n");
+}
+
 /* Measured demand orders reloads: of two drawn textures the limit grows,
    the one measured furthest below its need queues its reload first, though
    it comes later in stream order, and only it counts as held below need.
@@ -2878,6 +3030,8 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_residency_evicts_to_budget(&context);
   test_material_texture_residency_lowers_mips_before_evicting(&context);
   test_material_texture_demand_orders_mip_lowering(&context);
+  test_material_texture_unmeasured_lowers_first(&context);
+  test_material_texture_need_takes_room_from_unmeasured(&context);
   test_material_texture_reload_priority_follows_demand(&context);
   test_texture_capacity_retry_high_water();
   test_shared_texture_eviction_tracks_unique_bytes(&context);

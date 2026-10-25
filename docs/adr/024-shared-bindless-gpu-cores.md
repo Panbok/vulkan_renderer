@@ -266,9 +266,31 @@ the rotating sample covers every pixel. A texture needs the mips its source
 holds at or below the largest extent its materials measured. Within a demand
 epoch the budget first lowers mips beyond that need, the largest surplus
 first, and only then every texture by size; a raise stops at the need, and
-without pressure nothing changes (owner decisions, 2026-10-22). Materials no
-frame measured recently, such as those only shadows, reflections or probes
-draw, keep the epoch and size order. The same need orders reloads, local and remote (ADR-012), and
+without pressure nothing changes (owner decisions, 2026-10-22). Every loaded
+world source touches its material's epoch before the GPU culls it
+(`vkr_scene_emit_world_sources`), so the epoch alone does not tell the
+camera's materials from the rest. Once demand has run for
+`VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS` (64) without a gap that long, a
+texture none of whose materials a frame measured in that time, being out of
+the camera's view or drawn only by shadows, reflections or probes, goes
+toward the floor, largest first, after the measured surplus and before any
+measured texture loses a mip it needs; a raise skips it until demand measures
+it again or stops (owner decision, 2026-10-25). Once loading ends, resident
+bytes within the budget run no shrink pass, so each raise scan
+(`vkr_material_system_make_room_for_need`) also lowers unmeasured textures
+until the bytes that bring measured ones to their need fit under the raise
+ceiling, 7/8 of the budget. Before this rule, Bistro's
+1200 MiB pressure case on the M1 Pro held 278 unmeasured textures at full
+mips (744 MiB of 1196 MiB) while 26 measured ones stayed below their need.
+On the RX 6700 XT's pressure case at `VKR_TEXTURE_STREAM_BUDGET_MB=1200`
+(2026-10-25, Release, three runs before against two after) the slots below
+their need went from 41 to 0, measured textures from 306 to 322 MiB to 407
+and 419 MiB, unmeasured full chains from 682 to 699 MiB to 328 and 359 MiB,
+and the resident bytes from 1198 MiB to 1038 and 1042 MiB. No lowering, raise
+or copy landed in the measured frames, and nothing was evicted, failed or
+stalled; the 300 raises and about 300 more level copies came while loading
+settled.
+The same need orders reloads, local and remote (ADR-012), and
 `asset.material.texture_demand.below_need` counts resident texture slots
 whose texture holds fewer mips than their material's measured need within
 the material limit; Bistro's pressure case at
