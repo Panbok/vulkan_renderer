@@ -190,6 +190,15 @@ Results so far, 2026-10-24 to 2026-10-25, Release on both machines:
 - **D3, a rebuild while the service runs, passed on the Mac:** building
   `vkr_depot` left the service at the same PID, because it runs from its
   `VKR Depot.app` copy.
+- **D3, the editor round trip with the scene open, passed both ways.**
+  With Bistro open in a Windows editor, the Mac committed and synced
+  `df0cb962e1ec` (a model raised to y 2); Windows' `depot.pull` merged it
+  and the open scene reloaded with the new place. Windows then committed
+  `1f6145a5ebfa` in the same editor; on the Mac, `depot.sync` in an editor
+  with Bistro open pulled it, the scene reloaded by itself (1.3 s) and the
+  other model read y 1. The served copy on Windows first could neither pull
+  nor commit after a push from another computer, because it has no remote;
+  git `e6c04214` makes Pull take the store's branch.
 - **D4, untracked materials, passed on the Mac.** A brick brush in Bistro
   whose surface theme binds a material and texture that only the engine
   checkout held, git-ignored, stopped `depot.commit` with both listed;
@@ -198,9 +207,9 @@ Results so far, 2026-10-24 to 2026-10-25, Release on both machines:
   untracked, since every install has it. The editor's first commit after
   unreferenced builds passed the 24-hour grace also prunes them (ADR-110),
   which removed six Level Design Test builds in `59b3a93737e5`.
-- Left: D1's commits offline and clone hash; D3 after a full reboot, the
-  Windows service install and the editor round trip with the scene open;
-  D4's clone that opens on Windows and non-ASCII root.
+- Left: D1's commits offline and clone hash; D3 after a full reboot and the
+  Windows service install; D4's clone that opens on Windows and non-ASCII
+  root.
 
 ## Open questions
 
