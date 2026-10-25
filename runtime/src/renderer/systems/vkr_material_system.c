@@ -228,11 +228,16 @@ bool8_t vkr_material_system_take_shadow_change(VkrMaterialSystem *system,
   return changes;
 }
 
-bool8_t
-vkr_material_system_shadow_reads_texture(const VkrMaterialSystem *system,
-                                         uint32_t id) {
+bool8_t vkr_material_system_shadow_reads_texture(VkrMaterialSystem *system,
+                                                 uint32_t id) {
   if (!system || id == 0u) {
     return false_v;
+  }
+  /* A streamed reload's texture: the same file at another mip count. */
+  for (uint32_t i = 0u; i < VKR_MATERIAL_SHADOW_QUIET_TEXTURES; ++i) {
+    if (system->shadow_quiet_textures[i] == id) {
+      return false_v;
+    }
   }
   for (uint32_t i = 0u; i < system->materials.length; ++i) {
     const VkrMaterial *material = &system->materials.data[i];
@@ -363,7 +368,8 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
       system, handle.id,
       publication->shadow_key_generation != handle.generation ||
           publication->shadow_key != key ||
-          publication->shadow_texture_key != texture_key);
+          (publication->shadow_texture_key != texture_key &&
+           !system->shadow_quiet_publish));
   publication->shadow_key = key;
   publication->shadow_texture_key = texture_key;
   publication->shadow_key_generation = handle.generation;
@@ -581,10 +587,20 @@ vkr_material_system_replace_stream_texture(VkrMaterialSystem *system,
   VkrRendererError publish_error = VKR_RENDERER_ERROR_NONE;
   const bool8_t unpublished =
       vkr_material_system_unpublish_command(system, stream->material, true_v);
+  /* A reload brings the same file at another mip count: a cached shadow
+     keeps the alpha it was drawn with. */
+  system->shadow_quiet_publish = stream->reload;
   const bool8_t published =
       unpublished &&
       vkr_material_system_publish(system, stream->material, &publish_error);
+  system->shadow_quiet_publish = false_v;
   if (published) {
+    if (stream->reload && replacement.handle.id != 0u) {
+      system->shadow_quiet_textures[system->shadow_quiet_cursor] =
+          replacement.handle.id;
+      system->shadow_quiet_cursor = (system->shadow_quiet_cursor + 1u) %
+                                    VKR_MATERIAL_SHADOW_QUIET_TEXTURES;
+    }
     return true_v;
   }
   material->textures[stream->slot] = prior;

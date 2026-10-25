@@ -42,6 +42,10 @@ VkrHashTable(VkrMaterialEntry);
 #define VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX 512u
 #define VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX 8u
 #define VKR_MATERIAL_REPLACEMENT_CAPACITY 512u
+/* Textures of the latest streamed reloads, whose publications change no
+   cached shadow (vkr_material_system_shadow_reads_texture); the oldest
+   entry goes first. */
+#define VKR_MATERIAL_SHADOW_QUIET_TEXTURES 64u
 /* Reloads toward a changed texture load limit queued or loading at once. */
 #define VKR_MATERIAL_TEXTURE_RELOAD_MAX 32u
 /* Budget pressure never caps a texture below this extent, so its mips at or
@@ -248,6 +252,13 @@ typedef struct VkrMaterialSystem {
   uint64_t texture_stream_epoch;
   uint64_t *texture_material_last_used_epochs;
   VkrMaterialPublication *publications; /* max_material_count */
+  /* A streamed reload swaps a slot's texture for the same file at another
+     mip count: a cached shadow keeps the alpha it was drawn with (owner
+     decision, 2026-10-26), so the republication it causes and the new
+     texture's publication change no caster's shadow. */
+  bool8_t shadow_quiet_publish;
+  uint32_t shadow_quiet_textures[VKR_MATERIAL_SHADOW_QUIET_TEXTURES];
+  uint32_t shadow_quiet_cursor;
   uint64_t texture_stream_applied_total;
   uint64_t texture_stream_failed_total;
   uint64_t texture_stream_evicted_total;
@@ -540,7 +551,9 @@ bool8_t vkr_material_system_take_shadow_change(VkrMaterialSystem *system,
                                                uint32_t id);
 
 /* Whether a material whose shadow reads its textures (alpha cutout or
-   transmission) samples texture `id`. */
-bool8_t
-vkr_material_system_shadow_reads_texture(const VkrMaterialSystem *system,
-                                         uint32_t id);
+   transmission) samples texture `id` in a slot a shadow pass reads. A
+   streamed reload's texture, the same file at another mip count, counts
+   as none while one of the last VKR_MATERIAL_SHADOW_QUIET_TEXTURES
+   reloads. */
+bool8_t vkr_material_system_shadow_reads_texture(VkrMaterialSystem *system,
+                                                 uint32_t id);
