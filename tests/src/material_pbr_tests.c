@@ -1516,6 +1516,247 @@ test_material_texture_demand_orders_mip_lowering(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_demand_orders_mip_lowering PASSED\n");
 }
 
+/* One epoch in which both materials draw and the GPU measures only
+   `measured` (at a 1024 extent) when `demand` is set. */
+vkr_internal void test_unmeasured_frame(VkrMaterialSystem *system,
+                                        VkrMaterialHandle measured,
+                                        VkrMaterialHandle unmeasured,
+                                        bool8_t demand) {
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, measured);
+  vkr_material_system_touch_texture_residency(system, unmeasured);
+  if (demand) {
+    system->texture_demand_pending[0] = (VkrTextureDemand){
+        .material_id = measured.id,
+        .material_generation = measured.generation,
+        .extent_log2 = 10u,
+    };
+    system->texture_demand_pending_count = 1u;
+  }
+  vkr_material_system_pump_texture_streams(system, 1u);
+}
+
+/* While demand runs, a drawn texture whose material no frame measured is
+   out of the camera's view (every loaded world source counts as drawn): it
+   goes toward the floor before a measured texture loses a mip it needs,
+   though size order would halve both, and it grows back only once demand
+   stops. */
+vkr_internal void
+test_material_texture_unmeasured_lowers_first(MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialHandle measured_material = {0};
+  VkrMaterialHandle unmeasured_material = {0};
+  VkrTextureHandle measured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrTextureHandle unmeasured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  /* Measured: 1024 and 11 mips, needing all of them. Unmeasured: 2048 and
+     12 mips, twice the bytes. */
+  VkrMaterialTextureStream *stream =
+      test_demand_resident_stream(ctx, "unmeasured_first_measured", 1024u, 11u,
+                                  4096u, &measured_material, &measured_texture);
+  const uint32_t measured_index = (uint32_t)(stream - system->texture_streams);
+  stream = test_demand_resident_stream(ctx, "unmeasured_first_unmeasured",
+                                       2048u, 12u, 8192u, &unmeasured_material,
+                                       &unmeasured_texture);
+  const uint32_t unmeasured_index =
+      (uint32_t)(stream - system->texture_streams);
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+
+  /* Demand runs long enough to tell the unmeasured material out of view. */
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS; ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          true_v);
+  }
+
+  /* 12288 bytes over 6000: the unmeasured texture halves twice (2048 to
+     512, 4608 bytes in all) and the measured one keeps every mip. */
+  vkr_material_system_set_texture_residency_budget(system, 6000u);
+  test_unmeasured_frame(system, measured_material, unmeasured_material, true_v);
+  assert(system->texture_streams[measured_index].extent_cap == 0u);
+  assert(system->texture_streams[unmeasured_index].extent_cap == 512u);
+
+  /* Room again: while demand still runs, the unmeasured texture stays
+     through raise scans (one per 16 epochs). */
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  for (uint32_t i = 0u; i < 2u * VKR_MATERIAL_TEXTURE_DEMAND_WINDOW; ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          true_v);
+  }
+  assert(system->texture_streams[unmeasured_index].extent_cap == 512u);
+
+  /* Demand stops: the texture grows back to its source. */
+  for (uint32_t i = 0u; i <= 2u * VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS; ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          false_v);
+  }
+  assert(system->texture_streams[unmeasured_index].extent_cap == 0u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, measured_material);
+  vkr_material_system_cancel_texture_streams(system, unmeasured_material);
+  const VkrTextureHandle textures[] = {measured_texture, unmeasured_texture};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i]);
+    if (texture) {
+      texture->description.mip_levels = 1u;
+      texture->limit_source_extent = 0u;
+      texture->limit_source_mip_levels = 0u;
+    }
+  }
+  printf("  test_material_texture_unmeasured_lowers_first PASSED\n");
+}
+
+/* A budget that holds everything but leaves no room under the raise
+   ceiling runs no shrink pass; while demand runs, the measured texture held
+   below its need still grows, taking the room from the unmeasured one. */
+vkr_internal void test_material_texture_need_takes_room_from_unmeasured(
+    MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialHandle measured_material = {0};
+  VkrMaterialHandle unmeasured_material = {0};
+  VkrTextureHandle measured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrTextureHandle unmeasured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  /* Measured: 1024 and 11 mips, held at 512 (10 mips, 1024 bytes) and
+     needing all 11. Unmeasured: 2048 and 12 mips, whole (8192 bytes). */
+  VkrMaterialTextureStream *stream =
+      test_demand_resident_stream(ctx, "need_room_measured", 1024u, 11u, 1024u,
+                                  &measured_material, &measured_texture);
+  const uint32_t measured_index = (uint32_t)(stream - system->texture_streams);
+  stream->extent_cap = 512u;
+  vkr_texture_system_get_by_handle(&ctx->texture_system, measured_texture)
+      ->description.mip_levels = 10u;
+  system->texture_stream_caps_present = true_v;
+  stream = test_demand_resident_stream(ctx, "need_room_unmeasured", 2048u, 12u,
+                                       8192u, &unmeasured_material,
+                                       &unmeasured_texture);
+  const uint32_t unmeasured_index =
+      (uint32_t)(stream - system->texture_streams);
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+
+  /* 9216 bytes fit 9600, above its 8400 raise ceiling. Once demand has run
+     long enough, raising the measured texture to its need (3072 bytes more)
+     takes the unmeasured one to 1024 (2048 bytes) first. */
+  vkr_material_system_set_texture_residency_budget(system, 9600u);
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS +
+                                 2u * VKR_MATERIAL_TEXTURE_DEMAND_WINDOW;
+       ++i) {
+    test_unmeasured_frame(system, measured_material, unmeasured_material,
+                          true_v);
+  }
+  assert(system->texture_streams[unmeasured_index].extent_cap == 1024u);
+  assert(system->texture_streams[measured_index].extent_cap == 0u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, measured_material);
+  vkr_material_system_cancel_texture_streams(system, unmeasured_material);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  const VkrTextureHandle textures[] = {measured_texture, unmeasured_texture};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i]);
+    if (texture) {
+      texture->description.mip_levels = 1u;
+      texture->limit_source_extent = 0u;
+      texture->limit_source_mip_levels = 0u;
+    }
+  }
+  printf("  test_material_texture_need_takes_room_from_unmeasured PASSED\n");
+}
+
+/* One epoch in which both materials draw and the GPU measures `measured`
+   at a 1024 extent and, when `seen` is set, `recent` at a 2048 one. */
+vkr_internal void test_room_frame(VkrMaterialSystem *system,
+                                  VkrMaterialHandle measured,
+                                  VkrMaterialHandle recent, bool8_t seen) {
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, measured);
+  vkr_material_system_touch_texture_residency(system, recent);
+  system->texture_demand_pending[0] = (VkrTextureDemand){
+      .material_id = measured.id,
+      .material_generation = measured.generation,
+      .extent_log2 = 10u,
+  };
+  system->texture_demand_pending[1] = (VkrTextureDemand){
+      .material_id = recent.id,
+      .material_generation = recent.generation,
+      .extent_log2 = 11u,
+  };
+  system->texture_demand_pending_count = seen ? 2u : 1u;
+  vkr_material_system_pump_texture_streams(system, 1u);
+}
+
+/* A texture the camera left a moment ago gives no room to a measured
+   texture below its need, so turning away and back reloads nothing; once
+   it has been out of view for VKR_MATERIAL_TEXTURE_IDLE_EPOCHS it does. */
+vkr_internal void
+test_material_texture_room_spares_recent_textures(MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialHandle measured_material = {0};
+  VkrMaterialHandle recent_material = {0};
+  VkrTextureHandle measured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrTextureHandle recent_texture = VKR_TEXTURE_HANDLE_INVALID;
+  /* As in test_material_texture_need_takes_room_from_unmeasured, but the
+     2048 texture's material was measured until a moment ago. */
+  VkrMaterialTextureStream *stream =
+      test_demand_resident_stream(ctx, "room_recent_measured", 1024u, 11u,
+                                  1024u, &measured_material, &measured_texture);
+  const uint32_t measured_index = (uint32_t)(stream - system->texture_streams);
+  stream->extent_cap = 512u;
+  vkr_texture_system_get_by_handle(&ctx->texture_system, measured_texture)
+      ->description.mip_levels = 10u;
+  system->texture_stream_caps_present = true_v;
+  stream =
+      test_demand_resident_stream(ctx, "room_recent_left", 2048u, 12u, 8192u,
+                                  &recent_material, &recent_texture);
+  const uint32_t recent_index = (uint32_t)(stream - system->texture_streams);
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+  vkr_material_system_set_texture_residency_budget(system, 9600u);
+
+  /* Both in view while demand settles, then the camera leaves the 2048
+     texture: past the unmeasured window, it still keeps its mips and the
+     measured texture waits. */
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS; ++i) {
+    test_room_frame(system, measured_material, recent_material, true_v);
+  }
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS +
+                                 2u * VKR_MATERIAL_TEXTURE_DEMAND_WINDOW;
+       ++i) {
+    test_room_frame(system, measured_material, recent_material, false_v);
+  }
+  assert(system->texture_streams[recent_index].extent_cap == 0u);
+  assert(system->texture_streams[measured_index].extent_cap == 512u);
+
+  /* Out of view for the idle window: it gives the room. */
+  for (uint32_t i = 0u; i <= VKR_MATERIAL_TEXTURE_IDLE_EPOCHS; ++i) {
+    test_room_frame(system, measured_material, recent_material, false_v);
+  }
+  assert(system->texture_streams[recent_index].extent_cap == 1024u);
+  assert(system->texture_streams[measured_index].extent_cap == 0u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, measured_material);
+  vkr_material_system_cancel_texture_streams(system, recent_material);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  const VkrTextureHandle textures[] = {measured_texture, recent_texture};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i]);
+    if (texture) {
+      texture->description.mip_levels = 1u;
+      texture->limit_source_extent = 0u;
+      texture->limit_source_mip_levels = 0u;
+    }
+  }
+  printf("  test_material_texture_room_spares_recent_textures PASSED\n");
+}
+
 /* Measured demand orders reloads: of two drawn textures the limit grows,
    the one measured furthest below its need queues its reload first, though
    it comes later in stream order, and only it counts as held below need.
@@ -2789,9 +3030,10 @@ vkr_internal void test_material_brdf_keys(MaterialPbrTestContext *ctx) {
 
 /* Shadows read an opaque material's geometry alone: publishing it again
    with another texture changes no caster's shadow. Its first publication, a
-   change in culling or alpha testing, any publication of a cutout material
-   and an unpublication do; a texture counts only once a cutout material
-   samples it. */
+   change in culling or alpha testing, a new texture in a slot a shadow pass
+   samples (a cutout's base colour) and an unpublication do; a new normal
+   map, an unchanged republication and a blended material's textures do
+   not, and a texture counts only once a cutout material samples it. */
 vkr_internal void
 test_material_shadow_change_scope(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_shadow_change_scope...\n");
@@ -2844,8 +3086,33 @@ test_material_shadow_change_scope(MaterialPbrTestContext *ctx) {
   assert(vkr_material_system_publish(system, material, &error));
   assert(vkr_material_system_publish(system, material, &error));
   assert(vkr_material_system_take_shadow_change(system, material.id));
-  assert(vkr_material_system_take_shadow_change(system, material.id));
+  assert(!vkr_material_system_take_shadow_change(system, material.id));
   assert(vkr_material_system_shadow_reads_texture(system, texture.id));
+
+  /* A streamed reload of the normal map leaves the cutout's shadow; one of
+     its base colour does not. */
+  VkrTextureHandle other = {0};
+  assert(vkr_texture_system_create_writable(
+             &ctx->texture_system, string8_lit("shadow_scope_other"),
+             &description, &other, &error) == true_v);
+  live->textures[VKR_TEXTURE_SLOT_NORMAL] = (VkrMaterialTexture){
+      .handle = other, .slot = VKR_TEXTURE_SLOT_NORMAL, .enabled = true_v};
+  assert(vkr_material_system_publish(system, material, &error));
+  assert(!vkr_material_system_take_shadow_change(system, material.id));
+  assert(!vkr_material_system_shadow_reads_texture(system, other.id));
+  live->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = other;
+  assert(vkr_material_system_publish(system, material, &error));
+  assert(vkr_material_system_take_shadow_change(system, material.id));
+  assert(vkr_material_system_shadow_reads_texture(system, other.id));
+
+  /* A blended material takes the opaque shadow buckets. */
+  live->alpha_mode = VKR_MATERIAL_ALPHA_BLEND;
+  assert(vkr_material_system_publish(system, material, &error));
+  assert(vkr_material_system_take_shadow_change(system, material.id));
+  live->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = texture;
+  assert(vkr_material_system_publish(system, material, &error));
+  assert(!vkr_material_system_take_shadow_change(system, material.id));
+  assert(!vkr_material_system_shadow_reads_texture(system, texture.id));
 
   assert(vkr_material_system_unpublish(system, material));
   assert(publication->shadow_command_count == 1u);
@@ -2878,6 +3145,9 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_residency_evicts_to_budget(&context);
   test_material_texture_residency_lowers_mips_before_evicting(&context);
   test_material_texture_demand_orders_mip_lowering(&context);
+  test_material_texture_unmeasured_lowers_first(&context);
+  test_material_texture_need_takes_room_from_unmeasured(&context);
+  test_material_texture_room_spares_recent_textures(&context);
   test_material_texture_reload_priority_follows_demand(&context);
   test_texture_capacity_retry_high_water();
   test_shared_texture_eviction_tracks_unique_bytes(&context);

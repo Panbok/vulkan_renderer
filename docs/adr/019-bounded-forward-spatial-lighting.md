@@ -239,12 +239,18 @@ layer was cleared, and stale when a static-world change since it was drawn
 reaches the light's range sphere, or the caster publication generation changed.
 That generation counts the completed publications a shadow reads: a material's
 first publication, an unpublication that no republication follows in the same
-frame, a change in its alpha mode, culling, transmission or pipeline, any
-publication of a cutout, blended or transmissive material, and a texture or
-sampler such a material samples (`vkr_material_system_take_shadow_change`,
-`vkr_material_system_shadow_reads_texture`). An opaque material's shadow reads
-its geometry alone, so streaming its textures in redraws no shadow; before,
-each such republication redrew every local face in range and every cascade. A
+frame, a change in its alpha mode, culling, transmission or pipeline, and a new
+texture in, or a texture publication of, a slot a shadow pass samples
+(`vkr_material_system_take_shadow_change`,
+`vkr_material_system_shadow_reads_texture`): a cutout's base colour, whose
+alpha the cascades and local faces test on both backends, and a transmissive
+material's base colour, metallic-roughness, transmission, thickness, clearcoat
+and sheen slots, which Vulkan's local transmission pass reads. A blended
+material takes the opaque shadow buckets and samples none. An opaque
+material's shadow reads its geometry alone, so streaming its textures in
+redraws no shadow, nor does a streamed normal map of a cutout (2026-10-25);
+before, each such republication redrew every local face in range and every
+cascade. A
 geometry publication cannot change a drawn caster either, since a mesh draws
 only after its geometry has published and adding or removing a drawn mesh is a
 static change. The world payload lists each static change with the world box it

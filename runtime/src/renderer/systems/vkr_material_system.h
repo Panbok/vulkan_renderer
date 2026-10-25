@@ -120,6 +120,15 @@ typedef struct VkrMaterialTextureCandidate {
      mip levels that extent needs; zero when none was measured recently. */
   uint32_t required_extent;
   uint32_t required_mip_levels;
+  /* While demand runs, no frame measured any of the texture's materials for
+     VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS: they are out of the camera's
+     view, so the budget lowers the texture before measured ones. */
+  bool8_t unmeasured;
+  /* Unmeasured, and either no frame ever measured its materials or none did
+     for VKR_MATERIAL_TEXTURE_IDLE_EPOCHS: only such a texture gives room to
+     measured textures below their need without pressure, so one the camera
+     left a moment ago does not reload back and forth. */
+  bool8_t idle;
 } VkrMaterialTextureCandidate;
 
 /* Epochs over which a material's GPU texture demand holds. Its required
@@ -127,10 +136,25 @@ typedef struct VkrMaterialTextureCandidate {
    resolve's rotating one-in-sixteen pixel sample covers every pixel. */
 #define VKR_MATERIAL_TEXTURE_DEMAND_WINDOW 16u
 
+/* Epochs without a measurement after which a drawn material counts as out
+   of the camera's view, once demand has run that long without such a gap.
+   Every loaded world source counts as drawn (it is touched before the GPU
+   culls), so only demand tells the camera's materials from the rest. */
+#define VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS 64u
+
+/* Epochs without a measurement after which a texture the GPU once measured
+   gives room to measured textures below their need (about 10 s at 60 fps),
+   and the lowering steps one raise scan takes for that room. A camera that
+   turns away and back within that time reloads nothing. */
+#define VKR_MATERIAL_TEXTURE_IDLE_EPOCHS 600u
+#define VKR_MATERIAL_TEXTURE_ROOM_STEPS 8u
+
 /* One material's GPU texture demand: the required extent's log2 plus one
-   (zero for none) in its window of epochs and in the window before. */
+   (zero for none) in its window of epochs and in the window before, and the
+   epoch of the newest frame that measured it (zero for none). */
 typedef struct VkrMaterialTextureDemand {
   uint64_t window;
+  uint64_t measured_epoch;
   uint8_t current;
   uint8_t previous;
 } VkrMaterialTextureDemand;
@@ -165,9 +189,11 @@ typedef struct VkrMaterialPublication {
      (vkr_material_system_take_shadow_change). */
   uint64_t shadow_commands;
   uint32_t shadow_command_count;
-  /* What shadows read of the last published state, and the generation it
-     belongs to. */
+  /* What shadows read of the last published state: its alpha test, culling
+     and transmission, the textures of the slots a shadow pass samples
+     (hashed), and the generation they belong to. */
   uint64_t shadow_key;
+  uint64_t shadow_texture_key;
   uint32_t shadow_key_generation;
 } VkrMaterialPublication;
 
@@ -246,6 +272,11 @@ typedef struct VkrMaterialSystem {
   uint32_t texture_demand_pending_count;
   /* Materials the last folded frame measured. */
   uint32_t texture_demand_material_count;
+  /* Epoch of the newest folded frame that measured any material, and the
+     epoch at which demand last started after a gap of
+     VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS or more; zero for none. */
+  uint64_t texture_demand_epoch;
+  uint64_t texture_demand_run_epoch;
   /* Resident texture slots whose texture holds fewer mips than their
      material's measured need within the material limit, as of the last
      pump. */

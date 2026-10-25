@@ -266,9 +266,37 @@ the rotating sample covers every pixel. A texture needs the mips its source
 holds at or below the largest extent its materials measured. Within a demand
 epoch the budget first lowers mips beyond that need, the largest surplus
 first, and only then every texture by size; a raise stops at the need, and
-without pressure nothing changes (owner decisions, 2026-10-22). Materials no
-frame measured recently, such as those only shadows, reflections or probes
-draw, keep the epoch and size order. The same need orders reloads, local and remote (ADR-012), and
+without pressure nothing changes (owner decisions, 2026-10-22). Every loaded
+world source touches its material's epoch before the GPU culls it
+(`vkr_scene_emit_world_sources`), so the epoch alone does not tell the
+camera's materials from the rest. Once demand has run for
+`VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS` (64) without a gap that long, a
+texture none of whose materials a frame measured in that time, being out of
+the camera's view or drawn only by shadows, reflections or probes, goes
+toward the floor, largest first, after the measured surplus and before any
+measured texture loses a mip it needs; a raise skips it until demand measures
+it again or stops (owner decision, 2026-10-25). Once loading ends, resident
+bytes within the budget run no shrink pass, so each raise scan
+(`vkr_material_system_make_room_for_need`) also lowers idle textures, at most
+`VKR_MATERIAL_TEXTURE_ROOM_STEPS` (8) halvings a scan, until the bytes that
+bring measured ones to their need fit under the raise ceiling, 7/8 of the
+budget. A texture is idle when no frame measured its materials since demand
+settled, or none did for `VKR_MATERIAL_TEXTURE_IDLE_EPOCHS` (600, about 10 s):
+a first version that took the room from any texture unmeasured for 64 epochs
+lowered and raised textures each time Bistro's 5-second orbit turned away and
+back, about 300 reloads in 25 s, and took the orbit's wall frame at p95 from
+14.6 to 17.2 ms on the RX 6700 XT and from 32.7 to 55.4 ms on the M1 Pro,
+where creating and staging each reloaded texture in the submit costs about
+10 ms of CPU (reverted in 69de844e). Before the rule, Bistro's 1200 MiB
+pressure case on the M1 Pro held 278 unmeasured textures at full mips
+(744 MiB of 1196 MiB) while 26 measured ones stayed below their need. On the
+RX 6700 XT's pressure case at `VKR_TEXTURE_STREAM_BUDGET_MB=1200`
+(2026-10-25, Release, four runs before against two after) the slots below
+their need went from 33 to 41 to 0, measured textures from 306 to 322 MiB to
+421 and 427 MiB, unmeasured full chains from 682 to 715 MiB to 372 and
+390 MiB, and the resident bytes from 1198 MiB to 1031 and 1035 MiB, with
+nothing evicted, failed or stalled.
+The same need orders reloads, local and remote (ADR-012), and
 `asset.material.texture_demand.below_need` counts resident texture slots
 whose texture holds fewer mips than their material's measured need within
 the material limit; Bistro's pressure case at

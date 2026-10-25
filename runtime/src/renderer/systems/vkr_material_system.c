@@ -142,12 +142,53 @@ vkr_internal void vkr_material_system_init_surface_material(
   vkr_material_system_apply_default_surface_textures(system, material);
 }
 
-/* Whether shadows read `published`'s textures and factors: its alpha
-   cutout, or its transmission. A blended material counts too. */
+/* Whether a shadow pass samples the texture in `slot` of `material` under
+   `alpha_mode`: an alpha cutout's base colour alpha (cascades and local
+   faces on both backends), and a transmissive material's base colour and
+   the slots its transmitted colour reads (Vulkan's local transmission
+   pass). A blended material takes the opaque shadow buckets and samples
+   none, and no shadow reads normals, occlusion or emission. */
 vkr_internal bool8_t
-vkr_material_shadow_reads_material(const VkrMaterial *published) {
-  return published->alpha_mode != VKR_MATERIAL_ALPHA_OPAQUE ||
-         vkr_material_system_material_is_transmissive(published);
+vkr_material_shadow_reads_slot(const VkrMaterial *material,
+                               VkrMaterialAlphaMode alpha_mode, uint32_t slot) {
+  if (vkr_material_system_material_is_transmissive(material)) {
+    switch (slot) {
+    case VKR_TEXTURE_SLOT_DIFFUSE:
+    case VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS:
+    case VKR_TEXTURE_SLOT_TRANSMISSION:
+    case VKR_TEXTURE_SLOT_THICKNESS:
+    case VKR_TEXTURE_SLOT_CLEARCOAT:
+    case VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS:
+    case VKR_TEXTURE_SLOT_SHEEN_COLOR:
+    case VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS:
+      return true_v;
+    default:
+      return false_v;
+    }
+  }
+  return alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT &&
+         slot == VKR_TEXTURE_SLOT_DIFFUSE;
+}
+
+/* The textures every shadow pass samples of `published`, hashed: a
+   republish that swaps only other slots, such as a streamed normal map's
+   reload, leaves every cached shadow valid. */
+vkr_internal uint64_t
+vkr_material_shadow_texture_key(const VkrMaterial *published) {
+  uint64_t key = 0u;
+  for (uint32_t slot = 0u; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+    if (!vkr_material_shadow_reads_slot(published, published->alpha_mode,
+                                        slot)) {
+      continue;
+    }
+    const VkrMaterialTexture *texture = &published->textures[slot];
+    key = vkr_hash_table_finalize(
+        key ^
+        ((uint64_t)texture->handle.id |
+         ((uint64_t)texture->handle.generation << 32u)) ^
+        ((uint64_t)(texture->enabled != 0) << 63u) ^ slot);
+  }
+  return key;
 }
 
 /* What every shadow reads of `published`: how it is alpha tested, culled
@@ -196,12 +237,14 @@ vkr_material_system_shadow_reads_texture(const VkrMaterialSystem *system,
   for (uint32_t i = 0u; i < system->materials.length; ++i) {
     const VkrMaterial *material = &system->materials.data[i];
     if (material->id == 0u ||
-        system->publications[i].shadow_key_generation != material->generation ||
-        !vkr_material_shadow_reads_material(material)) {
+        system->publications[i].shadow_key_generation != material->generation) {
       continue;
     }
+    const VkrMaterialAlphaMode alpha_mode =
+        vkr_material_system_material_alpha_mode(system, material);
     for (uint32_t slot = 0u; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
-      if (material->textures[slot].handle.id == id) {
+      if (material->textures[slot].handle.id == id &&
+          vkr_material_shadow_reads_slot(material, alpha_mode, slot)) {
         return true_v;
       }
     }
@@ -311,15 +354,18 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
   }
   vkr_publication_state_recorded_by(system->asset_publisher,
                                     &publication->state);
-  /* A first publication, a change in what shadows read, or a material whose
-     shadow reads its textures can change a caster's shadow. */
+  /* A first publication, a change in how shadows test, cull or transmit
+     it, or a new texture in a slot a shadow pass samples can change a
+     caster's shadow. */
   const uint64_t key = vkr_material_shadow_key(&published);
+  const uint64_t texture_key = vkr_material_shadow_texture_key(&published);
   vkr_material_shadow_record(
       system, handle.id,
       publication->shadow_key_generation != handle.generation ||
           publication->shadow_key != key ||
-          vkr_material_shadow_reads_material(&published));
+          publication->shadow_texture_key != texture_key);
   publication->shadow_key = key;
+  publication->shadow_texture_key = texture_key;
   publication->shadow_key_generation = handle.generation;
   return true_v;
 }
@@ -819,10 +865,64 @@ vkr_material_system_apply_texture_demand(VkrMaterialSystem *system) {
     }
     entry->current =
         Max(entry->current, (uint8_t)(Min(demand->extent_log2, 30u) + 1u));
+    entry->measured_epoch = system->texture_stream_epoch;
     measured++;
   }
   system->texture_demand_material_count = measured;
   system->texture_demand_pending_count = 0u;
+  if (measured) {
+    if (!system->texture_demand_epoch ||
+        system->texture_stream_epoch - system->texture_demand_epoch >=
+            VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS) {
+      system->texture_demand_run_epoch = system->texture_stream_epoch;
+    }
+    system->texture_demand_epoch = system->texture_stream_epoch;
+  }
+}
+
+/* Whether demand has run for VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS without
+ * a gap that long, so a material it has not measured in that time is out of
+ * the camera's view rather than not yet seen. */
+static bool8_t
+vkr_material_system_demand_settled(const VkrMaterialSystem *system) {
+  const uint64_t epoch = system->texture_stream_epoch;
+  return system->texture_demand_epoch != 0u &&
+         epoch - system->texture_demand_epoch <
+             VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS &&
+         epoch - system->texture_demand_run_epoch >=
+             VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS;
+}
+
+/* Whether no frame measured `material` for
+ * VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS; meaningful only while demand is
+ * settled. */
+static bool8_t
+vkr_material_system_material_unmeasured(const VkrMaterialSystem *system,
+                                        VkrMaterialHandle material) {
+  if (!system->texture_demand || material.id == 0u ||
+      material.id > system->config.max_material_count) {
+    return false_v;
+  }
+  const uint64_t measured =
+      system->texture_demand[material.id - 1u].measured_epoch;
+  return system->texture_stream_epoch - measured >=
+         VKR_MATERIAL_TEXTURE_UNMEASURED_EPOCHS;
+}
+
+/* Whether no frame ever measured `material`, or none did for
+ * VKR_MATERIAL_TEXTURE_IDLE_EPOCHS; meaningful only while demand is
+ * settled. */
+static bool8_t
+vkr_material_system_material_idle(const VkrMaterialSystem *system,
+                                  VkrMaterialHandle material) {
+  if (!system->texture_demand || material.id == 0u ||
+      material.id > system->config.max_material_count) {
+    return false_v;
+  }
+  const uint64_t measured =
+      system->texture_demand[material.id - 1u].measured_epoch;
+  return measured == 0u || system->texture_stream_epoch - measured >=
+                               VKR_MATERIAL_TEXTURE_IDLE_EPOCHS;
 }
 
 /* The extent a material's textures need from its demand window, zero when
@@ -857,6 +957,7 @@ static uint32_t vkr_material_system_texture_candidates(
   VkrMaterialTextureCandidate *candidates = system->texture_candidates;
   uint32_t candidate_count = 0u;
   bool8_t caps = false_v;
+  const bool8_t demand_settled = vkr_material_system_demand_settled(system);
   for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
     const VkrMaterialTextureStream *stream = &system->texture_streams[i];
     caps = caps || stream->extent_cap != 0u;
@@ -874,6 +975,12 @@ static uint32_t vkr_material_system_texture_candidates(
             vkr_material_stream_carries_limit(stream) && !stream->replacement,
         .required_extent =
             vkr_material_system_required_extent(system, stream->material),
+        .unmeasured = demand_settled && vkr_material_system_material_unmeasured(
+                                            system, stream->material),
+        .idle =
+            demand_settled &&
+            vkr_material_system_material_unmeasured(system, stream->material) &&
+            vkr_material_system_material_idle(system, stream->material),
     };
   }
   *out_caps = caps;
@@ -891,6 +998,8 @@ static uint32_t vkr_material_system_texture_candidates(
       last->limitable = last->limitable && candidate.limitable;
       last->required_extent =
           Max(last->required_extent, candidate.required_extent);
+      last->unmeasured = last->unmeasured && candidate.unmeasured;
+      last->idle = last->idle && candidate.idle;
     } else {
       candidates[texture_count++] = candidate;
     }
@@ -958,11 +1067,66 @@ static void vkr_material_system_cap_texture(VkrMaterialSystem *system,
       system->texture_stream_caps_present || cap != 0u;
 }
 
+/* Halves `candidate`'s cap once, never below the floor or below
+ * `min_levels` mips, and moves `projected` by the bytes that changes; false
+ * when it cannot. */
+static bool8_t
+vkr_material_system_lower_candidate(VkrMaterialSystem *system,
+                                    VkrMaterialTextureCandidate *candidate,
+                                    uint32_t min_levels, uint64_t *projected) {
+  if (!candidate->source_mip_levels) {
+    return false_v;
+  }
+  const uint32_t extent =
+      vkr_material_candidate_extent(candidate, candidate->target_mip_levels);
+  if (extent <= VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR) {
+    return false_v;
+  }
+  const uint32_t cap =
+      Max(extent / 2u, (uint32_t)VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR);
+  const uint32_t levels = vkr_texture_system_load_limit_mip_levels(
+      system->texture_system, candidate->texture,
+      vkr_material_cap_limit(system, cap));
+  if (levels == 0u || levels >= candidate->target_mip_levels ||
+      levels < min_levels) {
+    return false_v;
+  }
+  const uint64_t bytes = vkr_material_texture_bytes_at(
+      candidate->bytes, candidate->mip_levels, levels);
+  *projected = *projected - candidate->projected_bytes + bytes;
+  candidate->projected_bytes = bytes;
+  candidate->target_mip_levels = levels;
+  candidate->extent_cap = cap;
+  vkr_material_system_cap_texture(system, candidate->texture, cap);
+  system->texture_stream_mip_lowered_total++;
+  return true_v;
+}
+
+/* Lowers the unmeasured textures among `candidates`, sorted by size, one
+ * halving per pass, largest first, until `projected` fits `limit`. */
+static void vkr_material_system_lower_unmeasured(
+    VkrMaterialSystem *system, VkrMaterialTextureCandidate *candidates,
+    uint32_t candidate_count, uint64_t limit, uint64_t *projected) {
+  bool8_t lowered = true_v;
+  while (lowered && *projected > limit) {
+    lowered = false_v;
+    for (uint32_t i = 0u; i < candidate_count && *projected > limit; ++i) {
+      if (!candidates[i].unmeasured) {
+        continue;
+      }
+      lowered = vkr_material_system_lower_candidate(system, &candidates[i], 0u,
+                                                    projected) ||
+                lowered;
+    }
+  }
+}
+
 /* Halves the caps of `candidates`, sorted for shrinking, down to the floor
  * until `projected` fits `limit`: the oldest demand epoch goes to the floor
  * before a newer one is touched. Within an epoch, textures first lose the
- * mips the GPU measured their materials do not need, then every texture
- * loses one mip before any loses two. */
+ * mips the GPU measured their materials do not need, then unmeasured ones
+ * (out of the camera's view while demand runs) go toward the floor, largest
+ * first, and then every texture loses one mip before any loses two. */
 static void vkr_material_system_shrink_textures(
     VkrMaterialSystem *system, VkrMaterialTextureCandidate *candidates,
     uint32_t candidate_count, uint64_t limit, uint64_t *projected) {
@@ -972,63 +1136,105 @@ static void vkr_material_system_shrink_textures(
            candidates[end].last_used == candidates[begin].last_used) {
       ++end;
     }
-    /* Phase 0 lowers only surplus mips; phase 1 every texture. */
-    for (uint32_t phase = 0u; phase < 2u && *projected > limit; ++phase) {
-      const bool8_t surplus_only = phase == 0u;
-      if (!surplus_only) {
-        /* Past their measured need, the largest textures go first. */
-        vkr_sort(candidates + begin, end - begin, sizeof(*candidates),
-                 vkr_material_system_candidate_compare_size);
-      }
-      bool8_t lowered = true_v;
-      while (lowered && *projected > limit) {
-        lowered = false_v;
-        for (uint32_t i = begin; i < end && *projected > limit; ++i) {
-          VkrMaterialTextureCandidate *candidate = &candidates[i];
-          if (!candidate->source_mip_levels) {
-            continue;
-          }
-          const uint32_t extent = vkr_material_candidate_extent(
-              candidate, candidate->target_mip_levels);
-          if (extent <= VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR) {
-            continue;
-          }
-          const uint32_t cap =
-              Max(extent / 2u, (uint32_t)VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR);
-          const uint32_t levels = vkr_texture_system_load_limit_mip_levels(
-              system->texture_system, candidate->texture,
-              vkr_material_cap_limit(system, cap));
-          if (levels == 0u || levels >= candidate->target_mip_levels ||
-              (surplus_only && (!candidate->required_mip_levels ||
-                                levels < candidate->required_mip_levels))) {
-            continue;
-          }
-          const uint64_t bytes = vkr_material_texture_bytes_at(
-              candidate->bytes, candidate->mip_levels, levels);
-          *projected = *projected - candidate->projected_bytes + bytes;
-          candidate->projected_bytes = bytes;
-          candidate->target_mip_levels = levels;
-          candidate->extent_cap = cap;
-          vkr_material_system_cap_texture(system, candidate->texture, cap);
-          system->texture_stream_mip_lowered_total++;
-          lowered = true_v;
+    /* Surplus mips first: no texture goes below its measured need. */
+    bool8_t lowered = true_v;
+    while (lowered && *projected > limit) {
+      lowered = false_v;
+      for (uint32_t i = begin; i < end && *projected > limit; ++i) {
+        VkrMaterialTextureCandidate *candidate = &candidates[i];
+        if (!candidate->required_mip_levels) {
+          continue;
         }
+        lowered =
+            vkr_material_system_lower_candidate(
+                system, candidate, candidate->required_mip_levels, projected) ||
+            lowered;
+      }
+    }
+    if (*projected <= limit) {
+      break;
+    }
+    /* Past their measured need, the largest textures go first: unmeasured
+       ones, then every texture. */
+    vkr_sort(candidates + begin, end - begin, sizeof(*candidates),
+             vkr_material_system_candidate_compare_size);
+    vkr_material_system_lower_unmeasured(system, candidates + begin,
+                                         end - begin, limit, projected);
+    lowered = true_v;
+    while (lowered && *projected > limit) {
+      lowered = false_v;
+      for (uint32_t i = begin; i < end && *projected > limit; ++i) {
+        lowered = vkr_material_system_lower_candidate(system, &candidates[i],
+                                                      0u, projected) ||
+                  lowered;
       }
     }
     begin = end;
   }
 }
 
+/* While demand runs, a budget filled by textures out of the camera's view
+ * leaves no room under `ceiling` to raise the measured textures held below
+ * their need, and without pressure no shrink pass frees any: lowers idle
+ * textures, largest first and at most VKR_MATERIAL_TEXTURE_ROOM_STEPS
+ * halvings per scan, until the bytes those raises add fit. Re-sorts
+ * `candidates` by size. */
+static void vkr_material_system_make_room_for_need(
+    VkrMaterialSystem *system, VkrMaterialTextureCandidate *candidates,
+    uint32_t candidate_count, uint64_t ceiling, uint64_t *projected) {
+  uint64_t wanted = 0u;
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    const VkrMaterialTextureCandidate *candidate = &candidates[i];
+    if (candidate->unmeasured || !candidate->source_mip_levels ||
+        candidate->last_used != system->texture_stream_epoch ||
+        candidate->required_mip_levels <= candidate->target_mip_levels) {
+      continue;
+    }
+    const uint64_t bytes =
+        vkr_material_texture_bytes_at(candidate->bytes, candidate->mip_levels,
+                                      candidate->required_mip_levels);
+    wanted += bytes > candidate->projected_bytes
+                  ? bytes - candidate->projected_bytes
+                  : 0u;
+  }
+  const uint64_t limit = ceiling > wanted ? ceiling - wanted : 0u;
+  if (wanted == 0u || *projected <= limit) {
+    return;
+  }
+  vkr_sort(candidates, candidate_count, sizeof(*candidates),
+           vkr_material_system_candidate_compare_size);
+  uint32_t steps = 0u;
+  bool8_t lowered = true_v;
+  while (lowered && *projected > limit &&
+         steps < VKR_MATERIAL_TEXTURE_ROOM_STEPS) {
+    lowered = false_v;
+    for (uint32_t i = 0u; i < candidate_count && *projected > limit &&
+                          steps < VKR_MATERIAL_TEXTURE_ROOM_STEPS;
+         ++i) {
+      if (!candidates[i].idle || !vkr_material_system_lower_candidate(
+                                     system, &candidates[i], 0u, projected)) {
+        continue;
+      }
+      steps++;
+      lowered = true_v;
+    }
+  }
+}
+
 /* Raises the caps of drawn textures one step, newest demand and smallest
  * first, while the projected bytes stay under 7/8 of the budget, so a raise
  * does not bring back the pressure that lowered it. A cap that reaches the
- * source extent or the material limit is cleared. Scans at most once per
+ * source extent or the material limit is cleared. An unmeasured texture
+ * stays where the budget put it until demand measures it again, and while
+ * demand runs unmeasured textures make room for measured ones below their
+ * need (vkr_material_system_make_room_for_need). Scans at most once per
  * VKR_MATERIAL_TEXTURE_RAISE_EPOCHS. */
 static void vkr_material_system_raise_textures(VkrMaterialSystem *system) {
   const uint64_t budget = system->texture_stream_budget_bytes;
   const uint64_t ceiling = budget - budget / 8u;
+  const bool8_t demand_settled = vkr_material_system_demand_settled(system);
   if (!system->texture_stream_caps_present ||
-      system->texture_stream_resident_bytes >= ceiling ||
+      (!demand_settled && system->texture_stream_resident_bytes >= ceiling) ||
       (system->texture_stream_raise_epoch != 0u &&
        system->texture_stream_epoch - system->texture_stream_raise_epoch <
            VKR_MATERIAL_TEXTURE_RAISE_EPOCHS)) {
@@ -1041,12 +1247,17 @@ static void vkr_material_system_raise_textures(VkrMaterialSystem *system) {
   const uint32_t candidate_count = vkr_material_system_texture_candidates(
       system, VKR_TEXTURE_HANDLE_INVALID, &projected, &caps);
   system->texture_stream_caps_present = caps;
+  if (demand_settled) {
+    vkr_material_system_make_room_for_need(system, candidates, candidate_count,
+                                           ceiling, &projected);
+  }
   vkr_sort(candidates, candidate_count, sizeof(*candidates),
            vkr_material_system_candidate_compare_raise);
   for (uint32_t i = 0u; i < candidate_count && projected < ceiling; ++i) {
     VkrMaterialTextureCandidate *candidate = &candidates[i];
     if (!candidate->extent_cap || !candidate->source_mip_levels ||
         candidate->last_used != system->texture_stream_epoch ||
+        candidate->unmeasured ||
         (candidate->required_mip_levels &&
          candidate->target_mip_levels >= candidate->required_mip_levels)) {
       continue;
