@@ -207,9 +207,19 @@ Results so far, 2026-10-24 to 2026-10-25, Release on both machines:
   untracked, since every install has it. The editor's first commit after
   unreferenced builds passed the 24-hour grace also prunes them (ADR-110),
   which removed six Level Design Test builds in `59b3a93737e5`.
-- Left: D1's commits offline and clone hash; D3 after a full reboot and the
-  Windows service install; D4's clone that opens on Windows and non-ASCII
-  root.
+- **D1, a clone matches, and D4, a clone that opens under a non-ASCII
+  root, passed on Windows.** An editor `depot.clone` from windows-d into
+  `D:\Проекты\vkr-d4` (14.6 GB with its store, 21 minutes on an HDD)
+  fetched 690 cooked textures from `main.cooked.bc` and cooked 581, none
+  failing, among them the adopted `d4_grid.png`. `vkr_depot status` there
+  gave 0 changes at `8c29c8508c50`, the Mac's commit, so the trees match.
+  Bistro opened with no missing-asset lines, the brick faces on the copied
+  `d4_brick.mt` and the D2 and D3 models in place. The first try failed
+  after 268 MB on the transport's 15 s idle timeout, while both ends waited
+  on the same disk; git `fdc12ce1` keeps connections through 60 s stalls.
+- Left, each needing the owner: D1's commits with the network down; D3
+  after a full reboot; D3's service install on a Windows PC with no rule
+  yet, which asks UAC for the Defender rule.
 
 ## Open questions
 
