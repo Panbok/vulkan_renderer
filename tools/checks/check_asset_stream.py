@@ -24,6 +24,14 @@ not the camera), and the check passes when queued downloads were
 cancelled, none failed, every written file equals the local one and
 nothing arrived in the last 15 s.
 
+With `--remote ADDRESS KEY`, step 2 commits to a depot another machine
+serves at ADDRESS with server key KEY instead of a loopback one, and the
+streamed run reads from it over the network. Serve a fresh store there
+(`vkr_depot serve <store> --bind 0.0.0.0:<port> --open`): the check pushes
+`main` and this platform's cooked branch, since each platform streams only
+its own texture family (`vkr_depot_cooked_branch`), so the files still
+compare byte for byte with the local ones.
+
 Both local runs report their pending textures every second, so the first
 gives the local times to the scene and to every texture loaded. Every run
 captures `--settle` seconds after its scene is ready: Bistro's final colour
@@ -269,6 +277,10 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--keep", action="store_true",
                         help="keep the depot and stream directory")
+    parser.add_argument("--remote", nargs=2, metavar=("ADDRESS", "KEY"),
+                        help="commit to and stream from a fresh store "
+                        "another machine serves at ADDRESS with server KEY "
+                        "instead of a loopback depot")
     args = parser.parse_args()
     editor = str(pathlib.Path(args.editor).resolve())
     depot_exe = str(pathlib.Path(args.depot).resolve())
@@ -313,14 +325,17 @@ def main() -> int:
 
         # 2. The depot: main holds the files, the side branch the cooked.
         depot([depot_exe, "keygen"], env, log)
-        store = work / "store"
-        output = depot([depot_exe, "init", str(store)], env, log)
-        key = re.search(r"server key ([0-9a-f]{64})", output).group(1)
-        address = f"127.0.0.1:{args.port}"
-        server = subprocess.Popen(
-            [depot_exe, "serve", str(store), "--bind", address, "--open"],
-            env=env, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT)
-        time.sleep(1.0)
+        if args.remote:
+            address, key = args.remote
+        else:
+            store = work / "store"
+            output = depot([depot_exe, "init", str(store)], env, log)
+            key = re.search(r"server key ([0-9a-f]{64})", output).group(1)
+            address = f"127.0.0.1:{args.port}"
+            server = subprocess.Popen(
+                [depot_exe, "serve", str(store), "--bind", address, "--open"],
+                env=env, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT)
+            time.sleep(1.0)
         seed = work / "seed"
         depot([depot_exe, "clone", address, key, str(seed)], env, log)
         cooked = 0
@@ -332,9 +347,11 @@ def main() -> int:
             cooked += identity.endswith(".vkt")
             seed_bytes += target.stat().st_size
         (seed / ".vkrdepotignore").write_text("*.vkt\n", encoding="utf-8")
+        push_start = time.monotonic()
         depot([depot_exe, "commit", str(seed), "-m", "Bistro", "--push"], env,
               log)
         published = depot([depot_exe, "cooked", str(seed)], env, log)
+        push_seconds = time.monotonic() - push_start
 
         # 3. The streamed run.
         stream_dir = work / "stream"
@@ -410,7 +427,8 @@ def main() -> int:
                   f"{last.get('prefetched', 0)} prefetched, "
                   f"{last.get('cancelled', 0)} cancelled")
         print(f"seed: {len(files)} files read by the local run, {cooked} "
-              f"cooked, {seed_bytes / 1e6:.1f} MB; {published.strip()}")
+              f"cooked, {seed_bytes / 1e6:.1f} MB, committed and pushed to "
+              f"{address} in {push_seconds:.1f} s; {published.strip()}")
         print(f"stream: {last.get('listed')} listed, {last.get('fetched')} "
               f"fetched, {last.get('failed')} failed, "
               f"{last.get('stored_bytes', 0) / 1e6:.1f} MB stored; branch "
