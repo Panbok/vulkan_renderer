@@ -17,8 +17,9 @@ outbound only. The service follows its settings file while it runs,
 publishes its state for other processes, and syncs each served store with
 each of its remotes that has an interval. The editor's Let others fetch and
 push adds a repository to the service and starts the service when it does
-not run ([ADR-110](110-project-sharing-in-the-editor.md)); the editor serves
-nothing itself.
+not run, and an editor that opens a served repository starts a stopped
+service once ([ADR-110](110-project-sharing-in-the-editor.md)); the editor
+serves nothing itself.
 
 ## Context
 

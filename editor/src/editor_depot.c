@@ -314,6 +314,11 @@ struct VkrEditorDepot {
   bool8_t machine_known;
   bool8_t machine_running;
   bool8_t machine_outbound_only;
+  /* Status checks in a row that found the service stopped while it serves
+     the repository, and whether the editor started it once for this
+     workspace. */
+  uint32_t machine_stopped_checks;
+  bool8_t machine_started;
   uint8_t machine_key[32];
   uint16_t machine_port;
   /* Keys connected to it now. */
@@ -2202,9 +2207,27 @@ static void depot_job_inputs(VkrEditorDepot *depot, const char *remote) {
 // Server
 // =============================================================================
 
+/* The store the working copy's `store-root` names, which a clone with
+   `--store` keeps outside it; its own folder's store without one. */
 static void depot_store_root(const char *workspace, char *out,
                              uint32_t capacity) {
-  string_format(out, capacity, "%s/" VKR_DEPOT_META_DIR "/store", workspace);
+  char link[DEPOT_PATH];
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  string_format(link, sizeof(link), "%s/" VKR_DEPOT_META_DIR "/store-root",
+                workspace);
+  if (vkr_bakery_is_file(link) &&
+      vkr_bakery_read_file(link, DEPOT_PATH - 1u, &bytes, &size)) {
+    while (size && (bytes[size - 1u] == '\n' || bytes[size - 1u] == '\r')) {
+      --size;
+    }
+  }
+  if (size) {
+    string_format(out, capacity, "%.*s", (int32_t)size, (const char *)bytes);
+  } else {
+    string_format(out, capacity, "%s/" VKR_DEPOT_META_DIR "/store", workspace);
+  }
+  vkr_heap_free(bytes);
 }
 
 /* Forgets what the last status check read of the machine's service. */
@@ -2212,6 +2235,8 @@ static void depot_machine_reset(VkrEditorDepot *depot) {
   depot->machine_known = false_v;
   depot->machine_running = false_v;
   depot->machine_outbound_only = false_v;
+  depot->machine_stopped_checks = 0u;
+  depot->machine_started = false_v;
   MemZero(depot->machine_key, sizeof(depot->machine_key));
   depot->machine_port = 0u;
   depot->machine_connected = 0u;
@@ -2728,6 +2753,25 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   switch (job->kind) {
   case DEPOT_JOB_STATUS:
     depot->next_status = now + DEPOT_STATUS_SECONDS;
+    /* A served repository needs the service, and a service that exited
+       runs again only at the next logon: opening the project starts it,
+       once, and a start that fails leaves the Start button. Install stops
+       a running service, so a second check soon after confirms a missed
+       loopback answer. */
+    if (job->ok && job->machine_read) {
+      const bool8_t stopped = depot->serving && !depot->machine_running;
+      depot->machine_stopped_checks =
+          stopped ? depot->machine_stopped_checks + 1u : 0u;
+    }
+    if (depot->machine_stopped_checks == 1u && !depot->machine_started) {
+      depot->next_status = now + 2.0;
+    } else if (depot->machine_stopped_checks >= 2u && !depot->machine_started) {
+      depot->machine_started = true_v;
+      char error[DEPOT_TEXT] = {0};
+      if (!vkr_editor_depot_start_service(depot, error, sizeof(error))) {
+        string_format(depot->error, sizeof(depot->error), "%s", error);
+      }
+    }
     break;
   case DEPOT_JOB_COMMIT:
     if (job->ok) {

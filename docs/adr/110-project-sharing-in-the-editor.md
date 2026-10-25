@@ -66,13 +66,19 @@ thread reads finished results and progress counters only.
 - **Let others fetch and push** adds the repository's store to the stores
   the machine's service serves (`vkr_depot_service_add`, under the
   project's name in the letters a store name takes), and clearing it
-  removes the store; a running service follows within a second. When the
+  removes the store; a running service follows within a second. The
+  editor takes the store from the working copy's `store-root`, so a copy
+  cloned with `--store` beside a served store reads as served. When the
   service does not run, the editor installs and starts it with the
   `vkr_depot` beside it (`vkr_depot service install`, which keeps the
-  service's settings), also from a Start button. A store that still holds
-  the `server.key` of an editor that served it itself is not served until
-  the user turns this on. Each repository the editor made or cloned is
-  listed in `<user data>/VKR/depot.json` for the project hub.
+  service's settings), also from a Start button. An editor that opens a
+  served repository starts a stopped service once on its own, after two
+  status checks 2 s apart find it stopped (install stops a running
+  service, so one missed loopback answer does not restart it); a service
+  that exits otherwise runs again only at the next logon. A store that
+  still holds the `server.key` of an editor that served it itself is not
+  served until the user turns this on. Each repository the editor made or
+  cloned is listed in `<user data>/VKR/depot.json` for the project hub.
 - New materials, graphs and themes in a repository are written to its own
   `assets/`, so the project carries them (ADR-077).
 
