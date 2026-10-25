@@ -192,7 +192,9 @@ writes no ignored path (ADR-105).
   overlays, inventories and scenes no live file names leave the commit
   under that operation's rules (a record's `previous_build` stays,
   unreferenced files stay for 24 hours and unlisted scenes for an hour);
-  history keeps them. It then asks Bakery for the files the project reads from outside itself
+  history keeps them. The Changes list does not show these removals, so
+  the commit's notice names how many files it also removed, as does
+  `depot.status` `pruned`. It then asks Bakery for the files the project reads from outside itself
   (`untracked_dependencies`): with any, it stops and lists them with their
   size, and **Copy in and commit** copies them into the repository's own
   `assets/` and commits them, or **Commit without them** goes on

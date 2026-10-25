@@ -175,6 +175,8 @@ typedef struct DepotJob {
   uint32_t untracked_count;
   uint64_t untracked_bytes;
   DepotText untracked[DEPOT_LIST_MAX];
+  /* Paths the commit's cleanup removed because no file names them. */
+  uint32_t pruned;
   uint32_t textures_cooked;
   uint32_t textures_failed;
   /* Cooked textures the side branch for this computer brought instead. */
@@ -348,6 +350,9 @@ struct VkrEditorDepot {
   bool8_t connected;
   VkrDepotConnectStatus connect;
   uint32_t change_count;
+  /* Paths the last commit removed because no file names them, which the
+     Changes list did not show. */
+  uint32_t pruned;
   /* The textures the last Get or Get latest cooked, took from the cooked
      side branch and failed to cook. */
   uint32_t textures_cooked;
@@ -1471,6 +1476,7 @@ static void depot_job_prune(DepotJob *job, const char *folder) {
     (void)vkr_bakery_json_get_int(result, "removed", &removed);
     (void)vkr_bakery_json_get_int(result, "freed_bytes", &freed);
     if (removed > 0) {
+      job->pruned = (uint32_t)Min(removed, (int64_t)UINT32_MAX);
       log_info("Source control: removed %lld unused paths (%.1f MiB) before "
                "the commit",
                (long long)removed, (float64_t)freed / 1048576.0);
@@ -2206,6 +2212,7 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   job->scene_error[0] = '\0';
   job->untracked_count = 0u;
   job->untracked_bytes = 0u;
+  job->pruned = 0u;
   job->branch_count = 0u;
   MemZero(&job->head, sizeof(job->head));
   job->ahead = 0u;
@@ -2796,6 +2803,9 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   if (job->ok && job->scene_error[0]) {
     string_format(depot->error, sizeof(depot->error), "%s", job->scene_error);
   }
+  if (job->kind == DEPOT_JOB_COMMIT) {
+    depot->pruned = job->ok ? job->pruned : 0u;
+  }
   if (job->kind == DEPOT_JOB_PULL || job->kind == DEPOT_JOB_SYNC ||
       job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_SWITCH ||
       (job->kind == DEPOT_JOB_COMMIT && job->then_sync)) {
@@ -2843,9 +2853,17 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   case DEPOT_JOB_COMMIT:
     if (job->ok) {
       depot->message[0] = '\0';
+      char text[DEPOT_TEXT];
+      const char *done = job->then_sync ? "Committed and synced" : "Committed";
+      if (job->pruned) {
+        string_format(text, sizeof(text),
+                      "%s; also removed %u files no scene uses", done,
+                      job->pruned);
+      } else {
+        string_format(text, sizeof(text), "%s", done);
+      }
       vkr_editor_toast(editor, VKR_UI_ICON_CHECK_CIRCLE,
-                       vkr_ui_theme()->success,
-                       job->then_sync ? "Committed and synced" : "Committed");
+                       vkr_ui_theme()->success, text);
     }
     depot->next_status = now + 1.0;
     break;
@@ -6763,6 +6781,8 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
   vkr_bakery_json_set(arena, textures, "failed",
                       vkr_bakery_json_int(arena, depot->textures_failed));
   vkr_bakery_json_set(arena, result, "textures", textures);
+  vkr_bakery_json_set(arena, result, "pruned",
+                      vkr_bakery_json_int(arena, depot->pruned));
   vkr_bakery_json_set(arena, result, "error",
                       vkr_bakery_json_cstr(arena, depot->error));
   if (depot->serving) {

@@ -21028,8 +21028,9 @@ static const OpsDef s_ops[] = {
      "commits of both sides (to_push, to_pull), whether "
      "this editor serves it with its access requests and list, the running "
      "step with its progress, the textures the last pull cooked or took "
-     "from the cooked side branch, the last error and the servers found on "
-     "the network.",
+     "from the cooked side branch, the files the last commit removed "
+     "because no scene uses them (pruned), the last error and the servers "
+     "found on the network.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_status, NULL,
      OPS_NO_SCENE},
     {"depot.init",
