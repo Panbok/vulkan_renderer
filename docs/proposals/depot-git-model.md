@@ -175,10 +175,32 @@ Results so far, 2026-10-24 to 2026-10-25, Release on both machines:
   ("1 files changed here and on origin; choose whose to keep") and merged
   nothing. `depot.pull` with `conflicts: mine` made `f1851a370f53` (two
   parents) with the Mac's line, and the push reached windows-d.
-- Left: D1's commits offline and clone hash; D2 with Theirs, the import job
-  and `prepare_scene` after pulls; D3 after a full reboot, the Windows
-  service install and the editor round trip with the scene open; D4's
-  untracked-materials case and non-ASCII root.
+- **D2, one file with Theirs, passed.** The same steps with `conflicts:
+  theirs` made `efe651189ba1` (parents `59b3a93737e5`, `aa09f3febefe`),
+  and both machines hold Windows' line.
+- **D2, one import job on each side, passed.** The Mac placed
+  `ll_boulder.gltf` in Bistro (`1e240b033b9c`), Windows `ll_shrub.gltf`
+  (`2dfa53145719`), each with `model.place`, which adds two builds and an
+  inventory. The Mac's `depot.sync` merged them with no conflict into
+  `896517125785`. On both machines Bistro then opened with both models at
+  their places, the D5 title cards unchanged, 6 inventories and 7 builds
+  (3 + 2 + 2); `scene.describe` matched 5991 entities on the Mac.
+  `prepare_scene` passed on both of the project's scenes (Bistro on open;
+  the Level Design Test as a Bakery job, no warnings).
+- **D3, a rebuild while the service runs, passed on the Mac:** building
+  `vkr_depot` left the service at the same PID, because it runs from its
+  `VKR Depot.app` copy.
+- **D4, untracked materials, passed on the Mac.** A brick brush in Bistro
+  whose surface theme binds a material and texture that only the engine
+  checkout held, git-ignored, stopped `depot.commit` with both listed;
+  `adopt` copied them into the working copy's `assets/` and committed
+  `7a5dea7b634a`. A theme naming a git-tracked engine material is not
+  untracked, since every install has it. The editor's first commit after
+  unreferenced builds passed the 24-hour grace also prunes them (ADR-110),
+  which removed six Level Design Test builds in `59b3a93737e5`.
+- Left: D1's commits offline and clone hash; D3 after a full reboot, the
+  Windows service install and the editor round trip with the scene open;
+  D4's clone that opens on Windows and non-ASCII root.
 
 ## Open questions
 
