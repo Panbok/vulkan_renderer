@@ -187,6 +187,9 @@ typedef struct DepotJob {
   bool8_t remote_known;
   uint32_t ahead;
   uint32_t behind;
+  /* Commits other computers pushed to this store's branch that the working
+     copy has not taken. */
+  uint32_t pushed;
   uint32_t branch_count;
   DepotBranch branches[DEPOT_BRANCHES_MAX];
   /* The store the working copy opened, for the History's details. */
@@ -362,6 +365,7 @@ struct VkrEditorDepot {
   char branch[VKR_DEPOT_BRANCH_NAME];
   uint32_t ahead;
   uint32_t behind;
+  uint32_t pushed;
   uint32_t branch_count;
   DepotBranch branches[DEPOT_BRANCHES_MAX];
   uint32_t history_count;
@@ -982,9 +986,15 @@ static void depot_job_summary(DepotJob *job, const VkrDepotWorkspace *ws) {
   (void)vkr_depot_ref_list(ws->store.root, depot_branch_visit, job);
   job->ahead = 0u;
   job->behind = 0u;
+  job->pushed = 0u;
   job->remote_known = false_v;
   if (!vkr_depot_ref_read(ws->store.root, ws->branch, &job->head)) {
     job->head = ws->base;
+  }
+  if (!vkr_depot_id_equal(&job->head, &ws->base)) {
+    uint32_t unused = 0u;
+    (void)vkr_depot_ahead_behind(&ws->store, &ws->base, &job->head, &unused,
+                                 &job->pushed);
   }
   if (!job->remote[0] ||
       !vkr_depot_tracking_read(ws->store.root, job->remote, ws->branch,
@@ -1249,12 +1259,67 @@ static VkrDepotFileList depot_index_copy(const VkrDepotWorkspace *ws) {
   return copy;
 }
 
+/* Other computers push to a served store, which moves its branch past the
+   working copy's base; merges the branch into the working copy, as
+   `vkr_depot merge <branch>` does. True when there was nothing to take or
+   the merge settled; false with the error, or the conflicts listed. */
+static bool8_t depot_job_take_pushed(DepotWorker *worker) {
+  DepotJob *job = worker->job;
+  VkrDepotWorkspace *ws = worker->workspace;
+  VkrDepotId branch_at;
+  if (ws->sparse ||
+      !vkr_depot_ref_read(ws->store.root, ws->branch, &branch_at) ||
+      vkr_depot_id_equal(&branch_at, &ws->base)) {
+    job->ok = true_v;
+    return true_v;
+  }
+  VkrDepotFileList before = depot_index_copy(ws);
+  char bakery[DEPOT_PATH];
+  string_format(bakery, sizeof(bakery), "%s",
+                vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY));
+  char message[VKR_DEPOT_BRANCH_NAME + 8u];
+  string_format(message, sizeof(message), "Merge %s", ws->branch);
+  const VkrDepotMergeConfig config = {
+      .driver = vkr_depot_merge_bakery_driver,
+      .driver_context = bakery,
+      .policy = job->policy,
+      .message = message,
+  };
+  VkrDepotMergeResult merged;
+  job->ok = vkr_depot_merge(ws, &branch_at, &config, &merged, job->error,
+                            sizeof(job->error));
+  depot_job_take_changes(job, &merged.conflicts, job->conflicts,
+                         &job->conflict_count);
+  if (job->ok && merged.status == VKR_DEPOT_MERGE_CONFLICTS) {
+    job->ok = false_v;
+    string_format(job->error, sizeof(job->error),
+                  "%u files changed here and in commits pushed to this "
+                  "repository; choose whose to keep",
+                  merged.conflicts.count);
+  } else if (job->ok) {
+    job->merged = merged.status != VKR_DEPOT_MERGE_UP_TO_DATE;
+  }
+  vkr_depot_change_list_free(&merged.conflicts);
+  if (job->ok) {
+    job->conflict_count = 0u;
+    depot_job_after_checkout(worker, &before);
+  }
+  vkr_depot_file_list_free(&before);
+  return job->ok;
+}
+
 /* Pulls the branch from the remote: a fast-forward, or a merge when both
    sides moved it, whose scene units Bakery merges. Conflicts it could not
-   settle under the job's policy stop it with them listed. */
+   settle under the job's policy stop it with them listed. Commits pushed to
+   this computer's store come first; a served copy without a remote takes
+   only those. */
 static void depot_job_pull(DepotWorker *worker) {
   DepotJob *job = worker->job;
   VkrDepotWorkspace *ws = worker->workspace;
+  if (!depot_job_take_pushed(worker) || !job->remote[0]) {
+    return;
+  }
+  const bool8_t took_pushed = job->merged;
   VkrDepotFileList before = depot_index_copy(ws);
   char bakery[DEPOT_PATH];
   string_format(bakery, sizeof(bakery), "%s",
@@ -1278,9 +1343,9 @@ static void depot_job_pull(DepotWorker *worker) {
                   "%u files changed here and on %s; choose whose to keep",
                   merged.conflicts.count, job->remote);
   } else if (job->ok && pulled.status == VKR_DEPOT_PULL_DIVERGED) {
-    job->merged = merged.status == VKR_DEPOT_MERGE_MERGED;
+    job->merged = took_pushed || merged.status == VKR_DEPOT_MERGE_MERGED;
   } else if (job->ok) {
-    job->merged = pulled.status == VKR_DEPOT_PULL_FAST_FORWARD;
+    job->merged = took_pushed || pulled.status == VKR_DEPOT_PULL_FAST_FORWARD;
   }
   vkr_depot_change_list_free(&pulled.conflicts);
   vkr_depot_change_list_free(&merged.conflicts);
@@ -2077,7 +2142,7 @@ static void *depot_worker(void *argument) {
       break;
     case DEPOT_JOB_SYNC:
       depot_job_pull(&worker);
-      if (job->ok) {
+      if (job->ok && job->remote[0]) {
         depot_job_push(&worker);
       }
       break;
@@ -2436,6 +2501,7 @@ static void depot_reset_status(VkrEditorDepot *depot) {
   depot->remote_known = false_v;
   depot->ahead = 0u;
   depot->behind = 0u;
+  depot->pushed = 0u;
   depot->branch_count = 0u;
   depot->branch[0] = '\0';
   depot->error[0] = '\0';
@@ -2665,6 +2731,7 @@ static void depot_take_results(VkrEditorDepot *depot) {
     depot->remote_head = job->remote_head;
     depot->ahead = job->ahead;
     depot->behind = job->behind;
+    depot->pushed = job->pushed;
   }
   /* A status check that skipped the remote learned nothing about it. */
   const uint32_t remote = depot_remote_index(depot, job->remote);
@@ -3114,7 +3181,9 @@ bool8_t vkr_editor_depot_commit(VkrEditorDepot *depot, const char *message,
                 text[0] ? text : "Changes");
   depot->job->then_sync = sync;
   depot->job->policy = VKR_DEPOT_CONFLICT_FAIL;
-  return depot_start_with(depot, DEPOT_JOB_COMMIT, NULL, sync, error, capacity);
+  /* A served store is where others pull from, so its commit is synced. */
+  return depot_start_with(depot, DEPOT_JOB_COMMIT, NULL,
+                          sync && !depot->serving, error, capacity);
 }
 
 bool8_t vkr_editor_depot_push(VkrEditorDepot *depot, const char *remote,
@@ -3131,7 +3200,9 @@ bool8_t vkr_editor_depot_pull(VkrEditorDepot *depot, const char *remote,
     return false_v;
   }
   depot->job->policy = depot_policy(policy);
-  return depot_start_with(depot, DEPOT_JOB_PULL, remote, true_v, error,
+  /* A served copy takes the commits others pushed to its store without
+     one. */
+  return depot_start_with(depot, DEPOT_JOB_PULL, remote, !depot->serving, error,
                           capacity);
 }
 
@@ -3141,7 +3212,7 @@ bool8_t vkr_editor_depot_sync(VkrEditorDepot *depot, const char *remote,
     return false_v;
   }
   depot->job->policy = VKR_DEPOT_CONFLICT_FAIL;
-  return depot_start_with(depot, DEPOT_JOB_SYNC, remote, true_v, error,
+  return depot_start_with(depot, DEPOT_JOB_SYNC, remote, !depot->serving, error,
                           capacity);
 }
 
@@ -3641,8 +3712,10 @@ static float32_t depot_job_text(const VkrEditorDepot *depot, char *out,
   }
 }
 
-static bool8_t depot_incoming(const VkrEditorDepot *depot) {
-  return depot->remote_known && depot->behind > 0u;
+/* Commits Pull would bring: the remote's, as last fetched, and those other
+   computers pushed to this store. */
+static uint32_t depot_incoming(const VkrEditorDepot *depot) {
+  return (depot->remote_known ? depot->behind : 0u) + depot->pushed;
 }
 
 static const char *depot_role_name(VkrDepotRole role) {
@@ -3739,8 +3812,12 @@ void vkr_editor_depot_chip_build(VkrEditorDepot *depot, VkrEditorUi *editor,
     icon = VKR_UI_ICON_ARROW_DOWN;
     icon_color = theme->accent_hover;
     string_format(text, sizeof(text), "%s \xc2\xb7 %u to pull", branch,
-                  depot->behind);
-    tooltip = "The remote has commits this repository lacks; Pull or Sync";
+                  depot_incoming(depot));
+    tooltip = depot->pushed
+                  ? "Other computers pushed commits this working copy lacks; "
+                    "Pull"
+                  : "The remote has commits this repository lacks; Pull or "
+                    "Sync";
   } else if (depot->change_count) {
     icon_color = theme->accent_hover;
     string_format(text, sizeof(text), "%s \xc2\xb7 %u change%s", branch,
@@ -4103,6 +4180,10 @@ static void depot_toolbar(VkrEditorDepot *depot, VkrEditorUi *editor,
     depot->remote_menu_open = false_v;
   }
   x += branch_pt + 8.0f;
+  char pull[32];
+  string_format(pull, sizeof(pull), depot_incoming(depot) ? "Pull %u" : "Pull",
+                depot_incoming(depot));
+  const float32_t pull_pt = depot_text_pt(pull, true_v);
   if (!depot->remote_count) {
     if (depot_icon_button(editor, ui, "bar.add", "Add a remote to sync",
                           VKR_UI_ICON_ADD, width - DEPOT_PAD - 190.0f, y,
@@ -4111,6 +4192,16 @@ static void depot_toolbar(VkrEditorDepot *depot, VkrEditorUi *editor,
                           "project")) {
       depot->tab = DEPOT_TAB_REMOTES;
       depot->remote_form_open = true_v;
+    }
+    /* Other computers push to a served store; Pull takes their commits. */
+    if (depot->pushed &&
+        depot_icon_button(editor, ui, "bar.pull", pull, VKR_UI_ICON_ARROW_DOWN,
+                          width - DEPOT_PAD - 196.0f - pull_pt, y, pull_pt,
+                          false_v, busy,
+                          "Take the commits other computers pushed to this "
+                          "repository") &&
+        !vkr_editor_depot_pull(depot, NULL, "fail", error, sizeof(error))) {
+      string_format(depot->error, sizeof(depot->error), "%s", error);
     }
     return;
   }
@@ -4139,15 +4230,11 @@ static void depot_toolbar(VkrEditorDepot *depot, VkrEditorUi *editor,
   x += remote_pt + 8.0f;
   /* Sync, Push, Pull and Fetch from the right; Fetch keeps only its icon
      when the row is short of room. */
-  char pull[32];
   char push[32];
-  string_format(pull, sizeof(pull), depot->behind ? "Pull %u" : "Pull",
-                depot->behind);
   string_format(push, sizeof(push), depot->ahead ? "Push %u" : "Push",
                 depot->ahead);
   const float32_t sync_pt = depot_text_pt("Sync", false_v) + 8.0f;
   const float32_t push_pt = depot_text_pt(push, true_v);
-  const float32_t pull_pt = depot_text_pt(pull, true_v);
   const float32_t room = width - DEPOT_PAD - x - sync_pt - push_pt - pull_pt;
   const bool8_t fetch_text = room > depot_text_pt("Fetch", true_v) + 24.0f;
   const float32_t fetch_pt =
@@ -6544,6 +6631,8 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
                       vkr_bakery_json_int(arena, depot->ahead));
   vkr_bakery_json_set(arena, result, "behind",
                       vkr_bakery_json_int(arena, depot->behind));
+  vkr_bakery_json_set(arena, result, "pushed",
+                      vkr_bakery_json_int(arena, depot->pushed));
   VkrBakeryJson *branches = vkr_bakery_json_array(arena);
   for (uint32_t i = 0u; i < depot->branch_count; ++i) {
     vkr_bakery_json_append(
@@ -6596,7 +6685,7 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
       arena, result, "remote",
       vkr_bakery_json_cstr(arena, depot->remote_known ? hex : ""));
   vkr_bakery_json_set(arena, result, "incoming",
-                      vkr_bakery_json_bool(arena, depot_incoming(depot)));
+                      vkr_bakery_json_bool(arena, depot_incoming(depot) > 0u));
   vkr_bakery_json_set(arena, result, "connected",
                       vkr_bakery_json_bool(arena, depot->connected));
   vkr_bakery_json_set(

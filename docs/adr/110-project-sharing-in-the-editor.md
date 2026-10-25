@@ -211,6 +211,13 @@ writes no ignored path (ADR-105).
   once its edits are saved. Conflicts stop it with the paths listed; Use
   theirs and Keep mine pull again under that policy. **Sync** pulls, then
   pushes. **Commit & Sync** does both after the commit.
+- Other computers push into a served store, which moves its branch past
+  the working copy's base, and a commit refuses until the copy takes them.
+  The status check counts those commits (`pushed` in `depot.status`, the
+  chip's "N to pull"). Pull merges the store's branch into the working
+  copy first, as `vkr_depot merge <branch>` does, then pulls the remote.
+  A served repository needs no remote for Pull, Sync or Commit & Sync; a
+  toolbar without remotes shows Pull while there are pushed commits.
 - Switching branches keeps no local change it would overwrite, and reloads
   the scene when the switch changed scene files.
 

@@ -1115,8 +1115,12 @@ static int depot_show(const char *directory, const char *prefix) {
     return 1;
   }
   DepotShow show = {.prefix = prefix, .prefix_size = (uint32_t)strlen(prefix)};
-  /* The walk sizes its frontier by the count, so it takes a bound. */
-  (void)vkr_depot_log_graph(&workspace.store, &workspace.base, 1u, 65536u,
+  /* The base, and the branch in the store, which commits pushed to a
+     served store move past it. The walk sizes its frontier by the count,
+     so it takes a bound. */
+  VkrDepotId tips[2] = {workspace.base};
+  (void)vkr_depot_ref_read(workspace.store.root, workspace.branch, &tips[1]);
+  (void)vkr_depot_log_graph(&workspace.store, tips, 2u, 65536u,
                             depot_show_match, &show);
   int result = 1;
   if (show.matches == 0u) {
