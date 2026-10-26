@@ -3336,7 +3336,8 @@ vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
     VkrRendererMetricsCollectContext metrics_context = {
         .application = vkr_application_metrics_snapshot(
             &application->assets, &application->ui_system,
-            &application->lighting_system, &application->shadow_system),
+            &application->lighting_system, &application->shadow_system,
+            &application->decal_frame),
         .renderer = &application->renderer,
         .frame_metrics = metrics,
         .visibility = &application->visibility_stats,

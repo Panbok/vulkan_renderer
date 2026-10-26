@@ -1,12 +1,14 @@
 #include "application/vkr_application_metrics.h"
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_scene_decal.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 
 VkrApplicationMetricsSnapshot vkr_application_metrics_snapshot(
     const VkrRenderAssets *assets, const VkrUiSystem *ui,
-    const VkrLightingSystem *lighting, const VkrShadowSystem *shadow) {
+    const VkrLightingSystem *lighting, const VkrShadowSystem *shadow,
+    const VkrSceneDecalFrame *decals) {
   const VkrMaterialTextureStreamStats texture_streams =
       vkr_material_system_get_texture_stream_stats(&assets->material_system);
   const VkrLocalShadowCache *local = &shadow->local_cache;
@@ -60,6 +62,8 @@ VkrApplicationMetricsSnapshot vkr_application_metrics_snapshot(
           lighting->point_light_grid.max_lights_per_cell,
       .lighting_point_grid_global_lights =
           lighting->point_light_grid.global_light_count,
+      .decal_kept = decals->count,
+      .decal_dropped = decals->dropped_count,
       .material_texture_stream_pending = texture_streams.pending_count,
       .material_texture_stream_demanded_missing =
           texture_streams.demanded_missing_count,

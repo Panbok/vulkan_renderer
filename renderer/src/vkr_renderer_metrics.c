@@ -427,6 +427,10 @@ vkr_internal bool8_t vkr_renderer_metrics_register_workload(
   VKR_REGISTER_U64(lighting_point_grid_global_lights,
                    "lighting.point.grid.global_lights", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(decal_kept, "decal.kept", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(decal_dropped, "decal.dropped", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
   return true_v;
 }
 
@@ -2594,6 +2598,8 @@ void vkr_renderer_metrics_collect(
               context->application.lighting_point_grid_max_lights_per_cell);
   VKR_SET_U64(lighting_point_grid_global_lights,
               context->application.lighting_point_grid_global_lights);
+  VKR_SET_U64(decal_kept, context->application.decal_kept);
+  VKR_SET_U64(decal_dropped, context->application.decal_dropped);
 
   vkr_renderer_metrics_collect_visibility(metrics, ids, renderer, world,
                                           visibility);

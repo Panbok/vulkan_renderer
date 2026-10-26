@@ -166,6 +166,8 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId lighting_point_grid_references;
   VkrMetricId lighting_point_grid_max_lights_per_cell;
   VkrMetricId lighting_point_grid_global_lights;
+  VkrMetricId decal_kept;
+  VkrMetricId decal_dropped;
 
   VkrMetricId visibility_objects_tested;
   VkrMetricId visibility_culled_camera;
@@ -565,6 +567,9 @@ typedef struct VkrApplicationMetricsSnapshot {
   uint64_t lighting_point_grid_references;
   uint64_t lighting_point_grid_max_lights_per_cell;
   uint64_t lighting_point_grid_global_lights;
+  /** Decals the frame table kept, and those offered past its capacity. */
+  uint64_t decal_kept;
+  uint64_t decal_dropped;
   uint64_t material_texture_stream_pending;
   uint64_t material_texture_stream_demanded_missing;
   uint64_t material_texture_stream_demanded_evicted;
