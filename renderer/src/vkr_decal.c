@@ -91,7 +91,7 @@ static int32_t decal_grid_cell(const VkrDecalGrid *grid, uint32_t axis,
 void vkr_decal_grid_build(const VkrDecal *decals, uint32_t count,
                           VkrDecalGrid *grid) {
   MemZero(grid, sizeof(*grid));
-  count = Min(count, VKR_MAX_FRAME_DECALS);
+  count = Min(count, VKR_DECAL_GRID_DECAL_MAX);
   if (count == 0u) {
     return;
   }

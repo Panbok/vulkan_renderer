@@ -244,8 +244,9 @@ void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
                                             uint32_t light_max,
                                             uint32_t shadow_max);
 
-/** Rebuilds the conservative world-space lookup from point_lights. Public for
- * deterministic CPU coverage tests; scene sync calls it automatically. */
+/** Rebuilds the conservative world-space lookup from the point_lights rows
+ * below VKR_POINT_LIGHT_GRID_LIGHT_MAX. Public for deterministic CPU coverage
+ * tests; scene sync calls it automatically. */
 void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system);
 
 /** Returns the global-plus-cell mask used for a world-space fragment. */

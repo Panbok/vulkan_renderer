@@ -111,7 +111,7 @@ vkr_internal void rectangle_light_insert_stable(RectangleLightSyncContext *ctx,
 
 vkr_internal void point_light_mask_add(VkrPointLightMask *mask,
                                        uint32_t light_index) {
-  if (!mask || light_index >= VKR_MAX_SCENE_POINT_LIGHTS) {
+  if (!mask || light_index >= VKR_POINT_LIGHT_GRID_LIGHT_MAX) {
     return;
   }
   mask->words[light_index / 32u] |= 1u << (light_index % 32u);
@@ -848,14 +848,17 @@ void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {
   }
   VkrPointLightGrid *grid = &system->point_light_grid;
   MemZero(grid, sizeof(*grid));
-  if (system->point_light_count == 0u) {
+  /* The grid names only the rows its mask can hold. */
+  const uint32_t light_count =
+      Min(system->point_light_count, VKR_POINT_LIGHT_GRID_LIGHT_MAX);
+  if (light_count == 0u) {
     return;
   }
 
   Vec3 bounds_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
   Vec3 bounds_max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
   uint32_t finite_count = 0u;
-  for (uint32_t i = 0; i < system->point_light_count; ++i) {
+  for (uint32_t i = 0; i < light_count; ++i) {
     const VkrPointLight *light = &system->point_lights[i];
     if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL ||
         light->range <= 0.0f) {
@@ -893,7 +896,7 @@ void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {
   grid->dimensions[2] = dimensions[2];
   grid->cell_count = cell_count;
 
-  for (uint32_t i = 0; i < system->point_light_count; ++i) {
+  for (uint32_t i = 0; i < light_count; ++i) {
     const VkrPointLight *light = &system->point_lights[i];
     if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL ||
         light->range <= 0.0f) {
@@ -988,7 +991,7 @@ vkr_lighting_system_point_light_mask_at(const VkrLightingSystem *system,
 bool8_t
 vkr_lighting_system_point_light_mask_contains(const VkrPointLightMask *mask,
                                               uint32_t light_index) {
-  if (!mask || light_index >= VKR_MAX_SCENE_POINT_LIGHTS) {
+  if (!mask || light_index >= VKR_POINT_LIGHT_GRID_LIGHT_MAX) {
     return false_v;
   }
   return (mask->words[light_index / 32u] & (1u << (light_index % 32u))) != 0u;

@@ -20,13 +20,19 @@ typedef enum VkrPointLightKind {
 #define VKR_POINT_LIGHT_SOURCE_RADIUS_MAX 1.0f
 
 #define VKR_MAX_SCENE_POINT_LIGHTS 128u
+/* Light table rows the CPU light grid can name: it places only the rows
+ * below min(count, VKR_POINT_LIGHT_GRID_LIGHT_MAX). The table may outgrow
+ * it; the grid's mask width follows this head, not the table. */
+#define VKR_POINT_LIGHT_GRID_LIGHT_MAX 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
 #define VKR_POINT_LIGHT_GRID_MAX_CELLS 384u
 #define VKR_POINT_LIGHT_GRID_MIN_CELL_SIZE 4.0f
 
-_Static_assert(VKR_MAX_SCENE_POINT_LIGHTS ==
+_Static_assert(VKR_POINT_LIGHT_GRID_LIGHT_MAX ==
                    VKR_POINT_LIGHT_GRID_MASK_WORDS * 32u,
-               "The light-grid mask must represent the complete scene table");
+               "The light-grid mask must represent every row the grid names");
+_Static_assert(VKR_POINT_LIGHT_GRID_LIGHT_MAX <= VKR_MAX_SCENE_POINT_LIGHTS,
+               "The rows the light grid names lie within the scene table");
 
 /* Fixed-point units per fully lit pixel in a light-contribution sample. A
  * 4K frame of fully lit pixels stays below 2^31. */

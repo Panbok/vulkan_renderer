@@ -11,12 +11,18 @@
 
 /** Decals one frame carries: the runtime keeps those nearest the camera. */
 #define VKR_MAX_FRAME_DECALS 64u
+/** Frame table rows the CPU decal grid can name: it places only the rows
+ * below min(count, VKR_DECAL_GRID_DECAL_MAX). The table may outgrow it; the
+ * grid's mask width follows this limit, not the table. */
+#define VKR_DECAL_GRID_DECAL_MAX 64u
 #define VKR_DECAL_GRID_MASK_WORDS 2u
 #define VKR_DECAL_GRID_MAX_CELLS 256u
 #define VKR_DECAL_GRID_MIN_CELL_SIZE 2.0f
 
-_Static_assert(VKR_MAX_FRAME_DECALS == VKR_DECAL_GRID_MASK_WORDS * 32u,
-               "The decal-grid mask must represent the complete frame table");
+_Static_assert(VKR_DECAL_GRID_DECAL_MAX == VKR_DECAL_GRID_MASK_WORDS * 32u,
+               "The decal-grid mask must represent every row the grid names");
+_Static_assert(VKR_DECAL_GRID_DECAL_MAX <= VKR_MAX_FRAME_DECALS,
+               "The rows the decal grid names lie within the frame table");
 
 /**
  * One decal lowered for a frame. `world_to_box` maps a world position into
@@ -72,8 +78,8 @@ bool8_t vkr_decal_set_box(VkrDecal *decal, Mat4 box_to_world);
  * fades and an opacity in [0, 1]. */
 bool8_t vkr_decal_valid(const VkrDecal *decal);
 
-/** Rebuilds `grid` over the bounds of the first `count` decals; `count` is at
- * most VKR_MAX_FRAME_DECALS. */
+/** Rebuilds `grid` over the bounds of the first min(`count`,
+ * VKR_DECAL_GRID_DECAL_MAX) decals. */
 void vkr_decal_grid_build(const VkrDecal *decals, uint32_t count,
                           VkrDecalGrid *grid);
 
