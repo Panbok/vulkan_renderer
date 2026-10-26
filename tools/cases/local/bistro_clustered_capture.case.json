@@ -41,7 +41,13 @@
     "gtao_enabled": true,
     "gtao_radius": 0.5,
     "gtao_power": 2.2,
-    "dynamic_resolution": false
+    "dynamic_resolution": false,
+    "motion_blur_entity": "Clustered Moving Lights",
+    "motion_blur_entity_velocity": [
+      0.6,
+      0.0,
+      0.6
+    ]
   },
   "camera": {
     "mode": "static",
