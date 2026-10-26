@@ -192,7 +192,14 @@ The owner accepted each recommendation below on 2026-10-20.
   measured (422.5 MiB) and 26 below their need, and 391 unmeasured
   (773.1 MiB), 278 of them at full mips (744.3 MiB), which the 128 floor
   would hold in about 4.6 MiB. Without a budget 509 textures held
-  1778.3 MiB. A camera path's report is one run per position.
+  1778.3 MiB. A camera path's report is one run per position. Since
+  2026-10-26 (main 3111cf08) textures that no frame measured for 600 epochs
+  of running demand lower first and make room for measured ones below their
+  need (ADR-024): the RX 6700 XT pressure case past that window went from 31
+  slots below their need to 0. The 1200 MiB orbit kept its wall frame, at
+  p95 14.51 against 14.66 ms on the RX 6700 XT and 33.0 to 34.1 against 33.0
+  to 33.1 ms on the M1 Pro, after the Metal upload-order and Vulkan
+  shadow-reuse and unpublish fixes.
 - A hitch report while flying through Bistro on a recorded camera path at a
   fixed speed: frame time p95, p99 and maximum, and upload stalls, against
   today's load. First reading (2026-10-23, RX 6700 XT, Release,
