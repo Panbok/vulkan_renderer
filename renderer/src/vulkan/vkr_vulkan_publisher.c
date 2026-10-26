@@ -1777,6 +1777,19 @@ vkr_vk_reserve_retired_texture(VkrVulkanRenderer *renderer) {
   return NULL;
 }
 
+/* A retired-texture record, collecting completed retirements first only
+   when every record is taken: a full collection walks every publication
+   table, and the frame's own collection frees records soon enough. */
+vkr_internal VkrVulkanPublishedTexture *
+vkr_vk_reserve_retired_texture_collecting(VkrVulkanRenderer *renderer) {
+  VkrVulkanPublishedTexture *retired = vkr_vk_reserve_retired_texture(renderer);
+  if (retired)
+    return retired;
+  vkr_vk_collect_asset_publications(renderer,
+                                    vkr_vk_refresh_completed(renderer));
+  return vkr_vk_reserve_retired_texture(renderer);
+}
+
 void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
                                        uint64_t completed) {
   if (!vkr_geometry_ranges_collect(&renderer->geometry_ranges, completed))
@@ -2828,7 +2841,7 @@ bool8_t vkr_vk_asset_unpublish_texture(void *state, VkrTextureHandle handle) {
   if (texture->ibl_reference_count) {
     if (!texture->material_reference_count) {
       VkrVulkanPublishedTexture *retired =
-          vkr_vk_reserve_retired_texture(renderer);
+          vkr_vk_reserve_retired_texture_collecting(renderer);
       if (!retired) {
         log_error("Vulkan retired-texture capacity exhausted");
         return false_v;
@@ -2840,8 +2853,6 @@ bool8_t vkr_vk_asset_unpublish_texture(void *state, VkrTextureHandle handle) {
       *retired = *texture;
       MemZero(texture, sizeof(*texture));
       vkr_vk_advance_radiance_revision(renderer);
-      vkr_vk_collect_asset_publications(renderer,
-                                        vkr_vk_refresh_completed(renderer));
       return true_v;
     }
     texture->unpublish_requested = true_v;
@@ -2854,13 +2865,14 @@ bool8_t vkr_vk_asset_unpublish_texture(void *state, VkrTextureHandle handle) {
   texture->pending_retire = true_v;
   vkr_vk_advance_radiance_revision(renderer);
   texture->last_use_submit_value = renderer->submit_value;
-  const uint64_t completed = vkr_vk_refresh_completed(renderer);
-  vkr_vk_collect_asset_publications(renderer, completed);
-  if (!texture->pending_retire)
-    return true_v;
+  /* The frame's collection retires it once its last use and every material
+     that samples it have completed. */
   if (texture->material_reference_count)
     return true_v;
-  VkrVulkanPublishedTexture *retired = vkr_vk_reserve_retired_texture(renderer);
+  VkrVulkanPublishedTexture *retired =
+      vkr_vk_reserve_retired_texture_collecting(renderer);
+  if (!texture->pending_retire)
+    return true_v;
   if (!retired) {
     log_error("Vulkan retired-texture capacity exhausted");
     return false_v;
