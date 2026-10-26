@@ -2525,6 +2525,8 @@ vkr_internal bool8_t vkr_metal_packet_upload_texture(
       return false_v;
     first = Max(end, 1u);
   }
+  renderer->texture_upload_order_value =
+      Max(renderer->texture_upload_order_value, renderer->submit_value);
   return true_v;
 }
 

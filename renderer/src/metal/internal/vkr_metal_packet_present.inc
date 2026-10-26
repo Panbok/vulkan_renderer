@@ -590,6 +590,7 @@ vkr_metal_packet_order_frame_commit(VkrMetalPacketRenderer *renderer,
                                     const VkrPreparedFrame *packet)
     API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketPresenter *presenter = &renderer->presenter;
+  vkr_metal_packet_order_after_texture_uploads(renderer);
   if (packet->editor_presenter) {
     if (presenter->frame_present_wait > presenter->completion.signaledValue)
       [renderer->queue waitForEvent:presenter->completion
