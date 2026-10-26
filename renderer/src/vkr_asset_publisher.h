@@ -103,7 +103,9 @@ typedef struct VkrAssetPublisher {
   /** Next completion of the renderer's table, false when none is waiting.
    * NULL in a native table. */
   bool8_t (*poll_completion)(void *state, VkrPublicationCompletion *out);
-  /** True once every accepted publication is ordered before the next frame. */
+  /** True once every accepted geometry, material and bake publication is
+   * ordered before the next frame. Texture uploads are left out: a texture
+   * reaches a drawn caster only through its completion. */
   bool8_t (*publications_idle)(void *state);
   /** Monotonic nonzero stamp for geometry/material resolvability changes. */
   uint64_t (*publication_generation)(void *state);

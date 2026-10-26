@@ -3329,8 +3329,7 @@ vkr_vk_asset_atmosphere_bake_status(void *state, VkrTextureHandle source) {
 
 vkr_internal bool8_t vkr_vk_asset_publications_idle(void *state) {
   const VkrVulkanRenderer *renderer = state;
-  return renderer && !renderer->pending_texture_initialization_count &&
-         !renderer->pending_buffer_initialization_count &&
+  return renderer && !renderer->pending_buffer_initialization_count &&
          !renderer->pending_ibl_bake_count &&
          !renderer->geometry_megabuffer.copy_pending;
 }
