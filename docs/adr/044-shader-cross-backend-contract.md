@@ -661,9 +661,9 @@ parity runs. Shaders transform tangents with the model's linear part and normals
 the prepared columns. No per-pixel matrix inverse is required.
 
 The Vulkan G-buffer root appends the sky reprojection matrix at byte 352 and
-then the decal rows, grid masks, grid origin and cell size, and grid
-dimensions with the decal count at bytes 416, 424, 432 and 448 (ADR-092), for
-a 464-byte size. The G-buffer owns sky motion for every temporal consumer;
+then the decal rows at byte 416 (ADR-092), the frame's
+`VkrVulkanLightClusters` at byte 424 and the decal count at byte 448
+(ADR-135), for a 464-byte size. The G-buffer owns sky motion for every temporal consumer;
 portable resolve carries no duplicate reprojection matrix. The Vulkan temporal
 resolve root carries current and previous pixel jitter at bytes 128 and 136
 of its 160 bytes for canonical color reconstruction and raw metadata
@@ -801,8 +801,8 @@ temporal filter flag at byte 116 (nonzero under temporal reconstruction),
 the baked-lamp shadow fields from byte 120 (ADR-104), the frame's overflow
 tag at byte 140 and, at byte 144, `mask_lights`: bit i set for table light i
 when it is shadowed and its range reaches the camera frustum (2026-10-11,
-ADR-019). The kernel intersects each pixel's grid-cell mask with it, so only
-those lights take slots, and a pixel with none returns before its surface
+ADR-019). The kernel tests each light of the pixel's cluster list (ADR-135)
+against it, so only those lights, all in the 128-row light head, take slots, and a pixel with none returns before its surface
 loads unless the baked-lamp variant needs them. The 368-byte deferred-lighting
 root reads the mask array at byte 160, the per-light contribution counters at
 byte 184 (null when not measured), into which the deferred punctual loop adds,
@@ -1001,6 +1001,7 @@ domain under the [evidence rules](#evidence-rules).
 | Custom material graphs | Tiled | — | `metal/msl/world/tiled.metal`, `metal/msl/world/gpu_draws.metal`, generated `project_materials.metal` | — (draws the Standard fallback) |
 | Tiled forward, atmosphere and blend | Tiled | shared material, light, fog, atmosphere and transmission kernels below | `metal/msl/world/tiled.metal`, `lighting.metalh`, `metal/msl/shadow/sampling.metalh` | — |
 | Projected decals | Shared semantics, one implementation per backend | — | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
+| Light and decal frustum clusters (ADR-135) | Desktop | `shared/point_light.slangh` | — | `vulkan/slang/world/light_clusters.slang` (`vk_light_cluster_prepare`, `vk_light_cluster_bin`, `vkr_vk_light_cluster_header`), read by `world/default.slang` (`packet_punctual_layered`) and `deferred.slang` (`vk_local_shadow_mask`, `vkr_vk_apply_decals`); Vulkan native: Release captures of the Bistro lamp views and decal G-buffer byte-identical to the world grids it replaced |
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |
 | Texture demand ([ADR-024](024-shared-bindless-gpu-cores.md)): each material's required texture extent from its UV derivatives; one pixel of each 4x4 block every frame on the desktop pipeline, every pixel of one frame in 8 while the texture budget binds on the tiled pipeline | Shared | `shared/texture_demand_kernel.slangh` | `metal/msl/world/tiled.metal` (`vkr_metal_tiled_demand_word`, colour 2 of `VkrMetalTiledForwardOutput`, `vkr_metal_tiled_demand_tile`) | `vulkan/slang/world/deferred.slang` (`vk_gbuffer_resolve`, `VkrVkResolveRoot.texture_feedback`) |
 | Planar reflection: mirrored view shaded forward, reflector lookup | Desktop | the material, light, shadow and probe kernels below | — | `vulkan/slang/world/deferred.slang` (`vk_reflection_vertex`, `vk_reflection_fragment`, `vk_planar_reflection_specular`), `world/default.slang` (`packet_world_shade_surface`) |

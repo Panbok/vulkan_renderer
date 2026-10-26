@@ -2188,6 +2188,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_GBUFFER_RESOLVE_SAMPLE1:
     return vkr_vk_prepare_deferred_gbuffer(renderer, &prepared->compute, pass,
                                            true_v);
+  case VKR_RG_EXECUTOR_LIGHT_CLUSTERS:
+    return vkr_vk_prepare_light_clusters(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK:
     return vkr_vk_prepare_local_shadow_mask(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SUN_CONTACT:

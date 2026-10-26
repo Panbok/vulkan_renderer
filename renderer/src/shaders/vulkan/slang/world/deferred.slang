@@ -180,13 +180,14 @@ struct VkrVkResolveRoot
     uint anisotropy_texture;
     float pre_exposure;
     float4x4 sky_reprojection;
-    // The frame's decals (ADR-092): rows in compositing order and the world
-    // grid's uint2 cell masks. dimensions_count.w is the decal count; zero
-    // leaves both addresses unused.
+    // The frame's decals (ADR-092): rows in compositing order, which the
+    // frame's clusters list (ADR-135). A zero decal_count leaves the rows
+    // unused.
     VkrVulkanDecalRow *decals;
-    uint2 *decal_masks;
-    float4 decal_grid_origin_cell_size;
-    uint4 decal_grid_dimensions_count;
+    VkrVulkanLightClusters *light_clusters;
+    uint4 decal_reserved_0;
+    uint decal_count;
+    uint3 decal_reserved_1;
     // Baked static lamps (ADR-104): lightmapped draws'
     // page rectangles, the lamp-layer texture array whose slice
     // page * lightmap_layer_count + layer holds one layer of a page, and the
@@ -2138,61 +2139,63 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
 // row at v = 0, v along -Z. Its material's base colour times its tint covers
 // the surface by the texture's alpha, the decal's opacity, the fade by the
 // angle between `normal` and the box's +Y and the fade toward the box's near
-// and far faces; later decals lie on top. The wave iterates the union of its
-// lanes' cell masks, so each decal row loads once for the wave; a lane outside
-// a decal's box skips it, and a lane inside it has it in its own cell.
+// and far faces; later decals lie on top. The wave merges its lanes' cluster
+// lists in ascending row order (ADR-135), so each decal row loads once for
+// the wave; a lane outside a decal's box skips it, and a lane inside it has
+// it in its own cluster.
 float3 vkr_vk_apply_decals(VkrVkResolveRoot root, float3 world_position,
                            float3 world_dx, float3 world_dy, float3 normal,
                            float3 base)
 {
-    float4 grid = root.decal_grid_origin_cell_size;
-    uint3 dimensions = root.decal_grid_dimensions_count.xyz;
-    int3 cell = int3(floor((world_position - grid.xyz) / grid.w));
-    uint2 mask = uint2(0u);
-    if (all(cell >= 0) && cell.x < int(dimensions.x) &&
-        cell.y < int(dimensions.y) && cell.z < int(dimensions.z))
-    {
-        mask = root.decal_masks[uint(cell.x) +
-                                dimensions.x * (uint(cell.y) +
-                                                dimensions.y * uint(cell.z))];
-    }
+    VkrVulkanLightClusters *clusters = root.light_clusters;
+    VkrVulkanLightCluster cluster =
+        vkr_vk_light_cluster_header(clusters, world_position);
+    uint cursor = cluster.first + cluster.tail_light_count;
+    uint end = cursor + cluster.decal_count;
     float4 position = float4(world_position, 1.0f);
-    [unroll]
-    for (uint word = 0u; word < 2u; ++word)
+    for (;;)
     {
-        uint remaining = WaveActiveBitOr(mask[word]);
-        while (remaining != 0u)
-        {
-            uint index = word * 32u + firstbitlow(remaining);
-            remaining &= remaining - 1u;
-            VkrVulkanDecalRow decal = root.decals[index];
-            float3 box = float3(dot(decal.world_to_box[0], position),
-                                dot(decal.world_to_box[1], position),
-                                dot(decal.world_to_box[2], position));
-            if (any(abs(box) > 0.5f))
-                continue;
-            float weight =
-                decal.fade.w *
-                saturate(dot(normal, decal.world_to_box[1].xyz) *
-                             decal.fade.x +
-                         decal.fade.y) *
-                saturate((0.5f - abs(box.y)) * decal.fade.z);
-            if (weight <= 0.0f)
-                continue;
-            float2 uv_dx = float2(dot(decal.world_to_box[0].xyz, world_dx),
-                                  -dot(decal.world_to_box[2].xyz, world_dx));
-            float2 uv_dy = float2(dot(decal.world_to_box[0].xyz, world_dy),
-                                  -dot(decal.world_to_box[2].xyz, world_dy));
-            VkrVulkanMaterial material = root.materials[decal.material_index];
-            float4 colour =
-                g_textures[NonUniformResourceIndex(material.base_color_texture)]
-                    .SampleGrad(g_samplers[NonUniformResourceIndex(
-                                    material.base_color_sampler)],
-                                float2(box.x + 0.5f, 0.5f - box.z), uv_dx,
-                                uv_dy) *
-                material.tint;
-            base = lerp(base, colour.rgb, saturate(colour.a * weight));
-        }
+        // A branch, not a select: no lane reads past its list.
+        uint next = VKR_LIGHT_CLUSTER_LIST_END;
+        if (cursor < end)
+            next = clusters.indices[cursor];
+        uint index = WaveActiveMin(next);
+        if (index == VKR_LIGHT_CLUSTER_LIST_END)
+            break;
+        // `index` is wave-uniform, so the row loads as scalars before the
+        // lanes without it leave.
+        bool listed = next == index;
+        if (listed)
+            ++cursor;
+        VkrVulkanDecalRow decal = root.decals[index];
+        if (!listed)
+            continue;
+        float3 box = float3(dot(decal.world_to_box[0], position),
+                            dot(decal.world_to_box[1], position),
+                            dot(decal.world_to_box[2], position));
+        if (any(abs(box) > 0.5f))
+            continue;
+        float weight =
+            decal.fade.w *
+            saturate(dot(normal, decal.world_to_box[1].xyz) *
+                         decal.fade.x +
+                     decal.fade.y) *
+            saturate((0.5f - abs(box.y)) * decal.fade.z);
+        if (weight <= 0.0f)
+            continue;
+        float2 uv_dx = float2(dot(decal.world_to_box[0].xyz, world_dx),
+                              -dot(decal.world_to_box[2].xyz, world_dx));
+        float2 uv_dy = float2(dot(decal.world_to_box[0].xyz, world_dy),
+                              -dot(decal.world_to_box[2].xyz, world_dy));
+        VkrVulkanMaterial material = root.materials[decal.material_index];
+        float4 colour =
+            g_textures[NonUniformResourceIndex(material.base_color_texture)]
+                .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                material.base_color_sampler)],
+                            float2(box.x + 0.5f, 0.5f - box.z), uv_dx,
+                            uv_dy) *
+            material.tint;
+        base = lerp(base, colour.rgb, saturate(colour.a * weight));
     }
     return base;
 }
@@ -2367,7 +2370,7 @@ void vk_gbuffer_resolve(uint3 dispatch_id : SV_DispatchThreadID,
         root.compaction_state, root.view_projection, root.extent,
         root.visible_capacity, root.geometry_count,  root.material_count,
         root.instance_count, root.render_mode, root.pre_exposure,
-        root.terrain_materials, root.decal_grid_dimensions_count.w,
+        root.terrain_materials, root.decal_count,
         root.lightmap_rect_count,
     };
     // SMAA S2x's second sample lies at (0.25, 0.25) in the pixel, where its
@@ -2476,7 +2479,7 @@ void vk_gbuffer_resolve(uint3 dispatch_id : SV_DispatchThreadID,
     }
     // Decals change the base colour the lighting views see; the neutral
     // inspection views keep their neutral base.
-    if (root.decal_grid_dimensions_count.w != 0u && !neutral_lighting)
+    if (root.decal_count != 0u && !neutral_lighting)
     {
         surface.base.rgb = vkr_vk_apply_decals(
             root, surface.world_position, surface.world_dx, surface.world_dy,
@@ -3015,10 +3018,13 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
     float2 ndc_xy =
         (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
     float3 world = vk_local_shadow_mask_world(root, ndc_xy, depth);
-    // Only the shadowed lights that reach the view can take a slot. A pixel
-    // in none of their grid cells stores nothing, so it skips the surface
-    // work unless the baked-lamp part below needs it.
-    uint4 point_mask = packet_point_light_mask(frame, world) & root.mask_lights;
+    // Only the shadowed lights that reach the view can take a slot, all in
+    // the light head (ADR-135). A pixel whose cluster marks none of them
+    // stores nothing, so it skips the surface work unless the baked-lamp part
+    // below needs it.
+    uint4 point_mask =
+        vkr_vk_light_cluster_header(frame.light_clusters, world).head_lights &
+        root.mask_lights;
     bool point_lights = any(point_mask != 0u);
     if (!BakedLamps && !point_lights)
         return;

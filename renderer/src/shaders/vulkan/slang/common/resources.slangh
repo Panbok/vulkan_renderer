@@ -262,6 +262,32 @@ struct VkrVulkanSky
     float4 *cloud_sky_light;
 };
 
+// One frustum cluster (ADR-135): the light head's rows that reach it as a
+// mask, then its run of the index pool, `tail_light_count` light rows past
+// the head and `decal_count` decal rows, each in ascending order.
+struct VkrVulkanLightCluster
+{
+    uint4 head_lights;
+    uint first;
+    uint tail_light_count;
+    uint decal_count;
+    uint reserved;
+};
+
+// The frame's frustum clusters of punctual lights and decals (ADR-135);
+// vkr_vulkan_internal.h describes each field.
+struct VkrVulkanLightClusters
+{
+    float4x4 view_projection;
+    float4 grid_scale;
+    uint4 dimensions;
+    VkrVulkanLightCluster *headers;
+    uint *indices;
+    float near_w;
+    float reserved_0;
+    uint2 reserved_1;
+};
+
 struct VkrVulkanPacketFrameRoot
 {
     VkrVulkanInstance* instances;
@@ -289,10 +315,8 @@ struct VkrVulkanPacketFrameRoot
     uint shadow_debug_mode;
     uint2 reserved_1;
     VkrGpuPointLightRow* point_light_data;
-    uint4* point_light_masks;
-    float4 point_light_grid_origin_cell_size;
-    uint4 point_light_grid_dimensions_count;
-    uint4 point_light_global_mask;
+    VkrVulkanLightClusters* light_clusters;
+    uint4 point_light_reserved_0[3];
     uint point_light_count;
     uint3 point_light_reserved;
     VkrVulkanShadowCascade* shadow_cascades;

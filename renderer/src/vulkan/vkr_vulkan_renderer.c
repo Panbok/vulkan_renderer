@@ -1279,7 +1279,7 @@ vkr_vk_set_light_contribution_source(VkrVulkanFrameSlot *slot,
   source->submit_value = signal_value;
   source->source_frame_index = packet->input.frame.frame_index;
   source->light_count = Min(packet->input.lighting->point_light_count,
-                            VKR_MAX_SCENE_POINT_LIGHTS);
+                            VKR_POINT_LIGHT_GRID_LIGHT_MAX);
   for (uint32_t i = 0u; i < source->light_count; ++i)
     source->render_ids[i] = packet->input.lighting->point_lights[i].render_id;
 }

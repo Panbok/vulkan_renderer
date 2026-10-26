@@ -1425,7 +1425,8 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                     packet->input.globals.view_position)
                               : mat4_identity(),
       .decals = slot->decals,
-      .decal_masks = slot->decal_masks,
+      .light_clusters = slot->light_clusters,
+      .decal_count = slot->decal_count,
       .texture_feedback = slot->texture_feedback.address,
       /* One pixel of each 4x4 block, visiting all 16 every 16 frames. */
       .texture_feedback_phase =
@@ -1470,15 +1471,6 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
         root.lightmap_active_weights[i] = lightmap->active_weights[i];
       }
     }
-  }
-  if (slot->decal_count) {
-    const VkrDecalGrid *grid = packet->input.world->decal_grid;
-    root.decal_grid_origin_cell_size =
-        (Vec4){grid->origin.x, grid->origin.y, grid->origin.z, grid->cell_size};
-    root.decal_grid_dimensions_count[0] = grid->dimensions[0];
-    root.decal_grid_dimensions_count[1] = grid->dimensions[1];
-    root.decal_grid_dimensions_count[2] = grid->dimensions[2];
-    root.decal_grid_dimensions_count[3] = slot->decal_count;
   }
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanResolveRoot),
@@ -1618,6 +1610,128 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(
 vkr_internal uint32_t
 vkr_vk_local_shadow_overflow_tag(const VkrPreparedFrame *packet) {
   return (uint32_t)(packet->input.frame.frame_index % 255u) + 1u;
+}
+
+/* Lighting.Clusters (ADR-135): sizes the frame's clusters to the render
+   extent, fills the mapped VkrVulkanLightClusters record that every frame
+   root and the G-buffer resolve already address, and queues the prepare
+   dispatch, one thread per light and decal, then the bin dispatch, one
+   workgroup per tile. A view that does not project keeps one cluster that
+   lists every light and decal. */
+bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphBufferInstance *headers =
+      vkr_vk_deferred_buffer(renderer, pass, 0u);
+  VkrVulkanGraphBufferInstance *indices =
+      vkr_vk_deferred_buffer(renderer, pass, 1u);
+  VkrVulkanGraphBufferInstance *boxes =
+      vkr_vk_deferred_buffer(renderer, pass, 2u);
+  VkrVulkanGraphBufferInstance *state =
+      vkr_vk_deferred_buffer(renderer, pass, 3u);
+  if (!headers || !indices || !boxes || !state || !slot->light_clusters_record)
+    return false_v;
+
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const uint32_t width = renderer->prepared_frame.viewport_width;
+  const uint32_t height = renderer->prepared_frame.viewport_height;
+  const Mat4 projection = packet->input.globals.projection;
+  const float32_t near_w = projection.m33 == 0.0f
+                               ? mat4_perspective_reversed_near(projection)
+                               : 0.0f;
+  float32_t far_w =
+      projection.m33 == 0.0f ? mat4_perspective_reversed_far(projection) : 0.0f;
+  if (!(far_w <= VKR_VULKAN_LIGHT_CLUSTER_FAR_W_MAX))
+    far_w = VKR_VULKAN_LIGHT_CLUSTER_FAR_W_MAX;
+  /* The header buffer holds VKR_VULKAN_LIGHT_CLUSTER_HEADER_BYTES_PER_PIXEL
+     bytes per render pixel; an extent of a few pixels, as a window that is
+     still opening reports, rounds up to more whole tiles than that holds and
+     keeps the single cluster too. */
+  const uint64_t tile_cluster_count =
+      (uint64_t)vkr_ceil_div_u32(width, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE) *
+      vkr_ceil_div_u32(height, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE) *
+      VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT;
+  const bool8_t projects = width != 0u && height != 0u &&
+                           vkr_is_finite_f32(near_w) && near_w > 0.0f &&
+                           far_w > near_w &&
+                           tile_cluster_count * sizeof(VkrVulkanLightCluster) <=
+                               headers->buffer.size;
+  uint32_t dimensions[4] = {1u, 1u, 1u, 0u};
+  Vec4 grid_scale = {0};
+  if (projects) {
+    const float32_t tile = (float32_t)VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE;
+    const float32_t slice_scale =
+        (float32_t)VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT /
+        vkr_log2_f32(far_w / near_w);
+    dimensions[0] = vkr_ceil_div_u32(width, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE);
+    dimensions[1] =
+        vkr_ceil_div_u32(height, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE);
+    dimensions[2] = VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT;
+    dimensions[3] = 1u;
+    grid_scale = (Vec4){(float32_t)width / tile, (float32_t)height / tile,
+                        slice_scale, -vkr_log2_f32(near_w) * slice_scale};
+  }
+  /* A buffer below one header leaves the record's empty cluster, which
+     shades no punctual light and no decal, for a frame too small to see. */
+  if (sizeof(VkrVulkanLightCluster) > headers->buffer.size)
+    return true_v;
+
+  /* The packet tables keep both row addresses valid without rows. */
+  const VkrFrameLighting *lighting = packet->input.lighting;
+  const uint32_t light_count = lighting ? lighting->point_light_count : 0u;
+  const uint32_t decal_count = slot->decal_count;
+  const uint64_t lights = slot->point_light_data;
+  const uint64_t decals = slot->decals;
+  if (lights == 0u || decals == 0u)
+    return false_v;
+  const uint32_t item_count = light_count + decal_count;
+  if (item_count > VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX ||
+      (uint64_t)item_count * 2u * sizeof(uint32_t) > boxes->buffer.size)
+    return false_v;
+
+  *slot->light_clusters_record = (VkrVulkanLightClusters){
+      .view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                  packet->input.globals.view),
+      .grid_scale = grid_scale,
+      .dimensions = {dimensions[0], dimensions[1], dimensions[2],
+                     dimensions[3]},
+      .headers = headers->buffer.address,
+      .indices = indices->buffer.address,
+      .near_w = near_w,
+  };
+  const VkrVulkanLightClusterBuildRoot root = {
+      .clusters = slot->light_clusters,
+      .lights = lights,
+      .decals = decals,
+      .boxes = boxes->buffer.address,
+      .counters = state->buffer.address,
+      .light_count = light_count,
+      .decal_count = decal_count,
+      .index_capacity = (uint32_t)Min(indices->buffer.size / sizeof(uint32_t),
+                                      (VkDeviceSize)UINT32_MAX),
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanLightClusterBuildRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines
+          [VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_PREPARE];
+  prepared->groups[prepared->dispatch_count][0] =
+      Max(vkr_ceil_div_u32(item_count, 64u), 1u);
+  prepared->groups[prepared->dispatch_count][1] = 1u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_BIN];
+  prepared->groups[prepared->dispatch_count][0] = dimensions[0] * dimensions[1];
+  prepared->groups[prepared->dispatch_count][1] = 1u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
 }
 
 bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,

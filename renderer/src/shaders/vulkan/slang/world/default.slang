@@ -465,25 +465,6 @@ float3 packet_sheen_direct(float3 normal, float3 view, float3 light,
                             energy_normalization);
 }
 
-uint4 packet_point_light_mask(VkrVulkanPacketFrameRoot *root,
-                              float3 world_position)
-{
-    uint4 result = root.point_light_global_mask;
-    uint4 dimensions = root.point_light_grid_dimensions_count;
-    float cell_size = root.point_light_grid_origin_cell_size.w;
-    if (dimensions.w == 0u || cell_size <= 0.0f)
-        return result;
-    int3 cell = int3(
-        floor((world_position - root.point_light_grid_origin_cell_size.xyz) /
-              cell_size));
-    if (any(cell < 0) || cell.x >= int(dimensions.x) ||
-        cell.y >= int(dimensions.y) || cell.z >= int(dimensions.z))
-        return result;
-    uint index = uint(cell.x) +
-                 dimensions.x * (uint(cell.y) + dimensions.y * uint(cell.z));
-    return result | root.point_light_masks[index];
-}
-
 /**
  * Accumulates rotated taps `[first, count)` of the shared progressive table.
  * Each tap compares against the receiver plane's depth at its offset
@@ -1248,17 +1229,20 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
     result.specular = 0.0f;
     float3 coat_sum = 0.0f;
     float3 sheen_sum = 0.0f;
-    uint4 point_mask = packet_point_light_mask(frame, world_position);
+    uint4 point_mask =
+        vkr_vk_light_cluster_header(frame.light_clusters, world_position)
+            .head_lights;
     uint point_count = min(frame.point_light_count, 128u);
     uint mask_slot = 0u;
     for (uint word = 0u; word < 4u; ++word)
     {
-        // The mask comes from a per-pixel cluster cell, so lanes straddling a
-        // cell boundary carry different masks and the wave already pays for the
-        // union of their set bits. Iterating that union explicitly makes
-        // `light_index` wave-uniform, which lets the light rows load as scalars
-        // instead of per-lane vectors. Each lane still accumulates only its own
-        // bits, so the summation order and result are unchanged.
+        // The mask comes from the pixel's frustum cluster, which marks the
+        // light head's rows (ADR-135), so lanes in different clusters carry
+        // different masks and the wave already pays for the union of their
+        // set bits. Iterating that union explicitly makes `light_index`
+        // wave-uniform, which lets the light rows load as scalars instead of
+        // per-lane vectors. Each lane still accumulates only its own bits, so
+        // the summation order and result are unchanged.
         uint remaining = WaveActiveBitOr(point_mask[word]);
         while (remaining != 0u)
         {

@@ -151,6 +151,16 @@
       "stage": "compute"
     },
     {
+      "name": "packet.light_cluster_prepare.comp",
+      "entry": "vk_light_cluster_prepare",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.light_cluster_bin.comp",
+      "entry": "vk_light_cluster_bin",
+      "stage": "compute"
+    },
+    {
       "name": "packet.gpu_draw_census.comp",
       "entry": "vk_gpu_draw_census",
       "stage": "compute"

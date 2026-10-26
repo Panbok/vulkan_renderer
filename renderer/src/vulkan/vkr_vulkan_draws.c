@@ -409,23 +409,27 @@ vkr_internal bool8_t vkr_vk_upload_sky(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-/* Rows and grid masks of the frame's decals (ADR-092), packed as the tiled
-   pipeline packs its rows. A decal whose material has not published keeps
-   its row with zero opacity, so the grid's bits still name table rows. */
+/* Rows of the frame's decals (ADR-092), packed as the tiled pipeline packs
+   its rows. A decal whose material has not published keeps its row with
+   zero opacity, so the clusters' indices still name table rows. A frame
+   without decals gets one zero row: the AMD compiler can hoist a row load
+   above the shader's count test, so the table address is never null. */
 vkr_internal bool8_t vkr_vk_upload_decals(VkrVulkanRenderer *renderer,
                                           VkrVulkanFrameSlot *slot,
                                           const VkrWorldPassPayload *world) {
   if (!world || world->decal_count == 0u) {
+    VkrVulkanDecalRow *row = vkr_vk_frame_upload_allocate(
+        slot, sizeof(*row), _Alignof(VkrVulkanDecalRow), &slot->decals, NULL);
+    if (!row) {
+      return false_v;
+    }
+    MemZero(row, sizeof(*row));
     return true_v;
   }
   VkrVulkanDecalRow *rows = vkr_vk_frame_upload_allocate(
       slot, (uint64_t)world->decal_count * sizeof(*rows),
       _Alignof(VkrVulkanDecalRow), &slot->decals, NULL);
-  const uint64_t mask_bytes =
-      (uint64_t)world->decal_grid->cell_count * sizeof(VkrDecalMask);
-  void *masks = vkr_vk_frame_upload_allocate(
-      slot, mask_bytes, _Alignof(VkrDecalMask), &slot->decal_masks, NULL);
-  if (!rows || !masks) {
+  if (!rows) {
     return false_v;
   }
   for (uint32_t i = 0u; i < world->decal_count; ++i) {
@@ -449,7 +453,6 @@ vkr_internal bool8_t vkr_vk_upload_decals(VkrVulkanRenderer *renderer,
         .material_index = material ? material->slot.index : 0u,
     };
   }
-  MemCopy(masks, world->decal_grid->masks, mask_bytes);
   slot->decal_count = world->decal_count;
   return true_v;
 }
@@ -458,9 +461,9 @@ vkr_internal bool8_t vkr_vk_upload_decals(VkrVulkanRenderer *renderer,
    upload. */
 vkr_internal void vkr_vk_reset_packet_tables(VkrVulkanFrameSlot *slot) {
   slot->point_light_data = 0u;
-  slot->point_light_masks = 0u;
+  slot->light_clusters = 0u;
+  slot->light_clusters_record = NULL;
   slot->decals = 0u;
-  slot->decal_masks = 0u;
   slot->decal_count = 0u;
   slot->shadow_cascades = 0u;
   slot->local_shadow_views = 0u;
@@ -532,41 +535,64 @@ vkr_internal bool8_t vkr_vk_upload_ltc(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-/* The frame's packed point lights, each with its first local shadow view,
-   and their grid masks. */
+/* The frame's packed point lights, each with its first local shadow view.
+   A frame without point lights gets one zero row, so the table address is
+   never null (see vkr_vk_upload_decals). */
 vkr_internal bool8_t vkr_vk_upload_point_lights(
     VkrVulkanFrameSlot *slot, const VkrPreparedFrame *packet,
     const VkrFrameLighting *lighting) {
-  if (lighting && lighting->point_light_count) {
-    const uint64_t light_bytes =
-        (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow);
-    VkrGpuPointLightRow *packed = vkr_vk_frame_upload_allocate(
-        slot, light_bytes, _Alignof(VkrGpuPointLightRow),
+  if (!lighting || lighting->point_light_count == 0u) {
+    VkrGpuPointLightRow *row = vkr_vk_frame_upload_allocate(
+        slot, sizeof(*row), _Alignof(VkrGpuPointLightRow),
         &slot->point_light_data, NULL);
-    if (!packed) {
+    if (!row) {
       return false_v;
     }
-    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
-      vkr_point_light_pack(&lighting->point_lights[i],
-                           packet->exposure.pre_exposure, &packed[i]);
-      packed[i].p3.w =
-          packet->input.local_shadow
-              ? (float32_t)packet->input.local_shadow->light_first_view[i]
-              : 0.0f;
-    }
-    const uint64_t mask_bytes =
-        (uint64_t)lighting->point_light_grid->cell_count *
-        sizeof(VkrPointLightMask);
-    if (mask_bytes) {
-      void *masks = vkr_vk_frame_upload_allocate(
-          slot, mask_bytes, _Alignof(VkrPointLightMask),
-          &slot->point_light_masks, NULL);
-      if (!masks) {
-        return false_v;
-      }
-      MemCopy(masks, lighting->point_light_grid->masks, mask_bytes);
-    }
+    MemZero(row, sizeof(*row));
+    return true_v;
   }
+  const uint64_t light_bytes =
+      (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow);
+  VkrGpuPointLightRow *packed = vkr_vk_frame_upload_allocate(
+      slot, light_bytes, _Alignof(VkrGpuPointLightRow), &slot->point_light_data,
+      NULL);
+  if (!packed) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
+    vkr_point_light_pack(&lighting->point_lights[i],
+                         packet->exposure.pre_exposure, &packed[i]);
+    /* Only the light head can be shadowed (ADR-135). */
+    packed[i].p3.w =
+        packet->input.local_shadow && i < VKR_POINT_LIGHT_GRID_LIGHT_MAX
+            ? (float32_t)packet->input.local_shadow->light_first_view[i]
+            : 0.0f;
+  }
+  return true_v;
+}
+
+/* The frame's VkrVulkanLightClusters record (ADR-135), which every frame
+   root and the G-buffer resolve address. Until Lighting.Clusters prepares
+   and fills it, its one cluster lists nothing, so a frame without the pass
+   shades no punctual light and no decal. */
+vkr_internal bool8_t vkr_vk_upload_light_clusters(VkrVulkanFrameSlot *slot) {
+  uint64_t header_address = 0u;
+  VkrVulkanLightCluster *header = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*header), 16u, &header_address, NULL);
+  VkrVulkanLightClusters *record = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*record), _Alignof(VkrVulkanLightClusters),
+      &slot->light_clusters, NULL);
+  if (!header || !record) {
+    return false_v;
+  }
+  *header = (VkrVulkanLightCluster){0};
+  *record = (VkrVulkanLightClusters){
+      .view_projection = mat4_identity(),
+      .dimensions = {1u, 1u, 1u, 0u},
+      .headers = header_address,
+      .indices = header_address,
+  };
+  slot->light_clusters_record = record;
   return true_v;
 }
 
@@ -806,6 +832,9 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   if (!vkr_vk_upload_decals(renderer, slot, packet->input.world))
     return false_v;
 
+  if (!vkr_vk_upload_light_clusters(slot))
+    return false_v;
+
   if (packet->input.shadow && packet->input.shadow->cascade_count) {
     const uint64_t cascade_bytes =
         (uint64_t)packet->input.shadow->cascade_count *
@@ -936,7 +965,6 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       (uint64_t)VKR_MAX_SCENE_RECTANGLE_LIGHTS *
           sizeof(VkrGpuRectangleLightRow) +
       (uint64_t)VKR_MAX_FRAME_DECALS * sizeof(VkrVulkanDecalRow) +
-      (uint64_t)VKR_DECAL_GRID_MAX_CELLS * sizeof(VkrDecalMask) +
       256u; // Alignment between the fixed packet tables below.
   uint64_t candidate_bytes = 0u;
   uint64_t draw_bytes = 0u;
@@ -977,10 +1005,10 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
     direct_bytes +=
         (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow) +
         (uint64_t)lighting->ibl_probe_count * sizeof(VkrVulkanPacketIblProbe);
-    if (lighting->point_light_count)
-      direct_bytes += (uint64_t)lighting->point_light_grid->cell_count *
-                      sizeof(VkrPointLightMask);
   }
+  direct_bytes += sizeof(VkrVulkanLightClusters) +
+                  sizeof(VkrVulkanLightCluster) + sizeof(VkrGpuPointLightRow) +
+                  sizeof(VkrVulkanDecalRow) + 64u;
   if (packet->input.shadow)
     direct_bytes += (uint64_t)packet->input.shadow->cascade_count *
                     sizeof(VkrVulkanPacketShadowCascade);
@@ -1473,7 +1501,7 @@ void vkr_vk_fill_packet_frame_root(
   root->flags = vkr_packet_derive_frame_flags(renderer->graph->packet,
                                               lighting_pass, slot->ibl_ready);
   root->point_light_data = slot->point_light_data;
-  root->point_light_masks = slot->point_light_masks;
+  root->light_clusters = slot->light_clusters;
   root->shadow_cascades = slot->shadow_cascades;
   root->local_shadow_views = slot->local_shadow_views;
   root->local_shadow_texture = local_shadow_texture;
@@ -1491,13 +1519,6 @@ void vkr_vk_fill_packet_frame_root(
   root->ambient_color = frame->ambient_color;
   root->render_mode = frame->render_mode;
   root->shadow_debug_mode = frame->shadow_debug_mode;
-  root->point_light_grid_origin_cell_size =
-      frame->point_light_grid_origin_cell_size;
-  for (uint32_t i = 0; i < 4u; ++i) {
-    root->point_light_grid_dimensions_count[i] =
-        frame->point_light_grid_dimensions_count[i];
-  }
-  root->point_light_global_mask = frame->point_light_global_mask;
   root->point_light_count = frame->point_light_count;
   root->view = frame->view;
   root->shadow_cascade_count = frame->shadow_cascade_count;

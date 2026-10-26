@@ -45,6 +45,7 @@
 
 #include "ibl/default.slang"
 #include "ibl/atmosphere.slang"
+#include "world/light_clusters.slang"
 #include "world/default.slang"
 #include "world/deferred.slang"
 #include "ibl/clouds.slang"

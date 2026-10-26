@@ -531,6 +531,63 @@
       ]
     },
     {
+      "name": "light_cluster_headers",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": {
+        "mode": "viewport_pixels",
+        "bytes_per_pixel": 2
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "light_cluster_indices",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": {
+        "mode": "viewport_pixels",
+        "bytes_per_pixel": 4
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "light_cluster_boxes",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": 49152,
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
+      "name": "light_cluster_state",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": 16,
+      "usage": [
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
       "name": "transmission_gpu_draw_candidates",
       "type": "buffer",
       "condition": "scene_rendering && transmission_pending",
@@ -2778,6 +2835,37 @@
       "execute": "pass.gpu_draw_encode"
     },
     {
+      "name": "Lighting.Clusters",
+      "condition": "scene_rendering",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "writes": [
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        },
+        {
+          "buffer": "light_cluster_boxes",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 2
+        },
+        {
+          "buffer": "light_cluster_state",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 3
+        }
+      ],
+      "execute": "pass.light_clusters"
+    },
+    {
       "name": "Cull.Census",
       "condition": "scene_rendering && gpu_draw_census",
       "type": "compute",
@@ -4479,6 +4567,16 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 32
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 33
         }
       ],
       "writes": [
@@ -4595,6 +4693,16 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 32
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 33
         }
       ],
       "writes": [
@@ -5010,6 +5118,16 @@
           "access": "STORAGE_READ",
           "binding": 18,
           "when": "baked_lamp_shadows_active"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -5743,6 +5861,16 @@
           "access": "STORAGE_READ",
           "binding": 21,
           "when": "baked_lamp_shadows_active"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 48
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 49
         }
       ],
       "writes": [
@@ -5975,6 +6103,16 @@
           "access": "STORAGE_READ",
           "binding": 21,
           "when": "baked_lamp_shadows_active"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 48
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 49
         }
       ],
       "writes": [
@@ -6207,6 +6345,16 @@
           "access": "STORAGE_READ",
           "binding": 21,
           "when": "baked_lamp_shadows_active"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 48
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 49
         }
       ],
       "writes": [
@@ -6439,6 +6587,16 @@
           "access": "STORAGE_READ",
           "binding": 21,
           "when": "baked_lamp_shadows_active"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 48
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 49
         }
       ],
       "writes": [
@@ -6504,6 +6662,16 @@
           "buffer": "msaa_sample1_arguments",
           "access": "INDIRECT_READ",
           "binding": 25
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 32
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 33
         }
       ],
       "writes": [
@@ -6757,6 +6925,16 @@
           "image": "opaque_vbuffer",
           "access": "STORAGE_READ",
           "binding": 26
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 48
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 49
         }
       ],
       "writes": [
@@ -7636,6 +7814,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -7820,6 +8008,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -8101,6 +8299,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -8278,6 +8486,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -8559,6 +8777,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -8736,6 +8964,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -9022,6 +9260,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -9214,6 +9462,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -9398,6 +9656,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -9560,6 +9828,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -9722,6 +10000,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -9889,6 +10177,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -10068,6 +10366,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -10230,6 +10538,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -10392,6 +10710,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -10559,6 +10887,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "writes": [
@@ -11053,6 +11391,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "attachments": {
@@ -11197,6 +11545,16 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "buffer": "light_cluster_headers",
+          "access": "STORAGE_READ",
+          "binding": 45
+        },
+        {
+          "buffer": "light_cluster_indices",
+          "access": "STORAGE_READ",
+          "binding": 46
         }
       ],
       "attachments": {

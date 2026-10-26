@@ -9,6 +9,7 @@
       "passes": [
         "Cull.*",
         "Transmission.Cull.*",
+        "Lighting.Clusters",
         "Animation.Skinning"
       ]
     },

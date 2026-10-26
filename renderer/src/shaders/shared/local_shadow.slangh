@@ -99,9 +99,10 @@ float3 vkr_local_shadow_direction(uint face, float2 uv) {
 #define VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER VKR_LOCAL_SHADOW_MASK_SLOT_COUNT
 
 // Alpha tags each stored slot with its light, index plus one over 255, which
-// RGBA8 unorm stores exactly for the 128-light table. A slot that names
-// another light, because a range or cone test differed at a boundary, makes
-// the receiver look for the light's tag in the other slots.
+// RGBA8 unorm stores exactly for the 128-row light head, the only rows that
+// can be shadowed (ADR-135). A slot that names another light, because a
+// range or cone test differed at a boundary, makes the receiver look for the
+// light's tag in the other slots.
 float vkr_local_shadow_mask_tag(uint light_index)
 {
     return float(light_index + 1u) / 255.0f;

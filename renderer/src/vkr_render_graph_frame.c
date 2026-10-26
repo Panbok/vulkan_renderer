@@ -35,8 +35,10 @@ vkr_render_graph_local_shadow_mask_lights(const VkrPreparedFrame *packet) {
   }
   const VkrFrustum camera = vkr_frustum_from_matrix(mat4_mul(
       packet->temporal.jittered_projection, packet->input.globals.view));
+  /* Only the light head, the first VKR_POINT_LIGHT_GRID_LIGHT_MAX rows, can
+     be shadowed (ADR-135). */
   const uint32_t count =
-      Min(lighting->point_light_count, VKR_MAX_SCENE_POINT_LIGHTS);
+      Min(lighting->point_light_count, VKR_POINT_LIGHT_GRID_LIGHT_MAX);
   for (uint32_t i = 0u; i < count; ++i) {
     if (local_shadow->light_first_view[i] == 0u) {
       continue;
@@ -538,6 +540,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                          VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_GPU_DRAW_ENCODE] = {"pass.gpu_draw_encode",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_LIGHT_CLUSTERS] = {"pass.light_clusters",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SKINNING] = {"pass.animation.skinning",
                                   VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TEMPORAL_TRANSFORM] = {"pass.temporal.transform_history",

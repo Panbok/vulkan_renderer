@@ -238,6 +238,10 @@ static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_BAKED_COMP_SPV             \
   "packet.local_shadow_mask_contact_baked.comp.spv"
 #define VKR_VULKAN_PACKET_SUN_CONTACT_COMP_SPV "packet.sun_contact.comp.spv"
+#define VKR_VULKAN_PACKET_LIGHT_CLUSTER_PREPARE_COMP_SPV                       \
+  "packet.light_cluster_prepare.comp.spv"
+#define VKR_VULKAN_PACKET_LIGHT_CLUSTER_BIN_COMP_SPV                           \
+  "packet.light_cluster_bin.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
   "packet.deferred_lighting.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV                   \
@@ -420,8 +424,9 @@ enum {
   VKR_VULKAN_READBACK_LIGHT_CONTRIBUTION_OFFSET =
       VKR_VULKAN_READBACK_EXPOSURE_HISTOGRAM_OFFSET +
       sizeof(VkrExposureGpuHistogram),
+  /* Deferred lighting counts the light head's rows only (ADR-135). */
   VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE =
-      VKR_MAX_SCENE_POINT_LIGHTS * sizeof(uint32_t),
+      VKR_POINT_LIGHT_GRID_LIGHT_MAX * sizeof(uint32_t),
   VKR_VULKAN_READBACK_SIZE = VKR_VULKAN_READBACK_LIGHT_CONTRIBUTION_OFFSET +
                              VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE,
 };
@@ -526,6 +531,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY = 0,
   VKR_VULKAN_DEFERRED_PIPELINE_PREFIX,
   VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_PREPARE,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_BIN,
   VKR_VULKAN_DEFERRED_PIPELINE_SKINNING,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_TRANSFORM,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE,
@@ -891,12 +898,14 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint32_t anisotropy_texture;
   float32_t pre_exposure;
   Mat4 sky_reprojection;
-  /** The frame's decal rows and grid masks (ADR-092); unused when the count
-      in `decal_grid_dimensions_count[3]` is zero. */
+  /** The frame's decal rows (ADR-092) and its VkrVulkanLightClusters, whose
+      clusters list the decals that reach them (ADR-135); the rows are
+      unused when `decal_count` is zero. */
   uint64_t decals;
-  uint64_t decal_masks;
-  Vec4 decal_grid_origin_cell_size;
-  uint32_t decal_grid_dimensions_count[4];
+  uint64_t light_clusters;
+  uint32_t decal_reserved_0[4];
+  uint32_t decal_count;
+  uint32_t decal_reserved_1[3];
   /** The frame's baked lamp lightmaps (ADR-104): the
       rectangle table, the texture array whose slice
       page * lightmap_layer_count + layer holds one lamp layer of a page,
@@ -1114,6 +1123,96 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanBakedShadowLamp {
 } VkrVulkanBakedShadowLamp;
 _Static_assert(sizeof(VkrVulkanBakedShadowLamp) == 80u,
                "Vulkan baked shadow lamp ABI drift");
+
+/* Lighting.Clusters (ADR-135): screen tiles of this many pixels by depth
+   slices of clip w, exponential from the near plane. */
+#define VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE 32u
+#define VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT 32u
+/* Lights and decals one build can mark: the bin workgroup's item mask and
+   the `light_cluster_boxes` graph buffer (49152 bytes: a uint2 box, then a
+   float4 bounding sphere, per item) hold this many. */
+#define VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX 2048u
+/* Clip w at the far end of the last slice when the projection's far plane
+   lies farther or at infinity; a farther point stays in the last slice. */
+#define VKR_VULKAN_LIGHT_CLUSTER_FAR_W_MAX 2000.0f
+/* Bytes per render pixel of the cluster header and index graph buffers. */
+#define VKR_VULKAN_LIGHT_CLUSTER_HEADER_BYTES_PER_PIXEL 2u
+#define VKR_VULKAN_LIGHT_CLUSTER_INDEX_BYTES_PER_PIXEL 4u
+
+_Static_assert(VKR_MAX_SCENE_POINT_LIGHTS + VKR_MAX_FRAME_DECALS <=
+                   VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX,
+               "The cluster build must mark every light and decal");
+_Static_assert(VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT <= 64u,
+               "One bin thread per slice");
+/* The desktop light loops walk only the clusters' light-head masks: a
+   kernel variant that also walks the tail lists costs registers on every
+   frame, so the table stays within the head until frames with more lights
+   select such variants. */
+_Static_assert(VKR_MAX_SCENE_POINT_LIGHTS <= VKR_POINT_LIGHT_GRID_LIGHT_MAX,
+               "Vulkan shades only the light head's rows");
+_Static_assert(VKR_POINT_LIGHT_GRID_LIGHT_MAX == 128u,
+               "light_clusters.slang's VKR_LIGHT_CLUSTER_HEAD_COUNT is the "
+               "light head");
+
+/* One frustum cluster: bit i of `head_lights` marks light row i of the light
+   head (VKR_POINT_LIGHT_GRID_LIGHT_MAX rows) that reaches it; its run of the
+   index pool from `first` lists `tail_light_count` light rows past the head,
+   then `decal_count` decal rows, each in ascending order. */
+typedef struct VkrVulkanLightCluster {
+  uint32_t head_lights[4];
+  uint32_t first;
+  uint32_t tail_light_count;
+  uint32_t decal_count;
+  uint32_t reserved;
+} VkrVulkanLightCluster;
+_Static_assert(sizeof(VkrVulkanLightCluster) == 32u,
+               "Light cluster header ABI drift");
+
+/* The frame's frustum clusters of lights and decals, which every frame root
+   and the G-buffer resolve address. A world position's cluster is the tile
+   of its projection by `view_projection` and the slice of its clip w. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanLightClusters {
+  Mat4 view_projection;
+  /* xy: tiles per unit of screen uv; z: slices per doubling of clip w; w:
+     the slice of clip w 1. */
+  Vec4 grid_scale;
+  /* x, y: tile columns and rows; z: slices; w: nonzero when the view
+     projects, zero when one cluster lists every light and decal. */
+  uint32_t dimensions[4];
+  /* VkrVulkanLightCluster per cluster. */
+  uint64_t headers;
+  /* The clusters' runs of light rows past the head, then decal rows. */
+  uint64_t indices;
+  float32_t near_w;
+  float32_t reserved_0;
+  uint32_t reserved_1[2];
+} VkrVulkanLightClusters;
+_Static_assert(sizeof(VkrVulkanLightClusters) == 128u &&
+                   offsetof(VkrVulkanLightClusters, grid_scale) == 64u &&
+                   offsetof(VkrVulkanLightClusters, headers) == 96u &&
+                   offsetof(VkrVulkanLightClusters, near_w) == 112u,
+               "Light cluster ABI drift");
+
+/* Lighting.Clusters' prepare and bin dispatches. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanLightClusterBuildRoot {
+  uint64_t clusters;
+  uint64_t lights;
+  uint64_t decals;
+  /* Per light, then per decal: uint2, its box of clusters. */
+  uint64_t boxes;
+  /* uint4: indices allocated, references dropped past the pool, the longest
+     list; the prepare dispatch clears it. */
+  uint64_t counters;
+  uint32_t light_count;
+  uint32_t decal_count;
+  uint32_t index_capacity;
+  uint32_t reserved_0;
+  uint64_t reserved_1;
+} VkrVulkanLightClusterBuildRoot;
+_Static_assert(sizeof(VkrVulkanLightClusterBuildRoot) == 64u &&
+                   offsetof(VkrVulkanLightClusterBuildRoot, counters) == 32u &&
+                   offsetof(VkrVulkanLightClusterBuildRoot, light_count) == 40u,
+               "Light cluster build root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
   uint64_t frame;
@@ -1793,10 +1892,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint32_t shadow_debug_mode;
   uint32_t reserved_1[2];
   uint64_t point_light_data;
-  uint64_t point_light_masks;
-  Vec4 point_light_grid_origin_cell_size;
-  uint32_t point_light_grid_dimensions_count[4];
-  VkrPointLightMask point_light_global_mask;
+  /* The frame's VkrVulkanLightClusters (ADR-135). */
+  uint64_t light_clusters;
+  uint32_t point_light_reserved_0[12];
   uint32_t point_light_count;
   uint32_t point_light_reserved[3];
   uint64_t shadow_cascades;
@@ -2216,10 +2314,8 @@ _Static_assert(
 _Static_assert(VKR_LIGHTMAP_MAX_ACTIVE_LAYERS <= 8u,
                "The resolve root holds eight active lightmap layers");
 _Static_assert(offsetof(VkrVulkanResolveRoot, decals) == 416u &&
-                   offsetof(VkrVulkanResolveRoot,
-                            decal_grid_origin_cell_size) == 432u &&
-                   offsetof(VkrVulkanResolveRoot,
-                            decal_grid_dimensions_count) == 448u,
+                   offsetof(VkrVulkanResolveRoot, light_clusters) == 424u &&
+                   offsetof(VkrVulkanResolveRoot, decal_count) == 448u,
                "Deferred resolve-root decal ABI drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, vertices) == 40u,
                "Deferred resolve-root vertex address ABI drift");
@@ -3233,7 +3329,11 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanCommandPartitions transmission_gpu_command_partitions;
   uint64_t gpu_world_epoch;
   uint64_t point_light_data;
-  uint64_t point_light_masks;
+  /** This frame's VkrVulkanLightClusters (ADR-135), never zero once the
+      packet tables are uploaded: one empty cluster until Lighting.Clusters
+      prepares, which fills the mapped record. */
+  uint64_t light_clusters;
+  VkrVulkanLightClusters *light_clusters_record;
   /** This frame's baked lamp lightmaps for the G-buffer resolve: the
       texture's sampled and sampler slots and the rectangle table, zero
       without baked lamps. */
@@ -3241,9 +3341,8 @@ typedef struct VkrVulkanFrameSlot {
   uint32_t lightmap_sampler;
   uint32_t lightmap_direction_texture;
   uint64_t lightmap_rects;
-  /** This frame's decal rows and grid masks (ADR-092), zero without decals. */
+  /** This frame's decal rows (ADR-092), zero without decals. */
   uint64_t decals;
-  uint64_t decal_masks;
   uint32_t decal_count;
   uint64_t shadow_cascades;
   uint64_t local_shadow_views;
@@ -4356,6 +4455,9 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(VkrVulkanRenderer *renderer,
                                              VkrVulkanPreparedCompute *prepared,
                                              const VkrRgPass *pass,
                                              VkrVulkanDiffuseVolumeStage stage);
+bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass);
