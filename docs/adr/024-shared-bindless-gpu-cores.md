@@ -301,17 +301,22 @@ ones stayed below their need. On the RX 6700 XT (2026-10-25, Release, at
   window): slots below their need 31 to 0, measured textures 317 to 433 MiB,
   unmeasured full chains 706 to 401 MiB, resident bytes 1198 to 1043 MiB,
   nothing evicted, failed or stalled.
-- `bistro_vulkan_high_orbit_1440` with `performance-windowed-gpu.json`, five
-  runs before against two after: wall frame p50 13.22 to 13.27 ms against
-  14.29 and 14.32 ms, p95 14.60 to 14.71 ms against 17.98 and 17.45 ms, at
-  most 16.8 to 21.7 ms against 26.6 and 23.6 ms; slots below their need at
-  most 102 to 107 against 52 and 40. Each harness child renders about 1,900
-  frames of its 38-second load at the orbit's first pose, so the textures out
-  of that view are idle and lowered by the time the orbit starts, and each is
-  raised once when the camera first reaches it: about 150 lowerings, 140
-  raises and 250 level copies in the 1,500 measured frames. Budgeted orbit
-  runs are not authoritative: which mips are resident at a frame depends on
-  load timing, so the work volume differs between repetitions.
+- `bistro_vulkan_high_orbit_1440` with `performance-windowed-gpu.json` (2026-10-26),
+  five children each: wall frame p50 13.27 ms before the rule and 12.89 ms
+  after, p95 14.66 and 14.51 ms, one or two frames over 16 ms a child before
+  and one after. Each harness child renders about 1,900 frames of its
+  38-second load at the orbit's first pose, so the textures out of that view
+  are idle and lowered by the time the orbit starts, and each is raised once
+  when the camera first reaches it: 120 lowerings and 85 raises in the 1,500
+  measured frames. The reloads first took p95 to 17.5 ms through two Vulkan
+  costs, now removed. `publications_idle` counted pending texture uploads,
+  so 1,041 of the 1,500 frames reported a pending publication and reused no
+  cached cascade. Each unpublished texture also ran the full collection of
+  every publication table, about 0.84 ms of render-thread time, which put
+  about 25 frames a child over 16 ms. A streamed reload also no longer counts
+  as a shadow change (ADR-019). Budgeted orbit runs are not authoritative:
+  which mips are resident at a frame depends on load timing, so the work
+  volume differs between repetitions.
 - At the driver's budget nothing lowers: the same orbit took 15.07 and
   15.91 ms at p95 against 15.77 and 15.39 ms before. At
   `VKR_VULKAN_MEMORY_BUDGET_MB=6000` the texture allowance is 0 and the

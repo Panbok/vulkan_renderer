@@ -248,9 +248,13 @@ material's base colour, metallic-roughness, transmission, thickness, clearcoat
 and sheen slots, which Vulkan's local transmission pass reads. A blended
 material takes the opaque shadow buckets and samples none. An opaque
 material's shadow reads its geometry alone, so streaming its textures in
-redraws no shadow, nor does a streamed normal map of a cutout (2026-10-25);
-before, each such republication redrew every local face in range and every
-cascade. A
+redraws no shadow, nor does a streamed normal map of a cutout (2026-10-25),
+nor a streamed reload, which brings the same texture file at another mip
+count and keeps the alpha a cached shadow tested (2026-10-26); before, each
+such republication redrew every local face in range and every cascade. A
+retained cascade also waits while a publication is pending, which counts
+geometry, material and bake work but not texture uploads: a texture reaches
+a drawn caster only through its completion, which the generation counts. A
 geometry publication cannot change a drawn caster either, since a mesh draws
 only after its geometry has published and adding or removing a drawn mesh is a
 static change. The world payload lists each static change with the world box it
