@@ -69,6 +69,18 @@ vkr_internal bool8_t vkr_metal_packet_wait(VkrMetalPacketRenderer *renderer,
   return completed;
 }
 
+/* Makes the next command buffer committed to the frame queue start after
+   every texture upload submitted so far. A GPU wait keeps the CPU recording
+   while the upload runs; a CPU wait here would also drain the frames queued
+   before the upload. */
+vkr_internal void
+vkr_metal_packet_order_after_texture_uploads(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  if (renderer->texture_upload_order_value > renderer->completion.signaledValue)
+    [renderer->queue waitForEvent:renderer->completion
+                            value:renderer->texture_upload_order_value];
+}
+
 vkr_internal void
 vkr_metal_packet_collect_encoder_timings(VkrMetalPacketRenderer *renderer,
                                          VkrMetalPacketCommandSlot *slot) {
@@ -743,11 +755,13 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_flush(
   vkr_metal_packet_detach_active_command_slot(renderer);
   *batch =
       (VkrMetalPacketTextureUploadBatch){.enabled = finish ? false_v : true_v};
-  /* A finished batch holding textures returns once they are on the GPU,
-     which texture publication relies on; buffer copies, as single uploads
-     do, return at once. */
-  return !finish || !holds_textures ||
-         vkr_metal_packet_wait(renderer, submit_value);
+  /* Work that may sample the batch's textures waits for it on the GPU
+     (vkr_metal_packet_order_after_texture_uploads); buffer copies, as single
+     uploads do, need no order. */
+  if (holds_textures)
+    renderer->texture_upload_order_value =
+        Max(renderer->texture_upload_order_value, submit_value);
+  return true_v;
 }
 
 bool8_t vkr_metal_packet_renderer_begin_texture_upload_batch(
@@ -825,6 +839,8 @@ vkr_internal bool8_t vkr_metal_packet_submit_upload(
   VKR_METAL_DIAGNOSTIC(renderer, "upload_commit_begin", "slot=%u",
                        (uint32_t)(slot - renderer->upload_slots));
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+  /* Compute work such as an IBL bake may sample a texture still uploading. */
+  vkr_metal_packet_order_after_texture_uploads(renderer);
   [renderer->queue commit:submissions count:1];
   vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_QUEUE_SUBMITS);
   [renderer->queue signalEvent:renderer->completion value:submit_value];

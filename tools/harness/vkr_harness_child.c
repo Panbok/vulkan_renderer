@@ -1474,10 +1474,12 @@ vkr_internal void vkr_harness_child_update(void *state,
     if (!vkr_harness_child_activate_scene(application))
       return;
   }
-  if (!vkr_harness_child_texture_streams_ready(application)) {
+  if (!child->phase_started &&
+      !vkr_harness_child_texture_streams_ready(application)) {
     return;
   }
-  if (!vkr_harness_child_renderer_publications_ready(application)) {
+  if (!child->phase_started &&
+      !vkr_harness_child_renderer_publications_ready(application)) {
     return;
   }
   if (!child->pass_catalog_ready) {

@@ -702,6 +702,20 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
   later. 775 files fetched, none failed or different, `main.cooked.astc`
   uploaded 897 MB; captures differ from local by 0.263 to 0.298 of 255,
   where two local loads differ by 0.269 to 0.311.
+- 2026-10-25, two computers over the LAN, `check_asset_stream.py --remote
+  ADDRESS KEY`, which commits and streams through a fresh store the other
+  computer serves (`vkr_depot serve <store> --bind 0.0.0.0:7353 --open`):
+  - Windows serving, Mac M1 Pro on Wi-Fi streaming, 80c14f71, `--settle
+    240`: the seed (1,964 MB, `main.cooked.astc` 897 MB) went up in 67.2 s;
+    the scene was ready 10.9 s after the stream opened, the last preview read
+    at 25.5 s and the last of 775 files at 144.7 s, about 5.8 MB/s, against
+    18 to 20 s over the Mac's loopback; none failed or differed, and the
+    capture differs from local by 0.301 of 255, where two local loads differ
+    by 0.272. A run at the default `--settle 120` failed only because files
+    still arrived within 15 s of its capture.
+  - Mac serving, Windows streaming: unavailable. The Mac's endpoint security
+    drops unsolicited inbound traffic, so `vkr_depot clone` from Windows got
+    no answer within 30 s, as did the Mac's own LAN address from the Mac.
 
 ## Revisit when
 

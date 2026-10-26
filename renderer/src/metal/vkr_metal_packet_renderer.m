@@ -1404,6 +1404,11 @@ struct VkrMetalPacketRenderer {
   VkrDisplayOutputParams display_output;
   VkrRenderGraphFrameInfo prepared_frame;
   uint64_t submit_value;
+  /* The newest submission that uploaded texture data. Metal 4 does not order
+     later command buffers after it, so work that may sample those textures
+     waits for it on the GPU (vkr_metal_packet_order_after_texture_uploads)
+     instead of the CPU waiting at publication. */
+  uint64_t texture_upload_order_value;
   uint64_t candidate_publication_generation;
   /* VkrPublicationChange bits since the previous packet build. */
   uint32_t candidate_publication_changes;
