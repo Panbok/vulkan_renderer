@@ -1236,7 +1236,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
         UseMask ? vkr_vk_light_tile_words_at_pixel(clusters, pixel)
                 : vkr_vk_light_tile_words(clusters, world_position);
     uint light_words = clusters.light_words;
-    uint point_count = min(frame.point_light_count, 128u);
+    uint point_count = frame.point_light_count;
     uint mask_slot = 0u;
     for (uint word = 0u; word < light_words; ++word)
     {
@@ -1273,7 +1273,9 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
             // `light_index` is wave-uniform, so the wave adds its pixels'
             // unshadowed contribution with one atomic. Shadowing never
             // changes the measure, so selection cannot feed back on itself.
-            if (UseMask && light_contribution != nullptr)
+            // Only the light head's rows are measured (ADR-135).
+            if (UseMask && light_contribution != nullptr &&
+                light_index < VKR_LIGHT_CLUSTER_HEAD_COUNT)
             {
                 float wave_lit = WaveActiveSum(vkr_local_light_contribution(
                     p1.rgb, p2.x, attenuation, dot(normal, light_direction),

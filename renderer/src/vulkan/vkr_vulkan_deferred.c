@@ -1657,9 +1657,10 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
       (uint64_t)vkr_ceil_div_u32(width, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE) *
       vkr_ceil_div_u32(height, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE);
   const uint64_t tile_bytes =
-      tile_count *
-      (VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT * sizeof(VkrVulkanLightCluster) +
-       (uint64_t)light_words * sizeof(uint32_t));
+      AlignPow2(tile_count * VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT *
+                    sizeof(VkrVulkanLightCluster),
+                16u) +
+      tile_count * light_words * sizeof(uint32_t);
   const bool8_t projects = width != 0u && height != 0u &&
                            vkr_is_finite_f32(near_w) && near_w > 0.0f &&
                            far_w > near_w && tile_bytes <= headers->buffer.size;
@@ -1678,12 +1679,14 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
     grid_scale = (Vec4){(float32_t)width / tile, (float32_t)height / tile,
                         slice_scale, -vkr_log2_f32(near_w) * slice_scale};
   }
-  /* A buffer below one header and its light words leaves the record's empty
-     cluster, which shades no punctual light and no decal, for a frame too
-     small to see. */
-  const uint64_t cluster_count =
-      (uint64_t)dimensions[0] * dimensions[1] * dimensions[2];
-  if (sizeof(VkrVulkanLightCluster) + (uint64_t)light_words * sizeof(uint32_t) >
+  /* The light words start 16-byte aligned after the clusters. A buffer below
+     one cluster and its light words leaves the record's empty cluster, which
+     shades no punctual light and no decal, for a frame too small to see. */
+  const uint64_t light_tiles_offset =
+      AlignPow2((uint64_t)dimensions[0] * dimensions[1] * dimensions[2] *
+                    sizeof(VkrVulkanLightCluster),
+                16u);
+  if (light_tiles_offset + (uint64_t)light_words * sizeof(uint32_t) >
       headers->buffer.size)
     return true_v;
 
@@ -1708,8 +1711,7 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
       .indices = indices->buffer.address,
       .near_w = near_w,
       .light_words = light_words,
-      .light_tiles = headers->buffer.address +
-                     cluster_count * sizeof(VkrVulkanLightCluster),
+      .light_tiles = headers->buffer.address + light_tiles_offset,
   };
   const VkrVulkanLightClusterBuildRoot root = {
       .clusters = slot->light_clusters,

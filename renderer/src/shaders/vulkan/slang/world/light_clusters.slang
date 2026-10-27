@@ -1,27 +1,28 @@
-// Lighting.Clusters: the desktop pipeline's frustum clusters of punctual
-// lights and decals (ADR-135). The view divides into screen tiles and
-// exponential depth slices of clip w. Each cluster marks the light head's
-// rows whose bounds reach it in a 128-bit mask, which a wave ORs and walks
-// as scalars, and lists the other light rows, then the decal rows, in
-// ascending order, so a wave can merge its lanes' lists with WaveActiveMin
-// and load each row once.
+// Lighting.Clusters: the desktop pipeline's screen tiles of punctual lights
+// and frustum clusters of decals (ADR-135). The view divides into screen
+// tiles and exponential depth slices of clip w. Each tile marks the light
+// rows whose bounds reach it in a bitfield of ceil(light count / 32) words,
+// which a wave ORs and walks as scalars. Each cluster, a tile's depth slice,
+// lists the decal rows that reach it in ascending order, so a wave can merge
+// its lanes' lists with WaveActiveMin and load each row once.
 //
 // The prepare dispatch bounds each light and decal by a sphere and a box of
 // clusters and clears the counters; the bin dispatch then gives each tile
 // one workgroup, which marks the items whose box covers the tile and whose
-// sphere reaches its side planes, and lets one thread per slice test them
-// against its depth range and write that cluster's mask and list.
+// sphere reaches its side planes, writes the tile's light words, and lets
+// one thread per slice test the decals against its depth range and write
+// that cluster's list.
 
 // Threads of a bin workgroup; at least the slice count, which the host
 // keeps at most 64 (VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT).
 #define VKR_LIGHT_CLUSTER_BIN_THREADS 64u
 // Words of the bin workgroup's item mask:
 // VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX / 32.
-#define VKR_LIGHT_CLUSTER_ITEM_WORDS 64u
+#define VKR_LIGHT_CLUSTER_ITEM_WORDS 128u
 // The boxes buffer holds VKR_LIGHT_CLUSTER_ITEM_MAX uint2 boxes, then each
 // item's world bounding sphere as two uint2 (asuint), radius < 0 for an item
 // that reaches every cluster.
-#define VKR_LIGHT_CLUSTER_ITEM_MAX 2048u
+#define VKR_LIGHT_CLUSTER_ITEM_MAX 4096u
 // A box of clusters packs its minimum and maximum corners in one uint each:
 // tile x in bits 0-11, tile y in 12-23, slice in 24-31.
 #define VKR_LIGHT_CLUSTER_EMPTY_BOX uint2(0xFFFFFFFFu, 0u)
@@ -365,22 +366,22 @@ void vk_light_cluster_bin(uint3 group_id : SV_GroupID,
         tile_words[word] = bits;
     }
 
-    // One thread per slice: mark the slice's head lights, count its other
-    // lights and its decals, take their run of the index pool, then write
-    // them in ascending row order.
+    // One thread per slice: count the slice's decals, take their run of the
+    // index pool, then write them in ascending row order. Lights reach a
+    // pixel through the tile's bitfield above, not through the lists.
     uint slice = thread_index;
     if (slice >= dimensions.z)
         return;
-    uint head_count = min(root.light_count, VKR_LIGHT_CLUSTER_HEAD_COUNT);
+    uint first_word = root.light_count / 32u;
+    uint first_bit = root.light_count % 32u;
     VkrVulkanLightCluster header;
-    header.head_lights = uint4(0u);
     header.first = 0u;
-    header.tail_light_count = 0u;
     header.decal_count = 0u;
-    header.reserved = 0u;
-    for (uint word = 0u; word < word_count; ++word)
+    for (uint word = first_word; word < word_count; ++word)
     {
         uint remaining = g_light_cluster_items[word];
+        if (word == first_word)
+            remaining &= ~0u << first_bit;
         while (remaining != 0u)
         {
             uint item = word * 32u + uint(firstbitlow(remaining));
@@ -390,15 +391,10 @@ void vk_light_cluster_bin(uint3 group_id : SV_GroupID,
             uint high = vkr_vk_light_cluster_unpack(box.y).z;
             if (slice < low || slice > high)
                 continue;
-            if (item < head_count)
-                header.head_lights[word] |= 1u << (item % 32u);
-            else if (item < root.light_count)
-                ++header.tail_light_count;
-            else
-                ++header.decal_count;
+            ++header.decal_count;
         }
     }
-    uint count = header.tail_light_count + header.decal_count;
+    uint count = header.decal_count;
     if (count != 0u)
         InterlockedAdd(root.counters[0].x, count, header.first);
     // A pool too small for this list drops it whole and counts the
@@ -407,7 +403,6 @@ void vk_light_cluster_bin(uint3 group_id : SV_GroupID,
     {
         uint ignored;
         InterlockedAdd(root.counters[0].y, count, ignored);
-        header.tail_light_count = 0u;
         header.decal_count = 0u;
         count = 0u;
     }
@@ -419,13 +414,12 @@ void vk_light_cluster_bin(uint3 group_id : SV_GroupID,
     uint cluster = tile.x + dimensions.x * (tile.y + dimensions.y * slice);
     clusters.headers[cluster] = header;
     uint cursor = header.first;
-    uint first_word = head_count / 32u;
     uint end = header.first + count;
     for (uint word = first_word; word < word_count && cursor < end; ++word)
     {
         uint remaining = g_light_cluster_items[word];
-        if (word * 32u < head_count)
-            remaining &= ~0u << (head_count - word * 32u);
+        if (word == first_word)
+            remaining &= ~0u << first_bit;
         while (remaining != 0u)
         {
             uint item = word * 32u + uint(firstbitlow(remaining));
@@ -435,8 +429,7 @@ void vk_light_cluster_bin(uint3 group_id : SV_GroupID,
             uint high = vkr_vk_light_cluster_unpack(box.y).z;
             if (slice < low || slice > high)
                 continue;
-            clusters.indices[cursor++] =
-                item < root.light_count ? item : item - root.light_count;
+            clusters.indices[cursor++] = item - root.light_count;
         }
     }
 }

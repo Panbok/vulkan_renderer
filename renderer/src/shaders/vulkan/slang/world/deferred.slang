@@ -2150,7 +2150,7 @@ float3 vkr_vk_apply_decals(VkrVkResolveRoot root, float3 world_position,
     VkrVulkanLightClusters *clusters = root.light_clusters;
     VkrVulkanLightCluster cluster =
         vkr_vk_light_cluster_header(clusters, world_position);
-    uint cursor = cluster.first + cluster.tail_light_count;
+    uint cursor = cluster.first;
     uint end = cursor + cluster.decal_count;
     float4 position = float4(world_position, 1.0f);
     for (;;)

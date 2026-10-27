@@ -1129,9 +1129,9 @@ _Static_assert(sizeof(VkrVulkanBakedShadowLamp) == 80u,
 #define VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE 32u
 #define VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT 32u
 /* Lights and decals one build can mark: the bin workgroup's item mask and
-   the `light_cluster_boxes` graph buffer (49152 bytes: a uint2 box, then a
+   the `light_cluster_boxes` graph buffer (98304 bytes: a uint2 box, then a
    float4 bounding sphere, per item) hold this many. */
-#define VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX 2048u
+#define VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX 4096u
 /* Clip w at the far end of the last slice when the projection's far plane
    lies farther or at infinity; a farther point stays in the last slice. */
 #define VKR_VULKAN_LIGHT_CLUSTER_FAR_W_MAX 2000.0f
@@ -1147,28 +1147,18 @@ _Static_assert(VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT <= 64u,
 _Static_assert(VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE == 32u,
                "light_clusters.slang's VKR_LIGHT_CLUSTER_TILE_SIZE is the "
                "tile size");
-/* The desktop light loops walk only the clusters' light-head masks: a
-   kernel variant that also walks the tail lists costs registers on every
-   frame, so the table stays within the head until frames with more lights
-   select such variants. */
-_Static_assert(VKR_MAX_SCENE_POINT_LIGHTS <= VKR_POINT_LIGHT_GRID_LIGHT_MAX,
-               "Vulkan shades only the light head's rows");
 _Static_assert(VKR_POINT_LIGHT_GRID_LIGHT_MAX == 128u,
                "light_clusters.slang's VKR_LIGHT_CLUSTER_HEAD_COUNT is the "
                "light head");
 
-/* One frustum cluster: bit i of `head_lights` marks light row i of the light
-   head (VKR_POINT_LIGHT_GRID_LIGHT_MAX rows) that reaches it; its run of the
-   index pool from `first` lists `tail_light_count` light rows past the head,
-   then `decal_count` decal rows, each in ascending order. */
+/* One frustum cluster: its run of the index pool from `first` lists
+   `decal_count` decal rows in ascending order. Lights reach a pixel through
+   its screen tile's bitfield (VkrVulkanLightClusters.light_tiles). */
 typedef struct VkrVulkanLightCluster {
-  uint32_t head_lights[4];
   uint32_t first;
-  uint32_t tail_light_count;
   uint32_t decal_count;
-  uint32_t reserved;
 } VkrVulkanLightCluster;
-_Static_assert(sizeof(VkrVulkanLightCluster) == 32u,
+_Static_assert(sizeof(VkrVulkanLightCluster) == 8u,
                "Light cluster header ABI drift");
 
 /* The frame's frustum clusters of lights and decals, which every frame root

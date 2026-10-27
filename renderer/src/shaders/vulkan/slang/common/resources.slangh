@@ -262,16 +262,13 @@ struct VkrVulkanSky
     float4 *cloud_sky_light;
 };
 
-// One frustum cluster (ADR-135): the light head's rows that reach it as a
-// mask, then its run of the index pool, `tail_light_count` light rows past
-// the head and `decal_count` decal rows, each in ascending order.
+// One frustum cluster (ADR-135): its run of the index pool from `first`,
+// `decal_count` decal rows in ascending order. Lights reach a pixel through
+// its screen tile's bitfield (VkrVulkanLightClusters.light_tiles).
 struct VkrVulkanLightCluster
 {
-    uint4 head_lights;
     uint first;
-    uint tail_light_count;
     uint decal_count;
-    uint reserved;
 };
 
 // The frame's frustum clusters of punctual lights and decals (ADR-135);
