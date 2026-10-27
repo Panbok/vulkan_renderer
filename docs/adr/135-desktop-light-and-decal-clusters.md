@@ -4,24 +4,25 @@ updated: 2026-10-27
 authority: adr
 ---
 
-# ADR-135: Desktop light and decal frustum clusters
+# ADR-135: Desktop light tiles and decal clusters
 
 ## Status
 
 Accepted (partial). Since 2026-10-27 the desktop pipeline bins punctual
-lights and decals into frustum clusters that the GPU builds each frame, in
-place of the CPU world grids it read before. Deferred lighting,
-transmission shading, forward blended draws and `Shadow.LocalMask` walk a
-cluster's mask of the 128-row light head; the decal resolve walks the
-cluster's decal list, so the desktop decal table is no longer bounded by a
-mask width. Since 54c10645 the runtime builds the CPU light and decal
-grids only for the tiled pipeline: a desktop packet carries
-`point_light_grid` and `decal_grid` as NULL, frame validation accepts a
-frame without them, and `vkr_renderer_render_submitted` rejects a tiled
-frame with lights or decals but no grids. Native evidence is Vulkan on an
-RX 6700 XT (Evidence). Shading light rows past the head and
-the cluster counters in metrics are open; the owner chose z-binned
-bitfields and a world grid for ray-traced consumers to scale past them
+lights and decals on the GPU each frame, in place of the CPU world grids it
+read before. Each 32 px screen tile holds a bitfield of the light rows that
+reach it, with one bit per row of the table, so the desktop light loops
+shade every row; deferred lighting, transmission shading, forward blended
+draws and `Shadow.LocalMask` walk it. Each frustum cluster, a tile's depth
+slice, lists the decal rows that reach it for the decal resolve. Since
+54c10645 the runtime builds the CPU light and decal grids only for the
+tiled pipeline: a desktop packet carries `point_light_grid` and
+`decal_grid` as NULL, frame validation accepts a frame without them, and
+`vkr_renderer_render_submitted` rejects a tiled frame with lights or decals
+but no grids. Native evidence is Vulkan on an RX 6700 XT (Evidence). The
+light table stays at 128 rows (`VKR_MAX_SCENE_POINT_LIGHTS`) until the CPU
+side raises it; depth bins for the light tiles, decal bitfields and the
+cluster counters in metrics are open
 ([Clustered light and decal binning](../proposals/clustered-light-and-decal-binning.md)).
 
 ## Context
@@ -29,16 +30,20 @@ bitfields and a world grid for ray-traced consumers to scale past them
 The light table held at most 128 rows and the frame's decals at most 64,
 because the CPU grids name rows in 128-bit and 64-bit masks
 ([ADR-019](019-bounded-forward-spatial-lighting.md),
-[ADR-092](092-projected-decals.md)). The owner accepted frustum clusters
-built on the GPU with a two-level test on 2026-10-20 (the proposal's owner
-decisions 1 to 5). Bistro's lights overlap genuinely, so finer binning
-alone does not pay there; the gain is the limits.
+[ADR-092](092-projected-decals.md)). The owner accepted GPU-built frustum
+clusters on 2026-10-20 and, on 2026-10-27, scaling targets of about 2,000
+lights and 15,000 decals with bitfields rather than lists for lights.
+Bistro's lights overlap genuinely, so finer binning alone does not pay
+there; the gain is the limits.
 
-The first implementation replaced the masks with index lists in every
-consumer. Matched timing rejected it: the dependent index load per light
-and pixel made `Lighting.Deferred` 0.17 ms slower and the frame 2.6 %
-slower on the orbit. A light loop that also walked a tail list, even never
-executed, cost about 0.05 ms in registers.
+Matched timing on the Bistro orbit (`Lighting.Deferred` p50) decided the
+light representation. An index list per cluster for every light cost
+0.17 ms per frame in dependent loads; a light loop that also walked a tail
+list, even never executed, cost about 0.05 ms in registers. A bitfield that
+the wave ORs and walks as scalars costs what the old grid mask cost within
+0.07 ms, and dropping the depth slices for lights changed nothing (3.718
+against 3.716 ms): on Bistro the shader's range test per light is cheaper
+than depth culling saves.
 
 ## Decision
 
@@ -46,19 +51,18 @@ executed, cost about 0.05 ms in registers.
    [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json))
    runs after `Cull.Encode` under `scene_rendering`. It writes four
    per-frame-slot graph buffers: `light_cluster_headers` (2 bytes per render
-   pixel), `light_cluster_indices` (4 bytes per render pixel),
-   `light_cluster_boxes` (49152 bytes) and `light_cluster_state` (16 bytes
+   pixel: the decal clusters, then the light tiles' words, 16-byte
+   aligned), `light_cluster_indices` (4 bytes per render pixel),
+   `light_cluster_boxes` (98304 bytes) and `light_cluster_state` (16 bytes
    of counters). Every pass that shades punctual lights or decals reads the
    headers and indices.
-2. **Grid.** 32 px screen tiles by 32 slices of clip w, exponential from the
-   near plane to the far plane or 2000 m
+2. **Grid.** 32 px screen tiles; decals also use 32 slices of clip w,
+   exponential from the near plane to the far plane or 2000 m
    (`VKR_VULKAN_LIGHT_CLUSTER_*`,
    [`vkr_vulkan_internal.h`](../../renderer/src/vulkan/vkr_vulkan_internal.h)).
-   A position's cluster is the tile of its projection by the jittered view
-   projection and the slice of its clip w
-   (`vkr_vk_light_cluster_header`). A view that does not project, or an
-   extent whose tiles do not fit the header buffer, keeps one cluster that
-   holds every light and decal.
+   A view that does not project, or an extent whose tiles do not fit the
+   header buffer, keeps one tile and cluster that hold every light and
+   decal.
 3. **Build.** `vkr_vk_prepare_light_clusters`
    ([`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c))
    fills the frame's `VkrVulkanLightClusters` record and queues two
@@ -68,29 +72,29 @@ executed, cost about 0.05 ms in registers.
    world sphere (a light's range, or the sphere around a narrow spot cone;
    a decal's box) and a box of clusters. The bin dispatch gives each tile
    one workgroup: it marks the items whose box covers the tile and whose
-   sphere reaches the tile's four side planes, then one thread per slice
-   keeps the items whose slice range holds it. A light without a finite
-   range reaches every cluster. One build marks at most 2048 lights and
+   sphere reaches the tile's four side planes, writes the tile's
+   `ceil(light count / 32)` light words, then lets one thread per slice
+   keep the decals whose slice range holds it. A light without a finite
+   range reaches every tile. One build marks at most 4096 lights and
    decals together.
-4. **Cluster.** A 32-byte `VkrVulkanLightCluster` holds a 128-bit mask of
-   the light head's rows (rows below `VKR_POINT_LIGHT_GRID_LIGHT_MAX`) and a
-   run of the index pool: the light rows past the head, then the decal
-   rows, each ascending. A list that does not fit the pool is dropped whole
-   and counted, so a pixel never reads another cluster's indices.
+4. **Decal cluster.** An 8-byte `VkrVulkanLightCluster` names a run of the
+   index pool: its decal rows in ascending order. A list that does not fit
+   the pool is dropped whole and counted, so a pixel never reads another
+   cluster's indices.
 5. **Consumers.** `packet_punctual_layered`
    ([`default.slang`](../../renderer/src/shaders/vulkan/slang/world/default.slang))
-   ORs the wave's head masks and loads each light row as a scalar, as the
-   grid mask did; `Shadow.LocalMask` ands the head mask with its shadowed
-   lights. `vkr_vk_apply_decals`
+   walks the tile's words in order, ORs each across the wave and loads each
+   light row as a scalar. Deferred lighting and `Shadow.LocalMask` take the
+   tile from their render pixel; forward and transmission shading project
+   their world position. `vkr_vk_apply_decals`
    ([`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang))
    merges the lanes' decal lists with `WaveActiveMin`, so each decal row
    loads once per wave and decals blend in table order.
-6. **Light head.** The desktop light loops walk only the head mask. Rows
-   past the head would need a kernel variant with the tail walk, selected
-   only for frames with more lights, so `VKR_MAX_SCENE_POINT_LIGHTS` stays
-   at the head's 128 rows; a static assertion in `vkr_vulkan_internal.h`
-   stops a larger table from building without that variant. Shadows,
-   contribution counters and `light_first_view` cover the head only.
+6. **Light head.** Every row shades, but only the head's rows (below
+   `VKR_POINT_LIGHT_GRID_LIGHT_MAX`, 128) cast shadows, take a
+   `Shadow.LocalMask` slot and add to the contribution counters; the host
+   uploads `light_first_view` only for them, so later rows shade
+   unshadowed.
 7. **Table addresses.** The host always uploads at least one light row and
    one decal row, zero when the frame has none, so no shader reads through
    a null table address (the AMD driver may hoist such a load above its
@@ -101,70 +105,89 @@ executed, cost about 0.05 ms in registers.
 - The desktop keeps the 512 decals nearest the camera
   (`VKR_MAX_FRAME_DECALS`) and the tiled pipeline the 64 nearest
   (`VKR_DECAL_GRID_DECAL_MAX`), both in compositing order
-  ([ADR-092](092-projected-decals.md)). The desktop limit is no longer a
-  mask width; the build's 2048 items and the index pool bound it.
+  ([ADR-092](092-projected-decals.md)). Neither desktop limit is a mask
+  width any longer; the build's 4096 items, the header buffer's tile words
+  and the index pool bound them.
 - Vulkan no longer reads the CPU light and decal grids, and the runtime
-  builds them only for the tiled pipeline. The build costs about 0.025 ms
+  builds them only for the tiled pipeline. The build costs about 0.014 ms
   of GPU time on the Bistro orbit and runs every frame.
+- A tile's light loop walks every word of the table, so its cost grows
+  with the light count even where no light reaches; depth bins that narrow
+  the words a pixel walks are the planned remedy at thousands of lights.
 - The desktop and tiled pipelines look lights and decals up in different
   structures, as ADR-087 allows between the classes.
-- Light rows past 128 are listed in the clusters but not shaded until the
-  proposal's W4a lands.
 
 ## Alternatives considered
 
 - **Index lists for every light.** Rejected by matched timing (Context).
-- **A head mask with a tail loop in the same kernel.** Rejected: the
-  unexecuted tail walk cost registers on every frame (3.93 ms against
-  3.73 to 3.75 ms for `Lighting.Deferred`).
-- **A world grid with cascades.** Rejected by owner decision 1: every
-  consumer shades a pixel in the camera's view.
-- **A compute rasterizer of light volumes.** Deferred until the two-level
+- **A head mask with a tail-list loop.** Rejected: the unexecuted tail walk
+  cost registers on every frame (3.93 ms against 3.73 to 3.75 ms for
+  `Lighting.Deferred`).
+- **Light bitfields per depth slice.** No gain on Bistro over the 2D tile,
+  and about 29 MB at 2,000 lights; depth bins over depth-sorted lights
+  (the proposal's W4a) keep the culling at a few kilobytes.
+- **A world grid with cascades for raster consumers.** Rejected by owner
+  decision 1: every raster consumer shades a pixel in the camera's view.
+- **A compute rasterizer of light volumes.** Deferred until the per-tile
   build exceeds its budget at higher limits (owner decision 2).
 
 ## Revisit when
 
-- Z-binned light bitfields measure cheaper than the head mask at 128
-  lights, or a scene needs more than 128 shaded lights: they replace these
-  clusters for lights (the proposal's W4a, owner decision of 2026-10-27).
+- The stress case shows the word loop dominating at its light count: add
+  depth bins (W4a).
 - Decal bitfields in table order replace the decal lists (W4b).
-- The pool overflows on a tracked case before then.
+- The pool overflows on a tracked case.
 
 ## Evidence
 
 Vulkan Release, RX 6700 XT, 2560x1440 High, validation unset.
 
-- **Image parity** against the grid build: the decal G-buffer capture and
-  the lamp HDR captures are byte-identical; two lamp runs differed only in
-  foliage local-shadow state, which also varies between identical runs and
-  is identical with local shadows off.
+- **Image parity.** The first clusters against the grid build: the decal
+  G-buffer capture and the lamp HDR captures are byte-identical; two lamp
+  runs differed only in foliage local-shadow state, which also varies
+  between identical runs and is identical with local shadows off. The
+  light tiles against those clusters, on one build with each shader
+  catalog: `bistro_clustered_capture` depth and G-buffer identical, and the
+  lamp HDR capture identical in all four cross pairs of runs matched by
+  shadow state.
 - **Without CPU grids** (54c10645, 2026-10-27): `bistro_clustered_capture`
   (`snapshot`, profile `local-offscreen`) passes with 0 GPU and log errors;
   it selects 128 lights and drops 264, keeps all 176 decals, and reports
   no light grid cells.
-- **Timing**, 2026-10-27: before (ca993d2c) and after builds in clean
-  worktrees, alternated ABBA, all eight reports authoritative
-  (`vkr_harness profile --profile
+- **Timing of the first clusters**, 2026-10-27: before (ca993d2c) and after
+  builds in clean worktrees, alternated ABBA, all eight reports
+  authoritative (`vkr_harness profile --profile
   tools/profiles/performance-windowed-gpu-submission-vulkan.json`, cases
   `bistro_vulkan_high_orbit_1440` and `bistro_vulkan_high_street_walk_1440`).
   `gpu.submission` p50: orbit 12.92 and 12.80 ms before, 13.03 and 12.89 ms
   after (+0.8 %, `no_change` twice); walk 13.09 and 13.11 ms before, 13.42
   and 13.21 ms after (+1.7 %; one pair `slower` at +2.5 %, one
-  `no_change`). Per pass on the orbit (2026-10-26): `Lighting.Clusters`
-  0.025 ms, `Lighting.Deferred` about 0.1 ms over the grid, which the
-  per-pixel cluster lookup is suspected of. The owner accepted the cost on
-  2026-10-27; z-binning (the proposal's W4a) is the planned fix.
+  `no_change`). The owner accepted the cost on 2026-10-27.
+- **Timing of the light tiles**, shader-only A/B on one build
+  (`VKR_SHADER_CATALOG`, orbit, profile `local-windowed-gpu`,
+  `Lighting.Deferred` p50): the old grid 3.649 ms; the first clusters
+  3.713 to 3.721 ms; the light tiles 3.714 to 3.717 ms, with
+  `Lighting.Clusters` 0.014 ms against 0.025 ms. A second cluster lookup
+  added 0.036 ms, and taking the tile from the pixel instead of a
+  projection saved nothing measurable, so the remaining 0.07 ms against
+  the grid is not the lookup's arithmetic.
+- **Past the head** (table constant raised to 1024 in a local build only):
+  `bistro_clustered_capture` selects all 392 lights with 0 GPU and log
+  errors; its 64 moving lights change 436,501 pixels of the HDR image
+  between measured frames 0 and 60, against 83 when only 128 rows shade.
+  `bistro_clustered_1440` (profile `local-offscreen-gpu-repeated`):
+  `Lighting.Deferred` 5.82 ms with 128 lights and 6.90 ms with 392,
+  `Lighting.Clusters` 0.028 and 0.034 ms.
 - **Validation:** one selective GPU-assisted validation run of the walk
   (`VKR_VULKAN_GPU_VALIDATION=1`, the resolve, local shadow mask, cluster,
   deferred lighting, transmission and world shaders instrumented): two
   repetitions and two prewarm children of 1,326 frames each, 0 validation
   errors and warnings. Before decision 7 about one prewarm child in twenty
   lost the device with a device fault at address 0; none of the 8 timing
-  runs after it did.
+  runs after it did. That run and the synchronization run below predate
+  the light tiles.
 - **Synchronization validation**, 2026-10-27: Release with
   `VK_LAYER_KHRONOS_validation` loaded through `VK_INSTANCE_LAYERS` and
   `VK_KHRONOS_VALIDATION_VALIDATE_SYNC=1`, case
   `bistro_lamps_baked_night_moving_validation`, profile `local-offscreen`:
   no errors or warnings.
-- **Pending:** the moving-light check on the scoped case, which needs more
-  than 128 shaded lights.

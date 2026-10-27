@@ -15,21 +15,22 @@ clustered culling. What decals write stays in
 
 ## Current baseline
 
-- **Clusters (ADR-135).** On the desktop pipeline `Lighting.Clusters`
-  builds frustum clusters each frame: 32 px tiles by 32 exponential slices.
-  A cluster holds a 128-bit mask of the light head (the first 128 rows) and
-  an index list of the other light rows and the decal rows. Deferred
-  lighting, transmission, forward blend and `Shadow.LocalMask` walk the head
-  mask; the decal resolve walks the decal list. The build costs about
-  0.025 ms on the Bistro orbit (RX 6700 XT, 1440p).
+- **Light tiles and decal clusters (ADR-135).** On the desktop pipeline
+  `Lighting.Clusters` builds, each frame, a bitfield of light rows per
+  32 px screen tile, which deferred lighting, transmission, forward blend
+  and `Shadow.LocalMask` walk, and decal lists per frustum cluster (the
+  tile by 32 exponential slices), which the decal resolve walks. Every
+  light row shades; only the 128-row head is shadowed. The build costs
+  about 0.014 ms on the Bistro orbit (RX 6700 XT, 1440p).
 - **Limits.** The light table holds at most 128 rows
   (`VKR_MAX_SCENE_POINT_LIGHTS`,
   [`vkr_lighting.h`](../../renderer/src/vkr_lighting.h)), ranked by camera
   distance with hysteresis and fades
-  ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)); only these
-  rows can be shadowed. The desktop light loops shade only the head, and a
-  static assertion keeps the table there. Decals: see
-  [ADR-092](../adr/092-projected-decals.md) for the frame selection.
+  ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)), and the
+  first 128 rows (the head) can be shadowed. The desktop shades every row,
+  so raising the constant is a CPU-side change; with it at 1024 in a local
+  build, the scoped case shades all 392 of its lights. The desktop keeps
+  the 512 nearest decals ([ADR-092](../adr/092-projected-decals.md)).
 - **Ray-traced consumers.** The diffuse volume's dynamic layer traces
   off-screen with its own list of at most 128 lights
   (`VKR_DYNAMIC_VOLUME_LIGHTS_MAX`,

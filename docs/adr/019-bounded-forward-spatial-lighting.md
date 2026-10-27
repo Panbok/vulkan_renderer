@@ -10,8 +10,8 @@ authority: adr
 
 Accepted. Both pipeline classes use the light table, the local shadow cache
 and its atlas raster. The tiled pipeline finds a pixel's lights in the light
-grid; since 2026-10-27 the desktop pipeline finds them in GPU-built frustum
-clusters ([ADR-135](135-desktop-light-and-decal-clusters.md)), and the
+grid; since 2026-10-27 the desktop pipeline finds them in GPU-built screen
+light tiles ([ADR-135](135-desktop-light-and-decal-clusters.md)), and the
 runtime builds the light grid only for the tiled pipeline. `Shadow.LocalMask`, contact shadows, local
 transmission layers, contribution measurement and local probes belong to the
 desktop pipeline, which Vulkan implements. The tiled pipeline draws a bounded

@@ -13,12 +13,12 @@ lighting work is in [Tiled graphics pipeline](tiled-pipeline.md).
 ## Current baseline
 
 `Lighting.Deferred` evaluates the sky, image-based and probe lighting, the
-directional cascades, and every punctual light in the pixel's frustum cluster
+directional cascades, and every punctual light in the pixel's light tile
 ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)). A base kernel
 without the clearcoat, sheen and anisotropy paths shades every tile unless the
 frame has material planes; then a layered kernel shades the tiles that use them
 ([ADR-062](../adr/062-layered-clearcoat.md)). Point lights come from
-frustum clusters that `Lighting.Clusters` builds each frame
+the per-tile light bitfields that `Lighting.Clusters` builds each frame
 ([ADR-135](../adr/135-desktop-light-and-decal-clusters.md)); the cost split
 below predates them. Deferred lighting reads
 local-shadow visibility from the full-resolution `Shadow.LocalMask` array,
