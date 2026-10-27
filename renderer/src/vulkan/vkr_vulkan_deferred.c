@@ -1645,19 +1645,24 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
       projection.m33 == 0.0f ? mat4_perspective_reversed_far(projection) : 0.0f;
   if (!(far_w <= VKR_VULKAN_LIGHT_CLUSTER_FAR_W_MAX))
     far_w = VKR_VULKAN_LIGHT_CLUSTER_FAR_W_MAX;
+  const VkrFrameLighting *lighting = packet->input.lighting;
+  const uint32_t light_count = lighting ? lighting->point_light_count : 0u;
+  const uint32_t light_words = vkr_ceil_div_u32(light_count, 32u);
   /* The header buffer holds VKR_VULKAN_LIGHT_CLUSTER_HEADER_BYTES_PER_PIXEL
-     bytes per render pixel; an extent of a few pixels, as a window that is
-     still opening reports, rounds up to more whole tiles than that holds and
-     keeps the single cluster too. */
-  const uint64_t tile_cluster_count =
+     bytes per render pixel: the clusters, then each tile's light words. An
+     extent of a few pixels, as a window that is still opening reports, rounds
+     up to more whole tiles than that holds and keeps the single cluster
+     too. */
+  const uint64_t tile_count =
       (uint64_t)vkr_ceil_div_u32(width, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE) *
-      vkr_ceil_div_u32(height, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE) *
-      VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT;
+      vkr_ceil_div_u32(height, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE);
+  const uint64_t tile_bytes =
+      tile_count *
+      (VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT * sizeof(VkrVulkanLightCluster) +
+       (uint64_t)light_words * sizeof(uint32_t));
   const bool8_t projects = width != 0u && height != 0u &&
                            vkr_is_finite_f32(near_w) && near_w > 0.0f &&
-                           far_w > near_w &&
-                           tile_cluster_count * sizeof(VkrVulkanLightCluster) <=
-                               headers->buffer.size;
+                           far_w > near_w && tile_bytes <= headers->buffer.size;
   uint32_t dimensions[4] = {1u, 1u, 1u, 0u};
   Vec4 grid_scale = {0};
   if (projects) {
@@ -1673,14 +1678,16 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
     grid_scale = (Vec4){(float32_t)width / tile, (float32_t)height / tile,
                         slice_scale, -vkr_log2_f32(near_w) * slice_scale};
   }
-  /* A buffer below one header leaves the record's empty cluster, which
-     shades no punctual light and no decal, for a frame too small to see. */
-  if (sizeof(VkrVulkanLightCluster) > headers->buffer.size)
+  /* A buffer below one header and its light words leaves the record's empty
+     cluster, which shades no punctual light and no decal, for a frame too
+     small to see. */
+  const uint64_t cluster_count =
+      (uint64_t)dimensions[0] * dimensions[1] * dimensions[2];
+  if (sizeof(VkrVulkanLightCluster) + (uint64_t)light_words * sizeof(uint32_t) >
+      headers->buffer.size)
     return true_v;
 
   /* The packet tables keep both row addresses valid without rows. */
-  const VkrFrameLighting *lighting = packet->input.lighting;
-  const uint32_t light_count = lighting ? lighting->point_light_count : 0u;
   const uint32_t decal_count = slot->decal_count;
   const uint64_t lights = slot->point_light_data;
   const uint64_t decals = slot->decals;
@@ -1700,6 +1707,9 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
       .headers = headers->buffer.address,
       .indices = indices->buffer.address,
       .near_w = near_w,
+      .light_words = light_words,
+      .light_tiles = headers->buffer.address +
+                     cluster_count * sizeof(VkrVulkanLightCluster),
   };
   const VkrVulkanLightClusterBuildRoot root = {
       .clusters = slot->light_clusters,

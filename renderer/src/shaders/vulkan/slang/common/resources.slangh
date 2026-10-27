@@ -284,8 +284,10 @@ struct VkrVulkanLightClusters
     VkrVulkanLightCluster *headers;
     uint *indices;
     float near_w;
-    float reserved_0;
-    uint2 reserved_1;
+    // Words of each tile's light bitfield: ceil(light count / 32).
+    uint light_words;
+    // Per screen tile, `light_words` words; bit i marks light row i.
+    uint *light_tiles;
 };
 
 struct VkrVulkanPacketFrameRoot

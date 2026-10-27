@@ -1229,21 +1229,26 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
     result.specular = 0.0f;
     float3 coat_sum = 0.0f;
     float3 sheen_sum = 0.0f;
-    uint4 point_mask =
-        vkr_vk_light_cluster_header(frame.light_clusters, world_position)
-            .head_lights;
+    // Deferred lighting knows its render pixel, so its tile needs no
+    // projection.
+    VkrVulkanLightClusters *clusters = frame.light_clusters;
+    uint *tile_words =
+        UseMask ? vkr_vk_light_tile_words_at_pixel(clusters, pixel)
+                : vkr_vk_light_tile_words(clusters, world_position);
+    uint light_words = clusters.light_words;
     uint point_count = min(frame.point_light_count, 128u);
     uint mask_slot = 0u;
-    for (uint word = 0u; word < 4u; ++word)
+    for (uint word = 0u; word < light_words; ++word)
     {
-        // The mask comes from the pixel's frustum cluster, which marks the
-        // light head's rows (ADR-135), so lanes in different clusters carry
-        // different masks and the wave already pays for the union of their
-        // set bits. Iterating that union explicitly makes `light_index`
+        // The word comes from the pixel's screen tile, which marks the light
+        // rows whose bounds reach it (ADR-135), so lanes in different tiles
+        // carry different words and the wave already pays for the union of
+        // their set bits. Iterating that union explicitly makes `light_index`
         // wave-uniform, which lets the light rows load as scalars instead of
         // per-lane vectors. Each lane still accumulates only its own bits, so
         // the summation order and result are unchanged.
-        uint remaining = WaveActiveBitOr(point_mask[word]);
+        uint lane_word = tile_words[word];
+        uint remaining = WaveActiveBitOr(lane_word);
         while (remaining != 0u)
         {
             uint bit = uint(firstbitlow(remaining));
@@ -1256,7 +1261,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
             float4 p1 = light.p1;
             float4 p2 = light.p2;
             float4 p3 = light.p3;
-            if ((point_mask[word] & (1u << bit)) == 0u)
+            if ((lane_word & (1u << bit)) == 0u)
                 continue;
             VkrPunctualLightTerm term =
                 vkr_punctual_light_term(p0, p1, p2, p3, world_position);

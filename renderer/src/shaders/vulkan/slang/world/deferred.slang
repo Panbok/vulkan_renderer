@@ -3019,12 +3019,16 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
         (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
     float3 world = vk_local_shadow_mask_world(root, ndc_xy, depth);
     // Only the shadowed lights that reach the view can take a slot, all in
-    // the light head (ADR-135). A pixel whose cluster marks none of them
-    // stores nothing, so it skips the surface work unless the baked-lamp part
-    // below needs it.
-    uint4 point_mask =
-        vkr_vk_light_cluster_header(frame.light_clusters, world).head_lights &
-        root.mask_lights;
+    // the light head's four words (ADR-135). A pixel whose tile marks none of
+    // them stores nothing, so it skips the surface work unless the baked-lamp
+    // part below needs it.
+    uint *tile_words =
+        vkr_vk_light_tile_words_at_pixel(frame.light_clusters, thread_id.xy);
+    uint head_words = min(frame.light_clusters.light_words, 4u);
+    uint4 point_mask = 0u;
+    for (uint word = 0u; word < head_words; ++word)
+        point_mask[word] = tile_words[word];
+    point_mask &= root.mask_lights;
     bool point_lights = any(point_mask != 0u);
     if (!BakedLamps && !point_lights)
         return;

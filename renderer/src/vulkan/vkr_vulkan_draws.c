@@ -591,6 +591,7 @@ vkr_internal bool8_t vkr_vk_upload_light_clusters(VkrVulkanFrameSlot *slot) {
       .dimensions = {1u, 1u, 1u, 0u},
       .headers = header_address,
       .indices = header_address,
+      .light_tiles = header_address,
   };
   slot->light_clusters_record = record;
   return true_v;

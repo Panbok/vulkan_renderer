@@ -95,6 +95,45 @@ VkrVulkanLightCluster vkr_vk_light_cluster_header(
     return clusters.headers[cluster];
 }
 
+// Pixels per screen tile side: VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE.
+#define VKR_LIGHT_CLUSTER_TILE_SIZE 32u
+
+// The light bitfield of the screen tile that holds render pixel `pixel`.
+uint *vkr_vk_light_tile_words_at_pixel(VkrVulkanLightClusters *clusters,
+                                       uint2 pixel)
+{
+    uint tile = 0u;
+    if (clusters.dimensions.w != 0u)
+    {
+        uint2 cell = min(pixel / VKR_LIGHT_CLUSTER_TILE_SIZE,
+                         clusters.dimensions.xy - 1u);
+        tile = cell.x + clusters.dimensions.x * cell.y;
+    }
+    return clusters.light_tiles + tile * clusters.light_words;
+}
+
+// The light bitfield of the screen tile that holds the projection of
+// `world_position`.
+uint *vkr_vk_light_tile_words(VkrVulkanLightClusters *clusters,
+                              float3 world_position)
+{
+    uint tile = 0u;
+    if (clusters.dimensions.w != 0u)
+    {
+        float4 clip =
+            mul(clusters.view_projection, float4(world_position, 1.0f));
+        float2 uv = clip.xy / max(clip.w, 1.0e-6f) * 0.5f + 0.5f;
+        float2 last = float2(clusters.dimensions.xy - 1u);
+        uint2 cell =
+            uint2(clamp(floor(uv * clusters.grid_scale.xy), 0.0f, last));
+        // A non-finite position converts to any index; the tile count
+        // bounds it.
+        tile = min(cell.x + clusters.dimensions.x * cell.y,
+                   clusters.dimensions.x * clusters.dimensions.y - 1u);
+    }
+    return clusters.light_tiles + tile * clusters.light_words;
+}
+
 // The light head, VKR_POINT_LIGHT_GRID_LIGHT_MAX: only these first rows of
 // the light table can be shadowed or have their contribution counted.
 #define VKR_LIGHT_CLUSTER_HEAD_COUNT 128u
@@ -311,6 +350,20 @@ void vk_light_cluster_bin(uint3 group_id : SV_GroupID,
         }
     }
     GroupMemoryBarrierWithGroupSync();
+
+    // The tile's light bitfield: the marked items below the light count, in
+    // light row order.
+    uint light_words = clusters.light_words;
+    uint *tile_words = clusters.light_tiles + group_id.x * light_words;
+    for (uint word = thread_index; word < light_words;
+         word += VKR_LIGHT_CLUSTER_BIN_THREADS)
+    {
+        uint bits = g_light_cluster_items[word];
+        uint past = root.light_count - word * 32u;
+        if (past < 32u)
+            bits &= (1u << past) - 1u;
+        tile_words[word] = bits;
+    }
 
     // One thread per slice: mark the slice's head lights, count its other
     // lights and its decals, take their run of the index pool, then write

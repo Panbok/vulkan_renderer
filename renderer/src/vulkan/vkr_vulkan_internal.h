@@ -1144,6 +1144,9 @@ _Static_assert(VKR_MAX_SCENE_POINT_LIGHTS + VKR_MAX_FRAME_DECALS <=
                "The cluster build must mark every light and decal");
 _Static_assert(VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT <= 64u,
                "One bin thread per slice");
+_Static_assert(VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE == 32u,
+               "light_clusters.slang's VKR_LIGHT_CLUSTER_TILE_SIZE is the "
+               "tile size");
 /* The desktop light loops walk only the clusters' light-head masks: a
    kernel variant that also walks the tail lists costs registers on every
    frame, so the table stays within the head until frames with more lights
@@ -1184,13 +1187,17 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightClusters {
   /* The clusters' runs of light rows past the head, then decal rows. */
   uint64_t indices;
   float32_t near_w;
-  float32_t reserved_0;
-  uint32_t reserved_1[2];
+  /* Words of each tile's light bitfield: ceil(light count / 32). */
+  uint32_t light_words;
+  /* Per screen tile, `light_words` words in the header buffer after the
+     clusters; bit i marks light row i. */
+  uint64_t light_tiles;
 } VkrVulkanLightClusters;
 _Static_assert(sizeof(VkrVulkanLightClusters) == 128u &&
                    offsetof(VkrVulkanLightClusters, grid_scale) == 64u &&
                    offsetof(VkrVulkanLightClusters, headers) == 96u &&
-                   offsetof(VkrVulkanLightClusters, near_w) == 112u,
+                   offsetof(VkrVulkanLightClusters, near_w) == 112u &&
+                   offsetof(VkrVulkanLightClusters, light_tiles) == 120u,
                "Light cluster ABI drift");
 
 /* Lighting.Clusters' prepare and bin dispatches. */
