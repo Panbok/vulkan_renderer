@@ -692,10 +692,10 @@ typedef struct VkrLocalShadowDynamicHistory {
   uint64_t last_submit_value;
 } VkrLocalShadowDynamicHistory;
 
-/* Lights the local-shadow cache holds: the scene table's and the baked
+/* Lights the local-shadow cache holds: the scene table's head and the baked
    lamps a frame shadows with its moving casters. */
 #define VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX                                       \
-  (VKR_MAX_SCENE_POINT_LIGHTS + VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX)
+  (VKR_POINT_LIGHT_GRID_LIGHT_MAX + VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX)
 
 /** One resident light of the local-shadow cache. */
 typedef struct VkrLocalShadowCacheLight {

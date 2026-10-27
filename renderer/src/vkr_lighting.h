@@ -19,10 +19,16 @@ typedef enum VkrPointLightKind {
  */
 #define VKR_POINT_LIGHT_SOURCE_RADIUS_MAX 1.0f
 
+/* Point and spot lights one frame's table holds (ADR-019). It stays at the
+ * head's width until the desktop lighting kernels shade the rows past it:
+ * a tail loop costs their registers even when it never runs (clustered
+ * binning proposal, W4). */
 #define VKR_MAX_SCENE_POINT_LIGHTS 128u
-/* Light table rows the CPU light grid can name: it places only the rows
- * below min(count, VKR_POINT_LIGHT_GRID_LIGHT_MAX). The table may outgrow
- * it; the grid's mask width follows this head, not the table. */
+/* The light head: the table's first min(count,
+ * VKR_POINT_LIGHT_GRID_LIGHT_MAX) rows hold its highest-ranked lights. Only
+ * head rows enter the CPU light grid, cast local shadows and take
+ * contribution counters; the grid's mask width follows the head, not the
+ * table. */
 #define VKR_POINT_LIGHT_GRID_LIGHT_MAX 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
 #define VKR_POINT_LIGHT_GRID_MAX_CELLS 384u
@@ -51,14 +57,14 @@ _Static_assert(VKR_POINT_LIGHT_GRID_LIGHT_MAX <= VKR_MAX_SCENE_POINT_LIGHTS,
  * x / (1 + x), summed and scaled by VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE. Lights
  * behind walls or out of view measure zero; light that would leak through
  * geometry counts, and shadowing never changes the measure. Entries follow the
- * source frame's light table, identified by render id.
+ * source frame's light head, identified by render id.
  */
 typedef struct VkrLocalLightContributionSample {
   uint64_t submit_value;
   uint64_t source_frame_index;
   uint32_t light_count;
-  uint32_t render_ids[VKR_MAX_SCENE_POINT_LIGHTS];
-  uint32_t contribution[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint32_t render_ids[VKR_POINT_LIGHT_GRID_LIGHT_MAX];
+  uint32_t contribution[VKR_POINT_LIGHT_GRID_LIGHT_MAX];
   bool8_t valid;
 } VkrLocalLightContributionSample;
 

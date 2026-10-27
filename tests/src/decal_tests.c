@@ -100,25 +100,30 @@ static bool32_t test_decal_box_maps_back_and_is_found(void) {
 }
 
 /* Small decals far apart keep cells of their own, and the grid represents
-   the last row of a full frame table. */
+   the last row it can name and ignores the rows past it. */
 static bool32_t test_decal_grid_separates_decals_and_holds_full_table(void) {
   printf(
       "  Running test_decal_grid_separates_decals_and_holds_full_table...\n");
-  VkrDecal decals[VKR_MAX_FRAME_DECALS];
-  for (uint32_t i = 0u; i < VKR_MAX_FRAME_DECALS; ++i) {
+  VkrDecal decals[VKR_DECAL_GRID_DECAL_MAX + 1u];
+  for (uint32_t i = 0u; i < ArrayCount(decals); ++i) {
     decals[i] = decal_test_decal(mat4_translate(vec3_new(
         (float32_t)(i % 8u) * 40.0f, 0.0f, (float32_t)(i / 8u) * 40.0f)));
   }
   VkrDecalGrid grid;
-  vkr_decal_grid_build(decals, VKR_MAX_FRAME_DECALS, &grid);
+  vkr_decal_grid_build(decals, ArrayCount(decals), &grid);
   assert(grid.cell_count > 0u && grid.cell_count <= VKR_DECAL_GRID_MAX_CELLS);
-  for (uint32_t i = 0u; i < VKR_MAX_FRAME_DECALS; ++i) {
+  for (uint32_t i = 0u; i < VKR_DECAL_GRID_DECAL_MAX; ++i) {
     const VkrDecalMask mask = vkr_decal_grid_mask_at(
         &grid, mat4_position(mat4_inverse_affine(decals[i].world_to_box)));
     assert(decal_test_mask_contains(mask, i));
-    const uint32_t neighbour = (i + 1u) % VKR_MAX_FRAME_DECALS;
+    const uint32_t neighbour = (i + 1u) % VKR_DECAL_GRID_DECAL_MAX;
     assert(!decal_test_mask_contains(mask, neighbour));
   }
+  /* The row past the grid's names lies outside its bounds. */
+  const VkrDecalMask past = vkr_decal_grid_mask_at(
+      &grid, mat4_position(mat4_inverse_affine(
+                 decals[VKR_DECAL_GRID_DECAL_MAX].world_to_box)));
+  assert(past.words[0] == 0u && past.words[1] == 0u);
   assert(grid.max_decals_per_cell == 1u);
   printf("  test_decal_grid_separates_decals_and_holds_full_table PASSED\n");
   return true_v;

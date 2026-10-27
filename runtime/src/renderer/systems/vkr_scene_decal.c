@@ -1,5 +1,6 @@
 #include "renderer/systems/vkr_scene_decal.h"
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_render_assets.h"
@@ -174,41 +175,49 @@ static float32_t decal_distance_squared(const VkrDecal *decal, Vec3 point) {
   return vec3_length_squared(vec3_sub(point, closest));
 }
 
-static void decal_frame_move(VkrSceneDecalFrame *frame, uint32_t to,
-                             uint32_t from) {
-  frame->decals[to] = frame->decals[from];
-  frame->distances[to] = frame->distances[from];
-  frame->sort_orders[to] = frame->sort_orders[from];
-  frame->sequences[to] = frame->sequences[from];
+/* The row of the farthest kept decal, the first of equals. */
+static uint32_t decal_frame_farthest(const VkrSceneDecalFrame *frame) {
+  uint32_t farthest = 0u;
+  for (uint32_t row = 1u; row < frame->count; ++row) {
+    if (frame->distances[row] > frame->distances[farthest]) {
+      farthest = row;
+    }
+  }
+  return farthest;
 }
 
-/* Inserts a decal by distance, nearest first; once the table is full, a
-   decal nearer than the farthest replaces it. */
+/* Keeps a decal while the frame has room; once it is full, a decal nearer
+   than the farthest takes that one's row. */
 static void decal_frame_keep(VkrSceneDecalFrame *frame, const VkrDecal *decal,
                              float32_t distance, int32_t sort_order) {
   const uint32_t sequence = frame->next_sequence++;
-  uint32_t slot = frame->count;
-  if (frame->count == VKR_MAX_FRAME_DECALS) {
+  if (frame->capacity == 0u) {
     frame->dropped_count++;
-    if (distance >= frame->distances[frame->count - 1u]) {
+    return;
+  }
+  uint32_t row = frame->count;
+  if (frame->count == frame->capacity) {
+    frame->dropped_count++;
+    if (distance >= frame->distances[frame->farthest]) {
       return;
     }
-    slot = frame->count - 1u;
+    row = frame->farthest;
   } else {
     frame->count++;
   }
-  while (slot > 0u && frame->distances[slot - 1u] > distance) {
-    decal_frame_move(frame, slot, slot - 1u);
-    slot--;
+  frame->decals[row] = *decal;
+  frame->distances[row] = distance;
+  frame->sort_orders[row] = sort_order;
+  frame->sequences[row] = sequence;
+  if (frame->count == frame->capacity) {
+    frame->farthest = decal_frame_farthest(frame);
   }
-  frame->decals[slot] = *decal;
-  frame->distances[slot] = distance;
-  frame->sort_orders[slot] = sort_order;
-  frame->sequences[slot] = sequence;
 }
 
-void vkr_scene_decal_frame_begin(VkrSceneDecalFrame *frame) {
+void vkr_scene_decal_frame_begin(VkrSceneDecalFrame *frame, uint32_t capacity) {
   frame->count = 0u;
+  frame->capacity = Min(capacity, VKR_MAX_FRAME_DECALS);
+  frame->farthest = 0u;
   frame->dropped_count = 0u;
   frame->next_sequence = 0u;
 }
@@ -292,26 +301,41 @@ void vkr_scene_decal_frame_append_moved(VkrSceneDecalFrame *frame,
   }
 }
 
+/* Compositing order: ascending sort order, then collection order, which is
+   unique. */
+static int32_t decal_order_compare(const void *lhs, const void *rhs) {
+  const VkrSceneDecalOrder *a = lhs;
+  const VkrSceneDecalOrder *b = rhs;
+  if (a->sort_order != b->sort_order) {
+    return a->sort_order < b->sort_order ? -1 : 1;
+  }
+  if (a->sequence != b->sequence) {
+    return a->sequence < b->sequence ? -1 : 1;
+  }
+  return 0;
+}
+
 void vkr_scene_decal_frame_finish(VkrSceneDecalFrame *frame,
                                   VkrMaterialSystem *materials) {
-  /* Compositing order: ascending sort order, then collection order. At most
-     VKR_MAX_FRAME_DECALS rows, so insertion sort. */
-  for (uint32_t i = 1u; i < frame->count; ++i) {
-    const VkrDecal decal = frame->decals[i];
-    const float32_t distance = frame->distances[i];
-    const int32_t sort_order = frame->sort_orders[i];
-    const uint32_t sequence = frame->sequences[i];
-    uint32_t slot = i;
-    while (slot > 0u && (frame->sort_orders[slot - 1u] > sort_order ||
-                         (frame->sort_orders[slot - 1u] == sort_order &&
-                          frame->sequences[slot - 1u] > sequence))) {
-      decal_frame_move(frame, slot, slot - 1u);
-      slot--;
-    }
-    frame->decals[slot] = decal;
-    frame->distances[slot] = distance;
-    frame->sort_orders[slot] = sort_order;
-    frame->sequences[slot] = sequence;
+  for (uint32_t row = 0u; row < frame->count; ++row) {
+    frame->order[row] = (VkrSceneDecalOrder){
+        .sort_order = frame->sort_orders[row],
+        .sequence = frame->sequences[row],
+        .distance = frame->distances[row],
+        .row = row,
+    };
+  }
+  vkr_sort(frame->order, frame->count, sizeof(*frame->order),
+           decal_order_compare);
+  for (uint32_t i = 0u; i < frame->count; ++i) {
+    frame->sorted[i] = frame->decals[frame->order[i].row];
+  }
+  MemCopy(frame->decals, frame->sorted,
+          (uint64_t)frame->count * sizeof(*frame->decals));
+  for (uint32_t i = 0u; i < frame->count; ++i) {
+    frame->distances[i] = frame->order[i].distance;
+    frame->sort_orders[i] = frame->order[i].sort_order;
+    frame->sequences[i] = frame->order[i].sequence;
   }
 
   /* Draws name the material's live generation, as world draws do. */
@@ -325,5 +349,4 @@ void vkr_scene_decal_frame_finish(VkrSceneDecalFrame *frame,
     }
     vkr_material_system_touch_texture_residency(materials, decal->material);
   }
-  vkr_decal_grid_build(frame->decals, frame->count, &frame->grid);
 }

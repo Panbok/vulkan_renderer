@@ -1,5 +1,6 @@
 #include "vkr_lighting_system.h"
 
+#include "containers/vkr_sort.h"
 #include "math/mat.h"
 #include "math/vkr_quat.h"
 #include "vkr_temporal.h"
@@ -21,18 +22,6 @@ typedef struct RectangleLightSyncContext {
   const VkrScene *scene;
 } RectangleLightSyncContext;
 
-/* Scratch of one ranked selection over at most VKR_POINT_LIGHT_CANDIDATE_MAX
-   lights, each array by light index. */
-typedef struct PointLightRanking {
-  VkrPointLightLimitEntry previous[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  bool8_t identified[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  VkrPointLightRankKey keys[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  uint32_t order[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  bool8_t selected[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  /** Intensity scale; zero for a light not drawn. */
-  float32_t weights[VKR_POINT_LIGHT_CANDIDATE_MAX];
-} PointLightRanking;
-
 vkr_internal bool8_t point_light_stable_precedes(const VkrPointLight *light,
                                                  const VkrPointLight *other) {
   const uint32_t stable_id = light->render_id ? light->render_id : UINT32_MAX;
@@ -49,20 +38,66 @@ vkr_internal bool8_t point_light_stable_precedes(const VkrPointLight *light,
   return light->position.z < other->position.z;
 }
 
-/* Indices of the `count` lights in stable order, ties in index order (an
-   insertion sort: a selection holds at most VKR_POINT_LIGHT_CANDIDATE_MAX). */
-vkr_internal void point_light_order_stable(const VkrPointLight *lights,
-                                           const uint32_t *indices,
-                                           uint32_t count, uint32_t *order) {
+/* Compares two sort records in stable order, ties in index order. */
+vkr_internal int32_t point_light_record_compare_stable(const void *lhs,
+                                                       const void *rhs) {
+  const VkrPointLightSortRecord *a = lhs;
+  const VkrPointLightSortRecord *b = rhs;
+  if (a->stable_id != b->stable_id) {
+    return a->stable_id < b->stable_id ? -1 : 1;
+  }
+  if (a->position.x != b->position.x) {
+    return a->position.x < b->position.x ? -1 : 1;
+  }
+  if (a->position.y != b->position.y) {
+    return a->position.y < b->position.y ? -1 : 1;
+  }
+  if (a->position.z != b->position.z) {
+    return a->position.z < b->position.z ? -1 : 1;
+  }
+  if (a->index != b->index) {
+    return a->index < b->index ? -1 : 1;
+  }
+  return 0;
+}
+
+/* Compares two sort records by key, then in stable order. */
+vkr_internal int32_t point_light_record_compare_rank(const void *lhs,
+                                                     const void *rhs) {
+  const VkrPointLightSortRecord *a = lhs;
+  const VkrPointLightSortRecord *b = rhs;
+  if (a->key.range_distance != b->key.range_distance) {
+    return a->key.range_distance < b->key.range_distance ? -1 : 1;
+  }
+  if (a->key.center_distance != b->key.center_distance) {
+    return a->key.center_distance < b->key.center_distance ? -1 : 1;
+  }
+  return point_light_record_compare_stable(lhs, rhs);
+}
+
+/* Writes to `order` the indices of `count` lights, `indices` or the first
+   `count` when NULL, sorted in stable order or, with `keys`, by key then in
+   stable order; ties go in index order. `records` holds `count` records. */
+vkr_internal void point_light_order(const VkrPointLight *lights,
+                                    const VkrPointLightRankKey *keys,
+                                    const uint32_t *indices, uint32_t count,
+                                    VkrPointLightSortRecord *records,
+                                    uint32_t *order) {
   for (uint32_t i = 0u; i < count; ++i) {
     const uint32_t index = indices ? indices[i] : i;
-    uint32_t insert = i;
-    while (insert > 0u && point_light_stable_precedes(
-                              &lights[index], &lights[order[insert - 1u]])) {
-      order[insert] = order[insert - 1u];
-      --insert;
-    }
-    order[insert] = index;
+    const VkrPointLight *light = &lights[index];
+    records[i] = (VkrPointLightSortRecord){
+        .key = keys ? keys[index] : (VkrPointLightRankKey){0},
+        .stable_id = light->render_id ? light->render_id : UINT32_MAX,
+        .position = light->position,
+        .index = index,
+    };
+  }
+  vkr_sort(records, count, sizeof(*records),
+           keys ? point_light_record_compare_rank
+                : point_light_record_compare_stable);
+  for (uint32_t i = 0u; i < count; ++i) {
+    order[i] = records[i].index;
   }
 }
 
@@ -198,36 +233,6 @@ vkr_internal bool8_t point_light_key_precedes(const VkrPointLight *light,
   return point_light_stable_precedes(light, other);
 }
 
-vkr_internal bool8_t point_light_rank_precedes(const VkrPointLight *lights,
-                                               const VkrPointLightRankKey *keys,
-                                               uint32_t index, uint32_t other) {
-  if (point_light_key_precedes(&lights[index], keys[index], &lights[other],
-                               keys[other])) {
-    return true_v;
-  }
-  if (point_light_key_precedes(&lights[other], keys[other], &lights[index],
-                               keys[index])) {
-    return false_v;
-  }
-  return index < other;
-}
-
-/* Indices of the `count` lights in rank order (an insertion sort: a
-   selection holds at most VKR_POINT_LIGHT_CANDIDATE_MAX). */
-vkr_internal void point_light_order_by_rank(const VkrPointLight *lights,
-                                            const VkrPointLightRankKey *keys,
-                                            uint32_t count, uint32_t *order) {
-  for (uint32_t i = 0u; i < count; ++i) {
-    uint32_t insert = i;
-    while (insert > 0u &&
-           point_light_rank_precedes(lights, keys, i, order[insert - 1u])) {
-      order[insert] = order[insert - 1u];
-      --insert;
-    }
-    order[insert] = i;
-  }
-}
-
 /* The previous frame's state of the light with `render_id`, or zero. */
 vkr_internal VkrPointLightLimitEntry point_light_selection_find(
     const VkrPointLightSelection *state, uint32_t render_id) {
@@ -248,19 +253,16 @@ vkr_internal VkrPointLightLimitEntry point_light_selection_find(
   return (VkrPointLightLimitEntry){0};
 }
 
-/* Records one light's state, sorted by render id for the lookups. A
-   selection records at most its selected and its drawn lights, two tables'
-   worth. */
-vkr_internal void point_light_selection_store(VkrPointLightSelection *state,
-                                              VkrPointLightLimitEntry entry) {
-  uint32_t insert = state->entry_count;
-  while (insert > 0u &&
-         state->entries[insert - 1u].render_id > entry.render_id) {
-    state->entries[insert] = state->entries[insert - 1u];
-    --insert;
+/* Orders selection entries by render id, which identified lights hold
+   uniquely, for the lookups. */
+vkr_internal int32_t point_light_entry_compare(const void *lhs,
+                                               const void *rhs) {
+  const VkrPointLightLimitEntry *a = lhs;
+  const VkrPointLightLimitEntry *b = rhs;
+  if (a->render_id != b->render_id) {
+    return a->render_id < b->render_id ? -1 : 1;
   }
-  state->entries[insert] = entry;
-  state->entry_count++;
+  return 0;
 }
 
 /* A first frame, a camera cut or an unusable step has no state worth
@@ -287,10 +289,11 @@ point_light_selection_snaps(const VkrPointLightSelection *state,
 vkr_internal uint32_t point_light_rank_and_fade(
     const VkrPointLightSelection *state, const VkrPointLight *lights,
     uint32_t count, Vec3 camera_position, float32_t step, bool8_t snap,
-    bool8_t fade_in, uint32_t light_max, PointLightRanking *ranking) {
+    bool8_t fade_in, uint32_t light_max, VkrPointLightRanking *ranking) {
   light_max = Min(light_max, VKR_MAX_SCENE_POINT_LIGHTS);
   /* Lights sharing a render id are neighbours in stable order. */
-  point_light_order_stable(lights, NULL, count, ranking->order);
+  point_light_order(lights, NULL, NULL, count, ranking->records,
+                    ranking->order);
   for (uint32_t k = 0u; k < count; ++k) {
     const uint32_t render_id = lights[ranking->order[k]].render_id;
     ranking->identified[ranking->order[k]] =
@@ -307,8 +310,10 @@ vkr_internal uint32_t point_light_rank_and_fade(
     ranking->keys[i] = point_light_rank_key(&lights[i], camera_position,
                                             ranking->previous[i].selected);
     ranking->weights[i] = 0.0f;
+    ranking->head[i] = false_v;
   }
-  point_light_order_by_rank(lights, ranking->keys, count, ranking->order);
+  point_light_order(lights, ranking->keys, NULL, count, ranking->records,
+                    ranking->order);
   for (uint32_t rank = 0u; rank < count; ++rank) {
     ranking->selected[ranking->order[rank]] = rank < light_max;
   }
@@ -344,9 +349,11 @@ vkr_internal uint32_t point_light_rank_and_fade(
 
 /* Records the state the next frame ranks and fades from: the identified
    lights selected or drawn, and whether `offered` lights competed. */
-vkr_internal void point_light_selection_record(
-    VkrPointLightSelection *state, const VkrPointLight *lights, uint32_t count,
-    const PointLightRanking *ranking, Vec3 camera_position, uint32_t offered) {
+vkr_internal void
+point_light_selection_record(VkrPointLightSelection *state,
+                             const VkrPointLight *lights, uint32_t count,
+                             const VkrPointLightRanking *ranking,
+                             Vec3 camera_position, uint32_t offered) {
   state->entry_count = 0u;
   uint32_t drawn_count = 0u;
   bool8_t fading = false_v;
@@ -359,13 +366,17 @@ vkr_internal void point_light_selection_record(
     if (!ranking->identified[i] || (!ranking->selected[i] && weight <= 0.0f)) {
       continue;
     }
-    point_light_selection_store(state, (VkrPointLightLimitEntry){
-                                           .render_id = lights[i].render_id,
-                                           .weight = weight,
-                                           .selected = ranking->selected[i],
-                                           .shadowed = lights[i].casts_shadow,
-                                       });
+    /* At most the selected and the drawn lights, two tables' worth. */
+    state->entries[state->entry_count++] = (VkrPointLightLimitEntry){
+        .render_id = lights[i].render_id,
+        .weight = weight,
+        .selected = ranking->selected[i],
+        .shadowed = lights[i].casts_shadow,
+        .head = ranking->head[i],
+    };
   }
+  vkr_sort(state->entries, state->entry_count, sizeof(*state->entries),
+           point_light_entry_compare);
   state->camera = camera_position;
   state->contended = fading || offered > drawn_count;
   state->valid = true_v;
@@ -390,7 +401,7 @@ point_light_candidate_remove(VkrPointLightCandidates *candidates,
   }
 }
 
-/* Keeps the VKR_MAX_SCENE_POINT_LIGHTS baked lamps nearest the camera: in
+/* Keeps the VKR_POINT_LIGHT_GRID_LIGHT_MAX baked lamps nearest the camera: in
    offer order while they fit, then a nearer lamp replaces the farthest. */
 vkr_internal void point_light_offer_baked_lamp(VkrLightingSystem *system,
                                                const VkrPointLight *lamp) {
@@ -677,16 +688,20 @@ void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
       point_light_rank_key(light, candidates->camera, previous.selected);
   const bool8_t showing = previous.weight > 0.0f;
 
-  /* Its place among the best offered so far; past them it stays only while
-     it still shows, to fade out in its slot. */
-  uint32_t rank = candidates->best_count;
-  while (rank > 0u) {
-    const uint32_t other = candidates->best[rank - 1u];
-    if (!point_light_key_precedes(light, key, &candidates->lights[other],
-                                  candidates->keys[other])) {
-      break;
+  /* Its place among the best offered so far, which are in rank order;
+     past them it stays only while it still shows, to fade out in its
+     slot. */
+  uint32_t rank = 0u;
+  uint32_t end = candidates->best_count;
+  while (rank < end) {
+    const uint32_t middle = rank + (end - rank) / 2u;
+    const uint32_t other = candidates->best[middle];
+    if (point_light_key_precedes(light, key, &candidates->lights[other],
+                                 candidates->keys[other])) {
+      end = middle;
+    } else {
+      rank = middle + 1u;
     }
-    --rank;
   }
   const bool8_t best = rank < VKR_MAX_SCENE_POINT_LIGHTS;
   if (!best && !showing) {
@@ -709,9 +724,9 @@ void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
   if (!best) {
     return;
   }
-  for (uint32_t i = candidates->best_count; i > rank; --i) {
-    candidates->best[i] = candidates->best[i - 1u];
-  }
+  MemCopy(&candidates->best[rank + 1u], &candidates->best[rank],
+          (uint64_t)(candidates->best_count - rank) *
+              sizeof(*candidates->best));
   candidates->best[rank] = slot;
   candidates->best_count++;
 }
@@ -722,35 +737,52 @@ void vkr_lighting_system_select_point_lights(VkrLightingSystem *system) {
   }
   const VkrPointLightCandidates *candidates = &system->point_light_candidates;
   const VkrPointLightSelection *state = &system->point_light_selection;
-  PointLightRanking ranking;
+  VkrPointLightRanking *ranking = &system->point_light_ranking;
   (void)point_light_rank_and_fade(state, candidates->lights, candidates->count,
                                   candidates->camera, candidates->step,
                                   candidates->snap, state->contended,
-                                  VKR_MAX_SCENE_POINT_LIGHTS, &ranking);
-  point_light_selection_record(&system->point_light_selection_next,
-                               candidates->lights, candidates->count, &ranking,
-                               candidates->camera, candidates->offered);
+                                  VKR_MAX_SCENE_POINT_LIGHTS, ranking);
 
-  /* The drawn lights, at most a table's worth, in render id order, scaled
-     by their fade. */
+  /* The drawn lights, at most a table's worth, ranked for the head: a light
+     in the previous frame's head ranks with the incumbent bonus, so lights
+     at its edge do not trade rows and shadows every frame. */
   uint32_t drawn[VKR_MAX_SCENE_POINT_LIGHTS];
   uint32_t drawn_count = 0u;
   for (uint32_t i = 0u; i < candidates->count; ++i) {
-    if (ranking.weights[i] > 0.0f) {
+    if (ranking->weights[i] > 0.0f) {
+      ranking->keys[i] =
+          point_light_rank_key(&candidates->lights[i], candidates->camera,
+                               ranking->previous[i].head);
       drawn[drawn_count++] = i;
     }
   }
-  uint32_t order[VKR_MAX_SCENE_POINT_LIGHTS];
-  point_light_order_stable(candidates->lights, drawn, drawn_count, order);
+  uint32_t ranked[VKR_MAX_SCENE_POINT_LIGHTS];
+  point_light_order(candidates->lights, ranking->keys, drawn, drawn_count,
+                    ranking->records, ranked);
+  const uint32_t head_count = Min(drawn_count, VKR_POINT_LIGHT_GRID_LIGHT_MAX);
+  for (uint32_t i = 0u; i < head_count; ++i) {
+    ranking->head[ranked[i]] = true_v;
+  }
+  point_light_selection_record(&system->point_light_selection_next,
+                               candidates->lights, candidates->count, ranking,
+                               candidates->camera, candidates->offered);
+
+  /* The head, then the rest, each in render id order and scaled by its
+     fade; only the head casts local shadows. */
+  point_light_order(candidates->lights, NULL, ranked, head_count,
+                    ranking->records, drawn);
+  point_light_order(candidates->lights, NULL, ranked + head_count,
+                    drawn_count - head_count, ranking->records,
+                    drawn + head_count);
   for (uint32_t i = 0u; i < drawn_count; ++i) {
-    VkrPointLight light = candidates->lights[order[i]];
+    VkrPointLight light = candidates->lights[drawn[i]];
     system->point_light_unfaded_intensity[i] = light.intensity;
-    light.intensity *= ranking.weights[order[i]];
+    light.intensity *= ranking->weights[drawn[i]];
+    light.casts_shadow = light.casts_shadow && i < head_count;
     system->point_lights[i] = light;
   }
   system->point_light_count = drawn_count;
   system->point_light_dropped_count = candidates->offered - drawn_count;
-  vkr_lighting_system_build_point_light_grid(system);
   system->dirty = true_v;
 }
 
@@ -794,51 +826,48 @@ void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
   const float32_t step =
       snap ? 1.0f
            : Min(delta_seconds / VKR_POINT_LIGHT_LIMIT_FADE_SECONDS, 1.0f);
-  PointLightRanking ranking;
+  VkrPointLightRanking *ranking = &system->point_light_ranking;
   (void)point_light_rank_and_fade(state, system->point_lights, count,
                                   camera_position, step, snap, true_v,
-                                  light_max, &ranking);
+                                  light_max, ranking);
 
   /* Shadows go to the nearest drawn and selected casters, incumbents
      weighted. A fading-out light loses its shadow, which the local shadow
      cache fades out. */
   for (uint32_t i = 0u; i < count; ++i) {
-    ranking.keys[i] =
+    ranking->keys[i] =
         point_light_rank_key(&system->point_lights[i], camera_position,
-                             ranking.previous[i].shadowed);
+                             ranking->previous[i].shadowed);
   }
-  point_light_order_by_rank(system->point_lights, ranking.keys, count,
-                            ranking.order);
+  point_light_order(system->point_lights, ranking->keys, NULL, count,
+                    ranking->records, ranking->order);
   uint32_t shadowed = 0u;
   for (uint32_t rank = 0u; rank < count; ++rank) {
-    const uint32_t i = ranking.order[rank];
+    const uint32_t i = ranking->order[rank];
     VkrPointLight *light = &system->point_lights[i];
-    light->casts_shadow = light->casts_shadow && ranking.weights[i] > 0.0f &&
-                          ranking.selected[i] && shadowed < shadow_max;
+    light->casts_shadow = light->casts_shadow && ranking->weights[i] > 0.0f &&
+                          ranking->selected[i] && shadowed < shadow_max;
     if (light->casts_shadow) {
       ++shadowed;
     }
   }
-  point_light_selection_record(state, system->point_lights, count, &ranking,
+  point_light_selection_record(state, system->point_lights, count, ranking,
                                camera_position, count);
 
   /* The drawn lights keep their table order, scaled by their fade. */
   uint32_t kept = 0u;
   for (uint32_t i = 0u; i < count; ++i) {
-    if (ranking.weights[i] <= 0.0f) {
+    if (ranking->weights[i] <= 0.0f) {
       continue;
     }
     VkrPointLight light = system->point_lights[i];
-    light.intensity *= ranking.weights[i];
+    light.intensity *= ranking->weights[i];
     system->point_light_unfaded_intensity[kept] =
         system->point_light_unfaded_intensity[i];
     system->point_lights[kept++] = light;
   }
   system->point_light_count = kept;
   system->point_light_dropped_count += count - kept;
-  if (kept != count) {
-    vkr_lighting_system_build_point_light_grid(system);
-  }
   system->dirty = true_v;
 }
 

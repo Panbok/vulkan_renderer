@@ -107,7 +107,7 @@ void vkr_shadow_system_set_depth_range_sample(
 void vkr_shadow_system_set_light_contribution_sample(
     VkrShadowSystem *system, const VkrLocalLightContributionSample *sample) {
   if (!system || !sample || !sample->valid ||
-      sample->light_count > VKR_MAX_SCENE_POINT_LIGHTS ||
+      sample->light_count > VKR_POINT_LIGHT_GRID_LIGHT_MAX ||
       (system->light_contribution.valid &&
        sample->submit_value <= system->light_contribution.submit_value))
     return;
@@ -2848,16 +2848,17 @@ void vkr_shadow_system_resolve_local_shadows(
       shadow_count - static_count > system->config.reuse_dynamic_scan_budget;
   uint8_t dynamic_faces[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX] = {0};
   bool8_t dynamic_refractive[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX] = {0};
+  /* Only the light head casts local shadows. */
   const uint32_t bounded_light_count =
-      Min(light_count, VKR_MAX_SCENE_POINT_LIGHTS);
+      Min(light_count, VKR_POINT_LIGHT_GRID_LIGHT_MAX);
   const uint32_t bounded_lamp_count =
-      baked_lamps ? Min(baked_lamp_count, VKR_MAX_SCENE_POINT_LIGHTS) : 0u;
-  uint8_t lamp_faces[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+      baked_lamps ? Min(baked_lamp_count, VKR_POINT_LIGHT_GRID_LIGHT_MAX) : 0u;
+  uint8_t lamp_faces[VKR_POINT_LIGHT_GRID_LIGHT_MAX] = {0};
   /* Each baked lamp's score: its light at the moving casters the camera may
      see on a face it may see, each weighted by its nearness to the camera.
      A caster whose rooms are hidden from the camera scores nothing. */
-  uint8_t lamp_visible_faces[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
-  float32_t lamp_score[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  uint8_t lamp_visible_faces[VKR_POINT_LIGHT_GRID_LIGHT_MAX] = {0};
+  float32_t lamp_score[VKR_POINT_LIGHT_GRID_LIGHT_MAX] = {0};
   const bool8_t camera_projection =
       camera && MemCompare(&camera->projection, &(Mat4){0}, sizeof(Mat4)) != 0;
   const VkrFrustum camera_frustum =
@@ -2969,8 +2970,7 @@ void vkr_shadow_system_resolve_local_shadows(
 
   const VkrLocalShadowCacheInput input = {
       .lights = selected_count != 0u ? combined : lights,
-      .light_count = selected_count != 0u ? bounded_light_count + selected_count
-                                          : light_count,
+      .light_count = bounded_light_count + selected_count,
       .unfaded_intensity = unfaded_intensity,
       .baked_light_count = selected_count,
       .baked_fading_mask = fading_mask,

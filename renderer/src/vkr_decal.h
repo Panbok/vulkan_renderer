@@ -9,8 +9,10 @@
  * lookup. Only the tiled pipeline draws them; it lays each decal's base colour
  * over the opaque surfaces inside its box before lighting. */
 
-/** Decals one frame carries: the runtime keeps those nearest the camera. */
-#define VKR_MAX_FRAME_DECALS 64u
+/** Decals one frame carries: the runtime keeps those nearest the camera, at
+ * most VKR_DECAL_GRID_DECAL_MAX for the tiled pipeline, whose CPU grid names
+ * them all. The desktop pipeline's GPU clusters read the whole table. */
+#define VKR_MAX_FRAME_DECALS 512u
 /** Frame table rows the CPU decal grid can name: it places only the rows
  * below min(count, VKR_DECAL_GRID_DECAL_MAX). The table may outgrow it; the
  * grid's mask width follows this limit, not the table. */

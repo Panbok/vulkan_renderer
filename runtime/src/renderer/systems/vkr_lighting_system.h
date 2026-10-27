@@ -20,6 +20,9 @@ typedef struct VkrPointLightLimitEntry {
   bool8_t selected;
   /** The light held a shadow; it ranks for shadows with the bonus. */
   bool8_t shadowed;
+  /** The light was in the table's head; it ranks for the head with the
+   * bonus. */
+  bool8_t head;
 } VkrPointLightLimitEntry;
 
 /** Lights a selection's state records: the selected lights and the drawn
@@ -51,6 +54,32 @@ typedef struct VkrPointLightRankKey {
 /** Point lights the scene syncs keep while they rank: a table's worth of the
  * best and the lights that still show from the previous frame. */
 #define VKR_POINT_LIGHT_CANDIDATE_MAX (2u * VKR_MAX_SCENE_POINT_LIGHTS)
+
+/** What a ranked order compares of one light, copied so the library sort
+ * needs no context: its key, its stable identity and its index. */
+typedef struct VkrPointLightSortRecord {
+  VkrPointLightRankKey key;
+  /** Render id, zero sorting last, then position. */
+  uint32_t stable_id;
+  Vec3 position;
+  uint32_t index;
+} VkrPointLightSortRecord;
+
+/** Scratch of one ranked selection over at most
+ * VKR_POINT_LIGHT_CANDIDATE_MAX lights, each array by light index except
+ * `order` and `records`. Too large for a stack frame at these limits. */
+typedef struct VkrPointLightRanking {
+  VkrPointLightLimitEntry previous[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  bool8_t identified[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  VkrPointLightRankKey keys[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  uint32_t order[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  bool8_t selected[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  /** The light is in the table's head. */
+  bool8_t head[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  /** Intensity scale; zero for a light not drawn. */
+  float32_t weights[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  VkrPointLightSortRecord records[VKR_POINT_LIGHT_CANDIDATE_MAX];
+} VkrPointLightRanking;
 
 /** The frame's point-light candidates, gathered by the scene syncs in
  * bounded storage however many lights the scenes hold. */
@@ -91,8 +120,11 @@ typedef struct VkrLightingSystem {
     float32_t sun_angular_diameter_degrees;
   } directional;
 
-  /* The scene table: the point lights nearest the camera, in render id
-     order, each scaled by its selection fade (ADR-019). */
+  /* The scene table: the point lights nearest the camera, each scaled by
+     its selection fade (ADR-019). Its head, the first
+     min(count, VKR_POINT_LIGHT_GRID_LIGHT_MAX) rows, holds the best ranked;
+     only head rows cast shadows. Head and rest are each in render id order,
+     so a light changes row only when it enters or leaves the head. */
   VkrPointLight point_lights[VKR_MAX_SCENE_POINT_LIGHTS];
   /* Each table light's intensity before its fades, which sizes its local
      shadow: a light fading out keeps its shadow's size while it shows. */
@@ -105,11 +137,13 @@ typedef struct VkrLightingSystem {
   bool8_t static_lights_baked;
   /* The shadow-casting static lamps the table leaves out for being baked:
      the desktop pipeline shadows its moving casters under the nearest of
-     them (ADR-104). Past VKR_MAX_SCENE_POINT_LIGHTS the syncs keep those
-     nearest the camera. */
-  VkrPointLight baked_lamps[VKR_MAX_SCENE_POINT_LIGHTS];
-  VkrPointLightRankKey baked_lamp_keys[VKR_MAX_SCENE_POINT_LIGHTS];
+     them (ADR-104). Past VKR_POINT_LIGHT_GRID_LIGHT_MAX, the shadowed head's
+     width, the syncs keep those nearest the camera. */
+  VkrPointLight baked_lamps[VKR_POINT_LIGHT_GRID_LIGHT_MAX];
+  VkrPointLightRankKey baked_lamp_keys[VKR_POINT_LIGHT_GRID_LIGHT_MAX];
   uint32_t baked_lamp_count;
+  /* Built only for the tiled pipeline, which reads it
+     (vkr_lighting_system_build_point_light_grid); zero otherwise. */
   VkrPointLightGrid point_light_grid;
 
   VkrRectangleLight rectangle_lights[VKR_MAX_SCENE_RECTANGLE_LIGHTS];
@@ -126,6 +160,8 @@ typedef struct VkrLightingSystem {
   /* State of vkr_lighting_system_limit_point_lights from its last call. The
      scene syncs leave it alone. */
   VkrPointLightSelection point_light_limit;
+  /* Scratch of the selection running now. */
+  VkrPointLightRanking point_light_ranking;
 
   /* Leaves out of the frame the scene lights that light nothing the camera
      sees, as rooms decide (vkr_scene_rooms_light_hidden); NULL keeps every
@@ -196,7 +232,7 @@ void vkr_lighting_system_begin_point_lights(VkrLightingSystem *system,
 void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
                                            const VkrPointLight *light);
 
-/** Selects the scene table from the candidates and rebuilds the grid. The
+/** Selects the scene table from the candidates. The
  * VKR_MAX_SCENE_POINT_LIGHTS nearest the camera by the distance to their
  * range are selected, ties by the distance to their centre and then by
  * render id; a light selected in the previous frame ranks with the incumbent
@@ -204,8 +240,11 @@ void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
  * over VKR_POINT_LIGHT_LIMIT_FADE_SECONDS once a slot is free and a light no
  * longer selected fades out in its slot, keeping its shadow; without
  * competition every offered light shows at full intensity, as new content
- * does. The table keeps render id order. Calling it again in the same frame
- * selects again from the same previous state. */
+ * does. The VKR_POINT_LIGHT_GRID_LIGHT_MAX drawn lights ranked best, a light
+ * in the previous frame's head with the incumbent bonus, form the head;
+ * lights past it lose their shadow. Head and rest each keep render id order.
+ * Calling it again in the same frame selects again from the same previous
+ * state. Leaves the grid alone. */
 void vkr_lighting_system_select_point_lights(VkrLightingSystem *system);
 
 /** A white Lambertian surface lit head-on by a directional light of
@@ -237,7 +276,7 @@ void vkr_lighting_system_apply_atmosphere_light(
  * newly selected light takes a slot once one is free, so at most
  * `light_max` lights draw. The first call, a camera cut and an invalid
  * `delta_seconds` snap every selected light to full intensity. Keeps the
- * table order of the drawn lights and rebuilds the grid when lights drop. */
+ * table order of the drawn lights; the caller rebuilds the grid. */
 void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
                                             Vec3 camera_position,
                                             float32_t delta_seconds,
@@ -245,8 +284,8 @@ void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
                                             uint32_t shadow_max);
 
 /** Rebuilds the conservative world-space lookup from the point_lights rows
- * below VKR_POINT_LIGHT_GRID_LIGHT_MAX. Public for deterministic CPU coverage
- * tests; scene sync calls it automatically. */
+ * below VKR_POINT_LIGHT_GRID_LIGHT_MAX. Only the tiled pipeline reads it;
+ * call it after the table's last change of the frame. */
 void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system);
 
 /** Returns the global-plus-cell mask used for a world-space fragment. */

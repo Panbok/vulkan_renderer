@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-27
 authority: adr
 ---
 
@@ -16,6 +16,10 @@ roughness, metalness, occlusion and emissive decals are future work. A
 selected decal draws its box and projection arrow
 ([ADR-100](100-lighting-tools.md)), and the Decal tool and `decal.place`
 place decals facing a surface ([ADR-101](101-decal-placement.md)).
+Since 2026-10-27 the desktop pipeline keeps up to 512 decals a frame and
+finds them in GPU-built frustum clusters
+([ADR-135](135-desktop-light-and-decal-clusters.md)); the tiled pipeline
+keeps 64 and the CPU decal grid.
 
 ## Context
 
@@ -64,17 +68,21 @@ it lights them, so the surface's own material model shades the result.
    rather than the default surface material over its box.
 3. **Frame selection.** Each frame the runtime collects the enabled, visible
    decals of the rendered and additive scenes with an invertible box, keeps
-   the 64 nearest the camera by the distance to their bounds
-   (`VKR_MAX_FRAME_DECALS`), and orders them for compositing by ascending
-   sort order, then the order their components were added in. It keeps the
-   kept decals' textures resident and builds a camera-independent world
-   grid of at most 256 cubic cells at least 2 m wide over their bounds,
-   with a 64-bit decal mask per cell (`VkrDecalGrid`,
-   [`vkr_decal.h`](../../renderer/src/vkr_decal.h)). The point-light grid and
-   the decal grid size their cells through the same `vkr_world_grid_fit`.
-   The world payload carries the table and grid (`VkrWorldPassPayload`);
-   frame validation rejects a non-finite or singular box, unordered fades
-   and a grid that cannot hold the table.
+   the nearest the camera by the distance to their bounds, and orders them
+   for compositing by ascending sort order, then the order their components
+   were added in. The tiled pipeline keeps 64 (`VKR_DECAL_GRID_DECAL_MAX`)
+   and the desktop pipeline 512 (`VKR_MAX_FRAME_DECALS`). It keeps the kept
+   decals' textures resident. For the tiled pipeline only, it builds a
+   camera-independent world grid of at most 256 cubic cells at least 2 m
+   wide over their bounds, with a 64-bit decal mask per cell (`VkrDecalGrid`,
+   [`vkr_decal.h`](../../renderer/src/vkr_decal.h)); the desktop pipeline
+   bins decals on the GPU ([ADR-135](135-desktop-light-and-decal-clusters.md)).
+   The point-light grid and the decal grid size their cells through the same
+   `vkr_world_grid_fit`. The world payload carries the table and, on the
+   tiled pipeline, the grid (`VkrWorldPassPayload`); frame validation rejects
+   a non-finite or singular box, unordered fades and a grid that cannot hold
+   the table, and the renderer rejects a tiled frame with decals and no
+   grid.
 4. **Tiled shading.** The Metal frame root names a 48-byte
    `VkrMetalPacketDecals` record at byte 568, the root's former tail
    padding, with 80-byte rows and the grid's masks. After the surface's
@@ -98,7 +106,11 @@ it lights them, so the surface's own material model shades the result.
    same shader code as before decals. The editor's inspection variants
    always shade decals. The tiled pipeline creates 50 shading pipeline
    states instead of 30.
-6. **Desktop.** The runtime collects decals for both pipelines. Vulkan
+6. **Desktop.** Since 2026-10-27 frustum clusters replace the grid's
+   masks, origin and dimensions below
+   ([ADR-135](135-desktop-light-and-decal-clusters.md)); the rows, box,
+   fade and compositing rules stand. The runtime collects decals for both
+   pipelines. Vulkan
    uploads each frame's rows as 80-byte `VkrVulkanDecalRow`s, packed as the
    tiled pipeline packs its rows, with the grid's masks; a decal whose
    material has not published keeps its row with zero opacity, so grid bits
@@ -257,8 +269,8 @@ and of its parent, `741eaac6`, measured with `performance-windowed-gpu`.
 - A decal box lays its texture on every opaque surface inside it that faces
   its +Y within the fade angles, including moving and skinned meshes that
   pass through it.
-- Beyond 64 decals the farthest drop, so a frame can lose a distant decal
-  when many are near.
+- Beyond 64 decals on the tiled pipeline, and 512 on the desktop pipeline,
+  the farthest drop, so a frame can lose a distant decal when many are near.
 - A material's base colour sampler repeats, so a texture whose border is
   opaque bleeds its opposite edge into a decal's outermost texels.
 - The tiled pipeline compiles 20 more shading pipelines at startup.
@@ -287,7 +299,7 @@ and of its parent, `741eaac6`, measured with `performance-windowed-gpu`.
 - Decals need normal, roughness or emissive channels, an atlas rectangle, or
   a receive-decals flag on meshes; [Decal channels and
   receivers](../proposals/decal-channels-and-receivers.md) holds a design.
-- A scene keeps more than 64 decals near the camera.
+- A scene keeps more than 64 decals near the camera on the tiled pipeline.
 - Scenes built from smaller meshes leave most of a view to draws that touch
   no decal: then a decal culling view (see Alternatives considered) pays.
 - A shader profile gives the forward variants' register counts, which would

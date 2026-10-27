@@ -46,8 +46,10 @@ vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
       packet->input.globals.ambient_color.z * pre_exposure, inverse_height};
 
   /* The grid block stays zeroed unless finite lights actually populated it;
-     an empty grid must not publish a cell size or dimensions. */
-  if (lighting && lighting->point_light_count > 0) {
+     an empty grid must not publish a cell size or dimensions. Only the tiled
+     pipeline's frames carry the grid. */
+  if (lighting && lighting->point_light_count > 0 &&
+      lighting->point_light_grid) {
     const VkrPointLightGrid *grid = lighting->point_light_grid;
     constants.point_light_grid_origin_cell_size =
         (Vec4){grid->origin.x, grid->origin.y, grid->origin.z, grid->cell_size};

@@ -92,7 +92,10 @@ static void select_local_lights(const VkrFrameInput *input,
    * finite where the float equivalents would overflow. */
   float64_t scores[2] = {-1.0, -1.0};
   uint32_t identities[2] = {UINT32_MAX, UINT32_MAX};
-  for (uint32_t i = 0; i < input->lighting->point_light_count; ++i) {
+  /* Only the light head casts local shadows. */
+  const uint32_t shadow_rows =
+      Min(input->lighting->point_light_count, VKR_POINT_LIGHT_GRID_LIGHT_MAX);
+  for (uint32_t i = 0; i < shadow_rows; ++i) {
     const VkrPointLight *light = &input->lighting->point_lights[i];
     const uint32_t first = input->local_shadow->light_first_view[i];
     const uint32_t faces =

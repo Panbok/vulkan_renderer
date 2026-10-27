@@ -665,7 +665,9 @@ typedef struct VkrLocalShadowPassPayload {
    * the opaque content it already holds and draws only its transmission
    * layer. */
   uint64_t retained_opaque_mask;
-  uint32_t light_first_view[VKR_MAX_SCENE_POINT_LIGHTS];
+  /** Per light head row: its first view + 1; zero without a shadow. Rows
+   * past the head cast no local shadow. */
+  uint32_t light_first_view[VKR_POINT_LIGHT_GRID_LIGHT_MAX];
   uint32_t dynamic_source_views[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
   VkrLocalShadowView views[VKR_LOCAL_SHADOW_VIEW_CAPACITY];
 } VkrLocalShadowPassPayload;

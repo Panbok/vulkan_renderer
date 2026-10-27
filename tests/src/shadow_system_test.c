@@ -1583,7 +1583,7 @@ vkr_internal void test_local_shadow_baked_lamp_selection(void) {
   assert(local.baked_lamp_candidates == 3u && local.baked_lamp_count == 2u);
   assert(local.view_count == 24u);
   assert(local.dynamic_render_count == 2u && local.render_count == 14u);
-  for (uint32_t i = 0u; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i)
+  for (uint32_t i = 0u; i < VKR_POINT_LIGHT_GRID_LIGHT_MAX; ++i)
     assert(local.light_first_view[i] == 0u);
   /* The lamp above the caster ranks first; the near-camera lamp loses. */
   assert(local.baked_lamps[0].light.render_id == 30u &&

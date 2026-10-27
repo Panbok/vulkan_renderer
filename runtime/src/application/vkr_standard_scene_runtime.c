@@ -1638,8 +1638,14 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
   /* Both pipelines draw decals (ADR-092); their textures join this frame's
      residency demand. */
   if (!draw->scene_stopped) {
+    /* The tiled pipeline reads the decals through their CPU grid, which
+       names at most VKR_DECAL_GRID_DECAL_MAX; the desktop pipeline bins the
+       whole table on the GPU. */
+    const bool8_t tiled =
+        application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
     VkrSceneDecalFrame *decals = &application->decal_frame;
-    vkr_scene_decal_frame_begin(decals);
+    vkr_scene_decal_frame_begin(decals, tiled ? VKR_DECAL_GRID_DECAL_MAX
+                                              : VKR_MAX_FRAME_DECALS);
     vkr_scene_decal_frame_append(
         decals, vkr_standard_scene_runtime_render_scene(application),
         application->globals.view_position);
@@ -1658,7 +1664,10 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
     if (decals->count > 0u) {
       draw->world_payload.decals = decals->decals;
       draw->world_payload.decal_count = decals->count;
-      draw->world_payload.decal_grid = &decals->grid;
+      if (tiled) {
+        vkr_decal_grid_build(decals->decals, decals->count, &decals->grid);
+        draw->world_payload.decal_grid = &decals->grid;
+      }
     }
   }
   vkr_material_system_refresh_texture_stream_demand(
@@ -2485,7 +2494,11 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           application->lighting_system.rectangle_light_count,
       .point_lights = application->lighting_system.point_lights,
       .point_light_count = application->lighting_system.point_light_count,
-      .point_light_grid = &application->lighting_system.point_light_grid,
+      /* Only the tiled pipeline reads the CPU light grid. */
+      .point_light_grid =
+          application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED
+              ? &application->lighting_system.point_light_grid
+              : NULL,
       .ibl_probes = frame_ibl_probes,
       .ibl_probe_count = frame_ibl_probe_count,
       .subsurface = active_scene &&
@@ -3078,9 +3091,15 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
     world->decals = vkr_standard_scene_runtime_scratch_copy(
         scratch, world->decals,
         (uint64_t)world->decal_count * sizeof(*world->decals));
+    if (!world->decals) {
+      return false_v;
+    }
+  }
+  /* Only the tiled pipeline's frames carry a decal grid. */
+  if (world->decal_grid) {
     world->decal_grid = vkr_standard_scene_runtime_scratch_copy(
         scratch, world->decal_grid, sizeof(*world->decal_grid));
-    if (!world->decals || !world->decal_grid) {
+    if (!world->decal_grid) {
       return false_v;
     }
   }
@@ -3984,12 +4003,15 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
           key.angular_diameter_degrees, application->display_exposure);
     }
     /* It draws a bounded set of the dynamic lights nearest the camera, and
-       shadows fewer still. */
+       shadows fewer still, through the CPU light grid; the desktop
+       pipeline bins the whole table on the GPU. */
     if (tiled && camera)
       vkr_lighting_system_limit_point_lights(
           &application->lighting_system, camera->position, (float32_t)delta,
           VKR_STANDARD_SCENE_TILED_LIGHT_MAX,
           VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX);
+    if (tiled)
+      vkr_lighting_system_build_point_light_grid(&application->lighting_system);
     /* The room frame is borrowed for these syncs only. */
     application->lighting_system.point_light_hidden = NULL;
     application->lighting_system.point_light_hidden_context = NULL;
