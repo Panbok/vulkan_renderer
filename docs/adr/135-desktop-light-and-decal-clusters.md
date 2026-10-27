@@ -14,8 +14,12 @@ place of the CPU world grids it read before. Deferred lighting,
 transmission shading, forward blended draws and `Shadow.LocalMask` walk a
 cluster's mask of the 128-row light head; the decal resolve walks the
 cluster's decal list, so the desktop decal table is no longer bounded by a
-mask width. The tiled pipeline keeps the CPU grids. Native evidence is
-Vulkan on an RX 6700 XT (Evidence). Shading light rows past the head and
+mask width. Since 54c10645 the runtime builds the CPU light and decal
+grids only for the tiled pipeline: a desktop packet carries
+`point_light_grid` and `decal_grid` as NULL, frame validation accepts a
+frame without them, and `vkr_renderer_render_submitted` rejects a tiled
+frame with lights or decals but no grids. Native evidence is Vulkan on an
+RX 6700 XT (Evidence). Shading light rows past the head and
 the cluster counters in metrics are open; the owner chose z-binned
 bitfields and a world grid for ray-traced consumers to scale past them
 ([Clustered light and decal binning](../proposals/clustered-light-and-decal-binning.md)).
@@ -94,14 +98,18 @@ executed, cost about 0.05 ms in registers.
 
 ## Consequences
 
-- The desktop decal limit is no longer a mask width: it is bounded by
-  `VKR_MAX_FRAME_DECALS`, the build's 2048 items and the index pool.
-- Vulkan no longer uploads the CPU light and decal grids. The build costs
-  about 0.025 ms of GPU time on the Bistro orbit and runs every frame.
+- The desktop keeps the 512 decals nearest the camera
+  (`VKR_MAX_FRAME_DECALS`) and the tiled pipeline the 64 nearest
+  (`VKR_DECAL_GRID_DECAL_MAX`), both in compositing order
+  ([ADR-092](092-projected-decals.md)). The desktop limit is no longer a
+  mask width; the build's 2048 items and the index pool bound it.
+- Vulkan no longer reads the CPU light and decal grids, and the runtime
+  builds them only for the tiled pipeline. The build costs about 0.025 ms
+  of GPU time on the Bistro orbit and runs every frame.
 - The desktop and tiled pipelines look lights and decals up in different
   structures, as ADR-087 allows between the classes.
 - Light rows past 128 are listed in the clusters but not shaded until the
-  tail-light variants land.
+  proposal's W4a lands.
 
 ## Alternatives considered
 
@@ -129,8 +137,11 @@ Vulkan Release, RX 6700 XT, 2560x1440 High, validation unset.
 - **Image parity** against the grid build: the decal G-buffer capture and
   the lamp HDR captures are byte-identical; two lamp runs differed only in
   foliage local-shadow state, which also varies between identical runs and
-  is identical with local shadows off. `bistro_clustered_capture` keeps
-  128 of 264 lights and 64 of 112 decals.
+  is identical with local shadows off.
+- **Without CPU grids** (54c10645, 2026-10-27): `bistro_clustered_capture`
+  (`snapshot`, profile `local-offscreen`) passes with 0 GPU and log errors;
+  it selects 128 lights and drops 264, keeps all 176 decals, and reports
+  no light grid cells.
 - **Timing**, 2026-10-27: before (ca993d2c) and after builds in clean
   worktrees, alternated ABBA, all eight reports authoritative
   (`vkr_harness profile --profile
