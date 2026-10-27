@@ -89,11 +89,13 @@ are unshadowed.
    replaces them. Then raise `VKR_MAX_SCENE_POINT_LIGHTS` and measure the
    stress case. Deferred lighting may also AND a tile depth-bounds mask
    later; glass and forward blend use the bins alone.
-2. **Decal bitfields (W4b).** Decals blend in table order, which a depth
-   sort would break. Each tile, possibly 64 px, holds one bit per decal in
-   table order (15,000 decals on 64 px tiles: about 1.7 MB at 1440p); the
-   resolve tests each listed decal's box, as it does now. Raise
-   `VKR_MAX_FRAME_DECALS` to the target.
+2. **Decals (W4b).** Decals keep their frustum-cluster lists for now.
+   Per-tile decal bitfields in table order, alone or with 64 global depth
+   bins, made the G-buffer resolve 0.07 to 0.09 ms slower on the scoped
+   case (ADR-135, Alternatives), so the owner kept the lists on
+   2026-10-27. With the stress case, size the index pool and the item cap
+   for the decal target, raise `VKR_MAX_FRAME_DECALS`, and measure the
+   bitfields again at that count.
 3. **World grid for ray-traced consumers (W5).** A camera-centred grid with
    cascades, built on the GPU from the same light bounds, with a fixed list
    of lights per cell and an overflow rule that keeps the strongest lights.

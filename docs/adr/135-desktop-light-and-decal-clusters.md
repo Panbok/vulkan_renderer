@@ -130,12 +130,21 @@ than depth culling saves.
   decision 1: every raster consumer shades a pixel in the camera's view.
 - **A compute rasterizer of light volumes.** Deferred until the per-tile
   build exceeds its budget at higher limits (owner decision 2).
+- **Decal bitfields per tile in table order.** Measured on 2026-10-27 and
+  kept off: they render identically and drop the index pool and slices,
+  but on `bistro_clustered_1440` (176 decals, profile
+  `local-offscreen-gpu-repeated`) the G-buffer resolve took 1.452 ms
+  against 1.364 ms with the cluster lists, and 1.435 ms with 64 global
+  depth bins of clip w added: a tile and a screen-wide depth bin cull far
+  less than a tile's own slice. The owner kept the lists; the code stays
+  on the local branch `w4b-decal-bits`.
 
 ## Revisit when
 
 - The stress case shows the word loop dominating at its light count: add
   depth bins (W4a).
-- Decal bitfields in table order replace the decal lists (W4b).
+- The stress case's decal counts make the lists' pool or the per-cluster
+  loads the bottleneck: measure decal bitfields again there.
 - The pool overflows on a tracked case.
 
 ## Evidence
