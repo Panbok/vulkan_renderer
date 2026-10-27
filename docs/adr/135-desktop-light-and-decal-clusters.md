@@ -150,5 +150,10 @@ Vulkan Release, RX 6700 XT, 2560x1440 High, validation unset.
   errors and warnings. Before decision 7 about one prewarm child in twenty
   lost the device with a device fault at address 0; none of the 8 timing
   runs after it did.
-- **Pending:** the synchronization-validation run of the pass and the
-  moving-light check on the scoped case.
+- **Synchronization validation**, 2026-10-27: Release with
+  `VK_LAYER_KHRONOS_validation` loaded through `VK_INSTANCE_LAYERS` and
+  `VK_KHRONOS_VALIDATION_VALIDATE_SYNC=1`, case
+  `bistro_lamps_baked_night_moving_validation`, profile `local-offscreen`:
+  no errors or warnings.
+- **Pending:** the moving-light check on the scoped case, which needs more
+  than 128 shaded lights.
