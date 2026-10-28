@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-22
+updated: 2026-10-28
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -460,7 +460,9 @@ models and physics bodies still cannot be deleted.
 project asset, named by its `asset` reference or by an entity that draws
 it, through the `reimport_asset` job that Content's Reimport runs. An
 import records the model file's content path as the mesh record's
-`origin` when the file lies under the content root, so Content's Reimport
+`origin` when the file lies under the content root or the workspace
+overlay (the read file's content path from whichever holds it), so Content's
+Reimport
 and a `model.reimport` without `source` import that file again without
 asking; the Content details show it as "Imported from". Both
 operations take `lightmap_uvs`, which cooks the files with lightmap UVs as

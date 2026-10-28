@@ -737,7 +737,13 @@ bool8_t vkr_project_source_file(VkrProjectJob *job, const char *value,
         value);
   }
 #endif
-  if (!vkr_project_resolve(expanded, true_v, out, VKR_PROJECT_PATH)) {
+  /* A content path below the engine root reads the workspace overlay's copy
+     when the project holds one, as the editor that named it reads it; a
+     stale engine copy, or none, must not stand in for the project's file. */
+  char overlaid[VKR_PROJECT_PATH];
+  const char *location =
+      vkr_vfs_read_path(expanded, overlaid, sizeof(overlaid));
+  if (!vkr_project_resolve(location, true_v, out, VKR_PROJECT_PATH)) {
     return vkr_project_fail(
         job,
         "Source file is unavailable: %s: [Errno 2] No such file or directory: "

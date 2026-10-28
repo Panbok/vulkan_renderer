@@ -2,6 +2,7 @@
 
 #include "../vkr_bakery_buffer.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -841,7 +842,9 @@ vkr_internal bool8_t vkr_project_snapshot_gltf(VkrProjectSnapshot *snapshot,
       } else {
         (void)vkr_bakery_path_join(located, sizeof(located), origin, path);
       }
-      if (vkr_project_resolve(located, true_v, resolved, sizeof(resolved)) &&
+      char overlaid[VKR_PROJECT_PATH];
+      const char *read = vkr_vfs_read_path(located, overlaid, sizeof(overlaid));
+      if (vkr_project_resolve(read, true_v, resolved, sizeof(resolved)) &&
           !vkr_project_strings_push(job, &sources,
                                     vkr_project_strdup(job, resolved))) {
         return false_v;
@@ -1162,20 +1165,30 @@ bool8_t vkr_project_cook_model_animation(VkrProjectJob *job,
 
 void vkr_project_set_origin(VkrProjectJob *job, VkrBakeryJson *record,
                             const char *source) {
+  char overlaid[VKR_PROJECT_PATH];
   char resolved[VKR_PROJECT_PATH];
-  char root[VKR_PROJECT_PATH];
   vkr_bakery_json_remove(record, "origin");
-  if (!job->legacy_root[0] ||
-      !vkr_project_resolve(source, true_v, resolved, sizeof(resolved)) ||
-      !vkr_project_resolve(job->legacy_root, true_v, root, sizeof(root))) {
+  /* The file read is the workspace overlay's copy when the project holds
+     one; its content path counts from whichever root holds it. */
+  const char *read = vkr_vfs_read_path(source, overlaid, sizeof(overlaid));
+  if (!vkr_project_resolve(read, true_v, resolved, sizeof(resolved))) {
     return;
   }
-  const size_t length = strlen(root);
-  if (length && strncmp(resolved, root, length) == 0 &&
-      resolved[length] == '/' && resolved[length + 1]) {
-    vkr_bakery_json_set(
-        job->arena, record, "origin",
-        vkr_bakery_json_cstr(job->arena, resolved + length + 1));
+  const char *const roots[] = {job->legacy_root, job->asset_overlay};
+  for (uint32_t i = 0u; i < ArrayCount(roots); ++i) {
+    char root[VKR_PROJECT_PATH];
+    if (!roots[i][0] ||
+        !vkr_project_resolve(roots[i], true_v, root, sizeof(root))) {
+      continue;
+    }
+    const size_t length = strlen(root);
+    if (length && strncmp(resolved, root, length) == 0 &&
+        resolved[length] == '/' && resolved[length + 1]) {
+      vkr_bakery_json_set(
+          job->arena, record, "origin",
+          vkr_bakery_json_cstr(job->arena, resolved + length + 1));
+      return;
+    }
   }
 }
 

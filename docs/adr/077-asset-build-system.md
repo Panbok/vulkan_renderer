@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-24
+updated: 2026-10-28
 authority: adr
 ---
 
@@ -284,7 +284,11 @@ from it.
   (`vkr_vfs_overlay_from_environment`). The bake tools' own file streams
   open the overlay's copy through `vkr_vfs_read_path`, and the harness
   manifest and Bakery's dependency checks digest that copy, so a bake
-  reads a workspace's materials as the editor shows them.
+  reads a workspace's materials as the editor shows them. A project job
+  opens each import source the same way (`vkr_project_source_file`): a
+  model, image or material path below the root reads the workspace's copy
+  when it holds one, so neither a stale root copy nor a missing one stands
+  in for a project's own file (2026-10-28).
 - **Platform-neutral build textures** (owner decision, 2026-10-12). Cooked
   textures differ per GPU family (ASTC on Apple silicon, BC on x86-64), so
   a project another host shares arrives without them. The mesh cooker
