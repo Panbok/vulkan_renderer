@@ -4156,6 +4156,51 @@ bool8_t vkr_scene_ensure_render_id(VkrScene *scene, VkrEntityId entity,
   return true_v;
 }
 
+/* A light's axes (a rectangle's area and axes, a spot's direction) are
+ * authored in the entity's rigid transform frame. Follow the hierarchy's
+ * quaternion chain instead of extracting axes from the scaled world matrix:
+ * nonuniform parent scale must not alter them. */
+bool8_t vkr_scene_rigid_world_rotation(const VkrScene *scene,
+                                       const SceneTransform *transform,
+                                       VkrQuat *out_rotation) {
+  VkrQuat rotation = transform->rotation;
+  VkrEntityId ancestor = transform->parent;
+  for (uint32_t depth = 0u;
+       ancestor.u64 != VKR_ENTITY_ID_INVALID.u64 && depth < scene->topo_count;
+       ++depth) {
+    const SceneTransform *parent =
+        (const SceneTransform *)vkr_entity_get_component(scene->world, ancestor,
+                                                         scene->comp_transform);
+    if (!parent || !parent->trs_editable)
+      return false_v;
+    rotation = vkr_quat_mul(parent->rotation, rotation);
+    ancestor = parent->parent;
+  }
+  if (ancestor.u64 != VKR_ENTITY_ID_INVALID.u64)
+    return false_v;
+  *out_rotation = vkr_quat_normalize(rotation);
+  return true_v;
+}
+
+/* A spot's world direction: its local direction through the rigid rotation
+ * chain, or through the world matrix's axes when an ancestor has an authored
+ * matrix and no rotation chain. */
+Vec3 vkr_scene_light_world_direction(const VkrScene *scene,
+                                     const SceneTransform *transform,
+                                     Vec3 direction_local) {
+  VkrQuat world_rotation;
+  if (vkr_scene_rigid_world_rotation(scene, transform, &world_rotation)) {
+    return vkr_quat_rotate_vec3(world_rotation, direction_local);
+  }
+
+  const Mat4 *world = &transform->world;
+  const Vec3 direction =
+      vec3_add(vec3_add(vec3_scale(world->cols[0], direction_local.x),
+                        vec3_scale(world->cols[1], direction_local.y)),
+               vec3_scale(world->cols[2], direction_local.z));
+  return vec3_normalize(vkr_simd_set_w_f32x4(direction, 0.0f));
+}
+
 uint32_t vkr_scene_get_render_id(const VkrScene *scene, VkrEntityId entity) {
   if (!scene || !scene->world)
     return 0;

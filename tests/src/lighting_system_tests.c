@@ -795,6 +795,77 @@ static bool32_t test_rectangle_light_uses_rigid_parent_rotation(void) {
   return true_v;
 }
 
+/* A spot light under a rotated parent points where the parent turns it: the
+ * local rotation alone left it pointing along its authored axis. A parent
+ * with an authored matrix has no rotation chain, so its matrix turns it. */
+static bool32_t test_spot_light_follows_parent_rotation(void) {
+  printf("  Running test_spot_light_follows_parent_rotation...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 32u, 8u, &error));
+  VkrLightingSystem system;
+  assert(vkr_lighting_system_init(&system));
+
+  const VkrQuat quarter_turn =
+      vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), 1.57079632679f);
+  VkrEntityId rigid_parent = vkr_scene_create_entity(&scene, &error);
+  VkrEntityId matrix_parent = vkr_scene_create_entity(&scene, &error);
+  VkrEntityId rigid_spot = vkr_scene_create_entity(&scene, &error);
+  VkrEntityId matrix_spot = vkr_scene_create_entity(&scene, &error);
+  assert(rigid_parent.u64 != VKR_ENTITY_ID_INVALID.u64 &&
+         matrix_parent.u64 != VKR_ENTITY_ID_INVALID.u64 &&
+         rigid_spot.u64 != VKR_ENTITY_ID_INVALID.u64 &&
+         matrix_spot.u64 != VKR_ENTITY_ID_INVALID.u64);
+  assert(vkr_scene_set_transform(&scene, rigid_parent,
+                                 vec3_new(0.0f, 2.0f, 0.0f), quarter_turn,
+                                 vec3_new(1.0f, 3.0f, 1.0f)));
+  assert(vkr_scene_set_local_matrix(
+      &scene, matrix_parent,
+      mat4_mul(mat4_translate(vec3_new(10.0f, 2.0f, 0.0f)),
+               mat4_mul(vkr_quat_to_mat4(quarter_turn),
+                        mat4_scale(vec3_new(2.0f, 2.0f, 2.0f))))));
+  assert(vkr_scene_set_transform(&scene, rigid_spot, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_transform(&scene, matrix_spot, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_set_parent(&scene, rigid_spot, rigid_parent);
+  vkr_scene_set_parent(&scene, matrix_spot, matrix_parent);
+  const ScenePointLight spot = {
+      .color = vec3_one(),
+      .intensity = 1.0f,
+      .range = 8.0f,
+      .direction_local = vec3_new(0.0f, 0.0f, -1.0f),
+      .inner_cone_angle = 0.3f,
+      .outer_cone_angle = 0.6f,
+      .kind = VKR_POINT_LIGHT_KIND_GLTF_SPOT,
+      .enabled = true_v,
+      .mobility = VKR_LIGHT_MOBILITY_DYNAMIC,
+  };
+  assert(vkr_scene_set_point_light(&scene, rigid_spot, &spot));
+  assert(vkr_scene_set_point_light(&scene, matrix_spot, &spot));
+  vkr_scene_update(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
+
+  // Ry(90) maps -Z to -X; the parents' scale must not change the direction.
+  assert(system.point_light_count == 2u);
+  for (uint32_t i = 0u; i < system.point_light_count; ++i) {
+    assert(lighting_test_vec3_near(system.point_lights[i].direction,
+                                   vec3_new(-1.0f, 0.0f, 0.0f)));
+  }
+
+  vkr_lighting_system_shutdown(&system);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_spot_light_follows_parent_rotation PASSED\n");
+  return true_v;
+}
+
 /* An enabled atmosphere turns the sun light into its sun: the light must not
  * light the frame directly before or besides the published atmosphere sun. */
 static bool32_t test_atmosphere_replaces_direct_sun_light(void) {
@@ -1442,6 +1513,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_changed_lamp_group_leaves_bake();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();
+  passed &= test_spot_light_follows_parent_rotation();
   passed &= test_time_of_day_turns_sun_and_switches_night_groups();
   printf("--- Lighting System tests completed. ---\n");
   return passed;

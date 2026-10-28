@@ -106,31 +106,6 @@ vkr_internal bool8_t rectangle_light_stable_precedes(
   return light->render_id < other->render_id;
 }
 
-/* Rectangle area and axes are authored in the entity's rigid transform frame.
- * Follow the hierarchy's quaternion chain instead of extracting axes from the
- * scaled world matrix: nonuniform parent scale must not alter either fact. */
-vkr_internal bool8_t rectangle_light_world_rotation(
-    const VkrScene *scene, const SceneTransform *transform,
-    VkrQuat *out_rotation) {
-  VkrQuat rotation = transform->rotation;
-  VkrEntityId ancestor = transform->parent;
-  for (uint32_t depth = 0u;
-       ancestor.u64 != VKR_ENTITY_ID_INVALID.u64 && depth < scene->topo_count;
-       ++depth) {
-    const SceneTransform *parent =
-        (const SceneTransform *)vkr_entity_get_component(scene->world, ancestor,
-                                                         scene->comp_transform);
-    if (!parent || !parent->trs_editable)
-      return false_v;
-    rotation = vkr_quat_mul(parent->rotation, rotation);
-    ancestor = parent->parent;
-  }
-  if (ancestor.u64 != VKR_ENTITY_ID_INVALID.u64)
-    return false_v;
-  *out_rotation = vkr_quat_normalize(rotation);
-  return true_v;
-}
-
 vkr_internal void rectangle_light_insert_stable(RectangleLightSyncContext *ctx,
                                                 VkrRectangleLight candidate) {
   uint32_t insert = 0u;
@@ -474,8 +449,8 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
       continue;
     }
     uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
-    const Vec3 direction =
-        vkr_quat_rotate_vec3(transforms[i].rotation, lights[i].direction_local);
+    const Vec3 direction = vkr_scene_light_world_direction(
+        scene, &transforms[i], lights[i].direction_local);
     const VkrPointLight light = {
         .position = world_position,
         .color = lights[i].color,
@@ -527,7 +502,7 @@ vkr_internal void sync_rectangle_lights_cb(const VkrArchetype *arch,
       continue;
     }
     VkrQuat world_rotation;
-    if (!rectangle_light_world_rotation(scene, &transforms[i], &world_rotation))
+    if (!vkr_scene_rigid_world_rotation(scene, &transforms[i], &world_rotation))
       continue;
     const VkrRectangleLight candidate = {
         .position = mat4_position(transforms[i].world),

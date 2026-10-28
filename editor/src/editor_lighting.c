@@ -727,10 +727,9 @@ static void lighting_entity_lines(LightingLines *lines, const VkrScene *scene,
   if (point) {
     const float32_t reach = point->range > 0.0f ? point->range : 0.0f;
     if (point->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT) {
-      /* The cone as the lighting system aims it: the local direction
-         through the entity's own rotation. */
-      const Vec3 axis = vec3_normalize(
-          vkr_quat_rotate_vec3(transform->rotation, point->direction_local));
+      /* The cone as the lighting system aims it. */
+      const Vec3 axis = vec3_normalize(vkr_scene_light_world_direction(
+          scene, transform, point->direction_local));
       const float32_t length = reach > 0.0f ? reach : LIGHTING_ARROW_M;
       Vec3 u;
       Vec3 v;
@@ -1414,8 +1413,8 @@ static void handles_build(VkrEditorLightingHandles *state,
                   vec3_new(1, 0, 0));
       return;
     }
-    const Vec3 axis = vec3_normalize(
-        vkr_quat_rotate_vec3(transform->rotation, point->direction_local));
+    const Vec3 axis = vec3_normalize(vkr_scene_light_world_direction(
+        scene, transform, point->direction_local));
     Vec3 u;
     Vec3 v;
     lighting_basis(axis, &u, &v);

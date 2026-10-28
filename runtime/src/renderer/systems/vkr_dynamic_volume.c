@@ -278,8 +278,8 @@ vkr_internal void dynamic_volume_point_lights_cb(const VkrArchetype *arch,
         .linear = light->linear,
         .quadratic = light->quadratic,
         .range = light->range,
-        .direction = vkr_quat_rotate_vec3(transforms[i].rotation,
-                                          light->direction_local),
+        .direction = vkr_scene_light_world_direction(scene, &transforms[i],
+                                                     light->direction_local),
         .inner_cone_angle = light->inner_cone_angle,
         .outer_cone_angle = light->outer_cone_angle,
         .kind = light->kind,
@@ -1015,8 +1015,8 @@ vkr_internal void dynamic_volume_scan_points_cb(const VkrArchetype *arch,
     const uint32_t record_index =
         dynamic_volume_scan_match(scan, dynamic_volume_baked_kind(light->kind),
                                   mat4_position(transforms[i].world));
-    const Vec3 direction =
-        vkr_quat_rotate_vec3(transforms[i].rotation, light->direction_local);
+    const Vec3 direction = vkr_scene_light_world_direction(
+        scene, &transforms[i], light->direction_local);
     if (record_index == UINT32_MAX ||
         !dynamic_volume_point_unchanged(
             &scan->volume->baked_lights[record_index], light, direction)) {

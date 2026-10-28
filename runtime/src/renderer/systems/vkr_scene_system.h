@@ -2219,6 +2219,18 @@ bool8_t vkr_scene_ensure_render_id(VkrScene *scene, VkrEntityId entity,
  * @param entity Entity to query
  * @return Render id or 0 if missing
  */
+/** The rotation of `transform`'s rigid frame: its rotation through every
+    ancestor's, without scale. False when an ancestor has an authored matrix,
+    which has no rotation chain. */
+bool8_t vkr_scene_rigid_world_rotation(const VkrScene *scene,
+                                       const SceneTransform *transform,
+                                       VkrQuat *out_rotation);
+/** A light's world direction, as lighting, bakes and the editor aim it: its
+    local direction through the rigid world rotation, or through the world
+    matrix's axes when an ancestor has an authored matrix. */
+Vec3 vkr_scene_light_world_direction(const VkrScene *scene,
+                                     const SceneTransform *transform,
+                                     Vec3 direction_local);
 uint32_t vkr_scene_get_render_id(const VkrScene *scene, VkrEntityId entity);
 
 /**
