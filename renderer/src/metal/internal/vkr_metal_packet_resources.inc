@@ -3116,7 +3116,10 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
       vkr_point_light_pack(&packet->input.lighting->point_lights[i],
                            packet->exposure.pre_exposure, &packed[i]);
     if (plan->local_shadow_view_count > 0u) {
-      for (uint32_t i = 0u; i < plan->point_light_count; ++i)
+      /* Only the light head has shadow views (ADR-019). */
+      const uint32_t head_count =
+          Min(plan->point_light_count, VKR_POINT_LIGHT_GRID_LIGHT_MAX);
+      for (uint32_t i = 0u; i < head_count; ++i)
         packed[i].p3.w =
             (float32_t)packet->input.local_shadow->light_first_view[i];
     }
