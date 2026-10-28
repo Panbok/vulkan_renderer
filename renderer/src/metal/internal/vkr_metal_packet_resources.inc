@@ -3196,21 +3196,13 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
   uint8_t *cpu = upload->addresses.cpu_address;
   uint64_t gpu = upload->addresses.gpu_address;
   if (plan->point_light_count > 0) {
-    VkrGpuPointLightRow *packed =
-        (VkrGpuPointLightRow *)(cpu + plan->point_light_offset);
-    /* Rows carry intensity before exposure; the tiled shaders multiply it
-       by the frame's pre-exposure once per light (ADR-019). */
-    for (uint32_t i = 0; i < plan->point_light_count; ++i)
-      vkr_point_light_pack(&packet->input.lighting->point_lights[i], 1.0f,
-                           &packed[i]);
-    if (plan->local_shadow_view_count > 0u) {
-      /* Only the light head has shadow views (ADR-019). */
-      const uint32_t head_count =
-          Min(plan->point_light_count, VKR_POINT_LIGHT_GRID_LIGHT_MAX);
-      for (uint32_t i = 0u; i < head_count; ++i)
-        packed[i].p3.w =
-            (float32_t)packet->input.local_shadow->light_first_view[i];
-    }
+    /* The renderer packed the frame's rows, before exposure and with the
+       head's shadow views (vkr_light_table.h); this backend uploads them
+       all until it keeps a table between frames. */
+    if (packet->light_table.count != plan->point_light_count)
+      return false_v;
+    MemCopy(cpu + plan->point_light_offset, packet->light_table.rows,
+            (uint64_t)plan->point_light_count * sizeof(VkrGpuPointLightRow));
     upload->point_light_data_gpu = gpu + plan->point_light_offset;
     vkr_metal_packet_write_light_bins(
         packet, (uint32_t *)(cpu + plan->point_light_bins_offset), upload);

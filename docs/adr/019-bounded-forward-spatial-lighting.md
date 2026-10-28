@@ -67,7 +67,17 @@ Since 2026-10-28 the rows carry intensity before exposure on both backends,
 and the shaders multiply by the frame's pre-exposure once per light where
 they read it (clustered binning proposal, M6 step 2a); baked-lamp rows keep
 their own pre-exposed packing. On Metal the tiled lamp, clustered and
-four-sample captures stayed byte-identical.
+four-sample captures stayed byte-identical. Since 2026-10-28 the renderer
+packs a scene frame's rows itself, with the head's shadow views, and lists
+the rows that differ from what the last submitted frame left
+(`VkrLightTableFrame` in
+[`vkr_light_table.h`](../../renderer/src/vkr_light_table.h), on the
+prepared frame): every row on the first frame and after a device failure,
+and a frame that is never submitted leaves its changes to the next one.
+Metal uploads every row from it; a backend that keeps its table between
+frames writes only the listed ones. `lighting.point.rows_updated` counts
+them: none a frame on the still clustered street and the lamp orbit, 9 at
+p50 with the clustered street's 64-light group moving (tiled, 64 drawn).
 When more lights are offered than the table
 holds, it keeps the 1024 nearest the camera by the distance to their range,
 ties by the distance to their centre, and a light selected the frame before

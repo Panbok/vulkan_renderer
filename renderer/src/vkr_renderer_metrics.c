@@ -402,6 +402,8 @@ vkr_internal bool8_t vkr_renderer_metrics_register_workload(
   VKR_REGISTER_U64_REQUIRED(lighting_ibl_probes_packed,
                             "lighting.ibl.probes_packed",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(lighting_point_rows_updated, "lighting.point.rows_updated",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(lighting_point_selected, "lighting.point.selected",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(lighting_point_dropped, "lighting.point.dropped",
@@ -2567,6 +2569,7 @@ void vkr_renderer_metrics_collect(
     VKR_SET_U64(world_max_batch_size, world->max_batch_size);
   }
   VKR_SET_U64(lighting_ibl_probes_packed, renderer->ibl_probes_packed);
+  VKR_SET_U64(lighting_point_rows_updated, renderer->light_rows_updated);
   VKR_SET_U64(lighting_point_selected,
               context->application.lighting_point_selected);
   VKR_SET_U64(lighting_point_dropped,

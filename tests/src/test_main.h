@@ -28,6 +28,7 @@
 #include "job_system_test.h"
 #include "json_test.h"
 #include "json_writer_test.h"
+#include "light_table_tests.h"
 #include "lighting_system_tests.h"
 #include "look_volume_tests.h"
 #include "mat_test.h"

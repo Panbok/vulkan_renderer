@@ -8,6 +8,7 @@
 #include "vkr_dynamic_resolution.h"
 #include "vkr_frame_input.h"
 #include "vkr_geometry_upload.h"
+#include "vkr_light_table.h"
 #include "vkr_publication_queue.h"
 #include "vkr_render_graph.h"
 #include "vkr_renderer.h"
@@ -254,6 +255,11 @@ struct VkrRenderer {
      lighting.ibl.probes_packed so a performance case can assert the work it
      believes it is measuring. */
   uint32_t ibl_probes_packed;
+  /* The light rows a backend's table keeps between frames, and how many the
+     last prepared frame changed (lighting.point.rows_updated). Created by
+     the first accepted packet. */
+  VkrLightTable *light_table;
+  uint32_t light_rows_updated;
 
   // Last target dimensions applied on the rendering thread.
   uint32_t last_window_width;

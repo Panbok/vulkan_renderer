@@ -254,11 +254,17 @@ the GPU between frames.
 
 - **2a** Exposure out of the rows (item 2): Metal on the Mac, Vulkan on
   Windows, image parity on both classes.
-- **2b** Runtime: resident rows, change detection, updates, head ranking
-  and CPU rows. A renderer helper applies the updates to a CPU copy, so a
-  backend can keep uploading whole rows until it moves. CPU tests: a light
-  keeps its row across frames, a removal moves one row, a new generation
-  sends every row, and the head keeps its hysteresis.
+- **2b, phase 1** (landed 2026-10-28): the renderer packs each frame's rows
+  and lists those that differ from the last submitted frame
+  (`vkr_light_table.h`, ADR-019). Today's selection already keeps rows in
+  place (render id order within the head and the rest, the head held by
+  its incumbent bonus), so a still scene sends no rows and a moving light
+  one; backends with a table between frames (2c, 2d) consume the list.
+- **2b, phase 2** (with tables past 1024 rows): the runtime side, resident
+  rows, change detection and ranking only the shadow head, which saves
+  the CPU's per-frame ranking; until then it costs little at 1024 rows.
+  CPU tests: a light keeps its row across frames, a removal moves one row,
+  a new generation sends every row, and the head keeps its hysteresis.
 - **2c** Metal table and scatter pass (Mac). **2d** Vulkan table and scatter
   pass (Windows); then the helper goes.
 

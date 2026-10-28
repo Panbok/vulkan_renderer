@@ -1277,6 +1277,8 @@ initialize_failure:
 void vkr_renderer_destroy(VkrRenderer *renderer) {
   vkr_renderer_wait_idle(renderer);
   vkr_renderer_worker_destroy(renderer);
+  vkr_light_table_destroy(renderer->light_table);
+  renderer->light_table = NULL;
   vkr_publication_queue_destroy(&renderer->publications);
   vkr_renderer_backend_destroy(renderer);
   vkr_pipeline_registry_destroy(&renderer->pipeline_registry);
@@ -1662,6 +1664,15 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE;
   rf->ibl_probes_packed =
       packet->lighting ? packet->lighting->ibl_probe_count : 0u;
+  /* The light rows that differ from what the last submitted frame left in
+     a backend's table (vkr_light_table.h). */
+  prepared->frame.light_table = (VkrLightTableFrame){0};
+  rf->light_rows_updated = 0u;
+  if (prepared->frame.scene_rendering && rf->light_table) {
+    vkr_light_table_prepare(rf->light_table, packet->lighting,
+                            packet->local_shadow, &prepared->frame.light_table);
+    rf->light_rows_updated = prepared->frame.light_table.update_count;
+  }
   prepared->frame.fog = vkr_fog_prepare(&packet->globals.fog);
   /* The tiled graph has no froxel fog; its forward shading applies the
      analytic fog (ADR-087). */
@@ -3162,6 +3173,9 @@ vkr_renderer_commit_submitted_frame(VkrRenderer *renderer,
                                     const VkrFrameInput *packet,
                                     const VkrFramePreparation *prepared) {
   if (prepared->frame.scene_rendering) {
+    if (renderer->light_table) {
+      vkr_light_table_commit(renderer->light_table);
+    }
     vkr_temporal_commit(&renderer->temporal_state, &prepared->temporal_input);
     renderer->submitted_fog = prepared->frame.fog;
     renderer->submitted_froxel_fog = prepared->frame.froxel_fog;
@@ -3210,6 +3224,9 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
     /* A post-submit failure cannot roll back native histories or GPU uses.
      * Stop the device path instead of retrying with uncommitted CPU history. */
     const bool8_t committed = result.submit_value != 0u;
+    if (committed && renderer->light_table) {
+      vkr_light_table_invalidate(renderer->light_table);
+    }
     const VkrRendererError error = committed ? VKR_RENDERER_ERROR_DEVICE_ERROR
                                    : result.error != VKR_RENDERER_ERROR_NONE
                                        ? result.error
@@ -3531,6 +3548,14 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
   }
   if (error == VKR_RENDERER_ERROR_NONE) {
     error = vkr_frame_input_validate(packet, &result->validation);
+  }
+  if (error == VKR_RENDERER_ERROR_NONE && !renderer->light_table) {
+    renderer->light_table = vkr_light_table_create();
+    if (!renderer->light_table) {
+      error = vkr_renderer_validation_fail(
+          &result->validation, VKR_RENDERER_ERROR_OUT_OF_MEMORY,
+          "renderer.light_table", "could not allocate the light table");
+    }
   }
   /* Only a backend with the presenter takes its frames (ADR-111), and a
      presentation-only frame needs a presentation-only acquisition. */

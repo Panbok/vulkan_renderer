@@ -2,6 +2,7 @@
 
 #include "vkr_color_grading.h"
 #include "vkr_frame_input.h"
+#include "vkr_light_table.h"
 
 /* Private recording input. The renderer owns derived frame values; input
  * arrays remain borrowed through the synchronous render call. GPU resources
@@ -101,4 +102,7 @@ typedef struct VkrPreparedFrame {
   uint64_t froxel_fog_signature;
   /** Zeroed unless the packet's sky has an enabled atmosphere. */
   VkrSkyGpuParams sky;
+  /** The scene frame's packed light rows and the ones its backend's table
+      must update (vkr_light_table.h); zeroed on frames without a scene. */
+  VkrLightTableFrame light_table;
 } VkrPreparedFrame;
