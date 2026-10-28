@@ -1075,6 +1075,96 @@ static void test_gltf_import_keeps_authored_tangents(void) {
   printf("  test_gltf_import_keeps_authored_tangents PASSED\n");
 }
 
+/* One triangle whose material names detail maps in its extras; returns
+   whether the import parsed and, when it did, the generated material text. */
+static bool8_t gltf_test_detail_case(const char *stem, const char *extras,
+                                     VkrAllocator *allocator,
+                                     String8 *out_material) {
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+  char gltf_path[1024];
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  char bin_path[1024];
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+  char mt_path[1024] = {0};
+  gltf_test_make_material_paths(stem, gltf_path, 0, mt_path, sizeof(mt_path),
+                                NULL, 0, NULL, 0);
+  gltf_test_write_basic_triangle_bin(bin_path);
+  char gltf_json[4096];
+  snprintf(gltf_json, sizeof(gltf_json),
+           "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+           "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+           "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+           "\"indices\":1,\"material\":0}]}],"
+           "\"materials\":[{\"name\":\"detailed\",\"extras\":%s}],"
+           "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":42}],"
+           "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,"
+           "\"byteLength\":36},{\"buffer\":0,\"byteOffset\":36,"
+           "\"byteLength\":6}],\"accessors\":[{\"bufferView\":0,"
+           "\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},{"
+           "\"bufferView\":1,\"componentType\":5123,\"count\":3,"
+           "\"type\":\"SCALAR\"}]}",
+           extras, stem);
+  assert(gltf_test_write_file_text(gltf_path, gltf_json) == true_v);
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&scratch));
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  GltfImporterTestCapture capture = {.allocator = allocator};
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      allocator, &scratch, gltf_path, &error, &capture);
+  const bool8_t parsed = vkr_mesh_loader_gltf_parse(&parse_info);
+  if (parsed) {
+    assert(gltf_test_read_file_text(allocator, mt_path, out_material) ==
+           true_v);
+  } else {
+    assert(error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
+  }
+  arena_destroy(scratch_arena);
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+  return parsed;
+}
+
+static void test_gltf_import_writes_detail_extras(void) {
+  printf("  Running test_gltf_import_writes_detail_extras...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  String8 material = {0};
+  assert(gltf_test_detail_case(
+             "gltf_import_detail",
+             "{\"vkr_detail_normal_texture\":\"assets/textures/detail/"
+             "fine_normal.png?tc=normal_rg\",\"vkr_detail_uv_scale\":24,"
+             "\"vkr_detail_normal_scale\":0.75,\"vkr_detail_mask\":"
+             "\"base_alpha\"}",
+             &allocator, &material) == true_v);
+  const char *text = (const char *)material.str;
+  assert(strstr(text, "detail_normal_texture=assets/textures/detail/"
+                      "fine_normal.png?tc=normal_rg") != NULL);
+  assert(strstr(text, "detail_uv_scale=24.000000") != NULL);
+  assert(strstr(text, "detail_normal_scale=0.750000") != NULL);
+  assert(strstr(text, "detail_mask=base_alpha") != NULL);
+  assert(strstr(text, "detail_albedo_texture") == NULL);
+
+  /* The generated material lives in the bundle: a path relative to the
+     source would name nothing there. */
+  assert(gltf_test_detail_case(
+             "gltf_import_detail_relative",
+             "{\"vkr_detail_normal_texture\":\"./fine_normal.png\"}",
+             &allocator, &material) == false_v);
+  assert(gltf_test_detail_case("gltf_import_detail_number",
+                               "{\"vkr_detail_normal_texture\":\"assets/"
+                               "d.png\",\"vkr_detail_uv_scale\":\"x\"}",
+                               &allocator, &material) == false_v);
+  arena_destroy(arena);
+  printf("  test_gltf_import_writes_detail_extras PASSED\n");
+}
+
 static void test_gltf_import_fails_without_position(void) {
   printf("  Running test_gltf_import_fails_without_position...\n");
 
@@ -2746,6 +2836,7 @@ bool32_t run_gltf_importer_tests(void) {
   test_gltf_import_rejects_invalid_decal_sidecar();
   test_gltf_import_converts_texture_coordinates();
   test_gltf_import_keeps_authored_tangents();
+  test_gltf_import_writes_detail_extras();
   test_gltf_import_fails_without_position();
   test_gltf_import_rejects_data_uri_images();
   test_gltf_import_rejects_buffer_view_images();

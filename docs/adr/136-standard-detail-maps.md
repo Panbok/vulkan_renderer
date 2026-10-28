@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-28
+updated: 2026-10-29
 authority: adr
 ---
 
@@ -158,6 +158,20 @@ material at UV0. A detail map's stream needs that extent times the detail
 UV scale (`vkr_material_system_stream_required_extent`), so its mips stream
 for the tiling it is sampled at.
 
+### glTF import
+
+A glTF material names its detail maps in its `extras`: `vkr_detail_normal_texture`,
+`vkr_detail_albedo_texture`, `vkr_detail_mask`, `vkr_detail_normal_scale`,
+`vkr_detail_uv_scale` and `vkr_detail_albedo_strength` become the generated
+material's keys of the same suffix
+([mesh_loader_gltf.c](../../tools/assets/mesh_loader_gltf.c),
+`vkr_mesh_loader_gltf_write_detail_lines`). The generated material lives in
+the import's bundle, so texture paths are content paths (`assets/...`, a
+`?tc=` query allowed); a relative path or a non-numeric value fails the
+import with its own diagnostic, and the material loader checks the ranges.
+The [VKR Asset Kit](137-baked-asset-texture-sets-and-model-previews.md)
+writes them for baked texture sets.
+
 ### Material graphs
 
 The Standard surface output gains four inputs, which lower to the keys above
@@ -258,6 +272,10 @@ change's code, built in a separate worktree.
   view. The material edits were local and are not committed.
 - Metal API validation (`MTL_DEBUG_LAYER=1`, one process) on that close-up:
   0 errors, 0 warnings, with the detail kinds built.
+- glTF extras (2026-10-29): `--suite run_gltf_importer_tests` passes
+  `test_gltf_import_writes_detail_extras` (extras become the generated
+  material's detail keys; a relative texture path and a non-numeric scale
+  fail the import).
 - Timing: `vkr_harness profile --case
   tools/cases/performance/bistro_material_orbit_1440.case.json --profile
   tools/profiles/performance-windowed-gpu-submission.json` (2560×1440

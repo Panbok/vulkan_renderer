@@ -2515,6 +2515,80 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_extension_lines(
   return ok;
 }
 
+/**
+ * Writes the detail maps (ADR-136) a DCC tool names in the material's
+ * extras: each `vkr_detail_*` member becomes the `detail_*` key of the same
+ * suffix. Texture paths are content paths (`assets/...`, a `?tc=` query
+ * allowed), since the generated material lives in the bundle, not beside
+ * the source; the material loader checks the values' ranges.
+ */
+vkr_internal bool8_t vkr_mesh_loader_gltf_write_detail_lines(
+    VkrMeshLoaderGltfText *text, const VkrMeshLoaderGltfParseInfo *info,
+    const cgltf_material *material) {
+  if (!material || !material->extras.data) {
+    return true_v;
+  }
+  const String8 extras =
+      string8_create_from_cstr((const uint8_t *)material->extras.data,
+                               string_length(material->extras.data));
+  const char *material_name = material->name ? material->name : "<unnamed>";
+  static const char *const text_keys[] = {
+      "detail_normal_texture", "detail_albedo_texture", "detail_mask"};
+  for (uint32_t i = 0u; i < ArrayCount(text_keys); ++i) {
+    char member[64];
+    string_format(member, sizeof(member), "vkr_%s", text_keys[i]);
+    VkrJsonReader reader = vkr_json_reader_from_string(extras);
+    if (!vkr_json_find_root_field(&reader, member)) {
+      continue;
+    }
+    String8 value = {0};
+    bool8_t valid =
+        vkr_json_parse_string_decoded(&reader, info->load_allocator, &value) &&
+        value.length > 0u;
+    for (uint64_t c = 0u; valid && c < value.length; ++c) {
+      valid = value.str[c] >= 0x20u;
+    }
+    if (valid && i < 2u) {
+      valid = value.length > 7u && MemCompare(value.str, "assets/", 7u) == 0;
+    }
+    if (!valid) {
+      log_error("MeshLoader(glTF): material '%s' has an invalid %s; texture "
+                "paths are content paths (assets/...)",
+                material_name, member);
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      return false_v;
+    }
+    if (!vkr_mesh_loader_gltf_write_key_string(text, info->load_allocator,
+                                               text_keys[i], value)) {
+      return false_v;
+    }
+  }
+  static const char *const number_keys[] = {
+      "detail_normal_scale", "detail_uv_scale", "detail_albedo_strength"};
+  for (uint32_t i = 0u; i < ArrayCount(number_keys); ++i) {
+    char member[64];
+    string_format(member, sizeof(member), "vkr_%s", number_keys[i]);
+    VkrJsonReader reader = vkr_json_reader_from_string(extras);
+    if (!vkr_json_find_root_field(&reader, member)) {
+      continue;
+    }
+    float64_t value = 0.0;
+    if (!vkr_json_parse_double(&reader, &value) || !isfinite(value)) {
+      log_error("MeshLoader(glTF): material '%s' has a non-numeric %s",
+                material_name, member);
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      return false_v;
+    }
+    if (!vkr_mesh_loader_gltf_write_key_f32(text, info->load_allocator,
+                                            number_keys[i], (float32_t)value)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_texture_lines(
     VkrMeshLoaderGltfText *text, const VkrMeshLoaderGltfParseInfo *info,
     const VkrMeshLoaderGltfMaterialTextures *textures) {
@@ -2949,6 +3023,10 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
 
   ok = ok && vkr_mesh_loader_gltf_write_extension_lines(&text, info, material);
   ok = ok && vkr_mesh_loader_gltf_write_texture_lines(&text, info, &textures);
+  /* Invalid detail extras fail the import with their own diagnostic. */
+  if (ok && !vkr_mesh_loader_gltf_write_detail_lines(&text, info, material)) {
+    return false_v;
+  }
 
   if (!ok ||
       !vkr_mesh_loader_gltf_write_text_atomic(info, material_path, &text)) {
