@@ -1149,15 +1149,17 @@ vkr_metal_packet_create_tiled_atmosphere_pipeline(
   return atmosphere;
 }
 
-/* Creates the tiled tile pipeline of `function_name` over the opaque pass's
-   targets: colour, the sun's light target when `sun_format` is valid and the
-   texture demand target when `demand_format` is. A failure returns nil. */
+/* Creates the tiled tile pipeline of `function_name` over a tiled pass's
+   targets at `sample_count` samples: colour, the sun's light target when
+   `sun_format` is valid and the texture demand target when `demand_format`
+   is. A failure returns nil. */
 vkr_internal id<MTLRenderPipelineState>
 vkr_metal_packet_create_tiled_tile_pipeline(VkrMetalPacketRenderer *renderer,
                                             id<MTLLibrary> fragment,
                                             NSString *function_name,
                                             MTLPixelFormat sun_format,
                                             MTLPixelFormat demand_format,
+                                            uint32_t sample_count,
                                             NSString *label)
     API_AVAILABLE(macos(26.0)) {
   MTL4LibraryFunctionDescriptor *function = [MTL4LibraryFunctionDescriptor new];
@@ -1167,7 +1169,7 @@ vkr_metal_packet_create_tiled_tile_pipeline(VkrMetalPacketRenderer *renderer,
       [MTL4TileRenderPipelineDescriptor new];
   descriptor.label = label;
   descriptor.tileFunctionDescriptor = function;
-  descriptor.rasterSampleCount = renderer->tiled_sample_count;
+  descriptor.rasterSampleCount = sample_count;
   descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
   descriptor.colorAttachments[1].pixelFormat = sun_format;
   descriptor.colorAttachments[VKR_METAL_TILED_DEMAND_ATTACHMENT].pixelFormat =
@@ -1222,16 +1224,25 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
   renderer->tiled_resolve_pipelines[sun][demand] =
       vkr_metal_packet_create_tiled_tile_pipeline(
           renderer, fragment, @"vkr_metal_tiled_resolve_tile", sun_format,
-          demand_format,
+          demand_format, renderer->tiled_sample_count,
           demand ? (sun ? @"VKR tiled resolve with sun light and texture demand"
                         : @"VKR tiled resolve with texture demand")
                  : (sun ? @"VKR tiled resolve with sun light"
                         : @"VKR tiled resolve"));
+  renderer->tiled_light_pipelines[sun][demand] =
+      vkr_metal_packet_create_tiled_tile_pipeline(
+          renderer, fragment, @"vkr_metal_tiled_light_tile", sun_format,
+          demand_format, renderer->tiled_sample_count,
+          demand ? (sun ? @"VKR tiled light tile with sun light and texture "
+                          @"demand"
+                        : @"VKR tiled light tile with texture demand")
+                 : (sun ? @"VKR tiled light tile with sun light"
+                        : @"VKR tiled light tile"));
   if (demand) {
     renderer->tiled_demand_pipelines[sun] =
         vkr_metal_packet_create_tiled_tile_pipeline(
             renderer, fragment, @"vkr_metal_tiled_demand_tile", sun_format,
-            demand_format,
+            demand_format, renderer->tiled_sample_count,
             sun ? @"VKR tiled texture demand with sun light"
                 : @"VKR tiled texture demand");
     return;
@@ -1257,6 +1268,13 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
             VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
             VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v, 1u, constants,
             @"VKR tiled blend overdraw");
+  /* The blend pass's light tile kernel over its one-sample colour. */
+  if (!sun)
+    renderer->tiled_blend_light_pipeline =
+        vkr_metal_packet_create_tiled_tile_pipeline(
+            renderer, fragment, @"vkr_metal_tiled_light_tile",
+            MTLPixelFormatInvalid, MTLPixelFormatInvalid, 1u,
+            @"VKR tiled blend light tile");
   for (uint32_t shafts = 0u; shafts < 2u; ++shafts) {
     renderer->tiled_atmosphere_pipelines[sun][shafts] =
         vkr_metal_packet_create_tiled_atmosphere_pipeline(
@@ -1329,6 +1347,7 @@ vkr_metal_packet_build_tiled_sun_pipelines(VkrMetalPacketRenderer *renderer)
     ok &= renderer->tiled_sky_pipelines[1][0] != nil &&
           renderer->tiled_overdraw_pipelines[1] != nil &&
           renderer->tiled_resolve_pipelines[1][0] != nil &&
+          renderer->tiled_light_pipelines[1][0] != nil &&
           renderer->tiled_atmosphere_pipelines[1][0] != nil &&
           renderer->tiled_atmosphere_pipelines[1][1] != nil;
     if (ok)
@@ -1362,6 +1381,7 @@ vkr_internal void vkr_metal_packet_build_tiled_demand_pipelines(
         renderer, renderer->fragment_library, sun, 1u);
     ok &= renderer->tiled_sky_pipelines[sun][1] != nil &&
           renderer->tiled_resolve_pipelines[sun][1] != nil &&
+          renderer->tiled_light_pipelines[sun][1] != nil &&
           renderer->tiled_demand_pipelines[sun] != nil;
     if (ok)
       log_info("Metal: tiled texture demand pipelines%s ready in %.1f ms",
@@ -1877,6 +1897,9 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->tiled_atmosphere_pipelines[0][1],
        "tiled atmosphere pipeline with sun shafts"},
       {renderer->tiled_resolve_pipelines[0][0], "tiled resolve pipeline"},
+      {renderer->tiled_light_pipelines[0][0], "tiled light tile pipeline"},
+      {renderer->tiled_blend_light_pipeline,
+       "tiled blend light tile pipeline"},
       {renderer->tiled_picking_pipeline, "tiled picking pipeline"},
       {renderer->tiled_overdraw_pipelines[0], "tiled overdraw pipeline"},
       {renderer->tiled_overdraw_blend_pipeline,

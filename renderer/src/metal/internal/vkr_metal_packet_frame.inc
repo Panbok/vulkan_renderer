@@ -188,15 +188,11 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .render_mode = frame_constants.render_mode,
       .shadow_debug_mode = frame_constants.shadow_debug_mode,
       .point_light_data = upload->point_light_data_gpu,
-      .point_light_masks = upload->point_light_masks_gpu,
-      .point_light_grid_origin_cell_size =
-          frame_constants.point_light_grid_origin_cell_size,
-      .point_light_grid_dimensions_count =
-          {frame_constants.point_light_grid_dimensions_count[0],
-           frame_constants.point_light_grid_dimensions_count[1],
-           frame_constants.point_light_grid_dimensions_count[2],
-           frame_constants.point_light_grid_dimensions_count[3]},
-      .point_light_global_mask = frame_constants.point_light_global_mask,
+      .point_light_bins = upload->point_light_bins_gpu,
+      .point_light_bin_params = {upload->point_light_bins_per_metre, 0.0f,
+                                 0.0f, 0.0f},
+      .point_light_bin_counts = {upload->point_light_bin_count,
+                                 upload->point_light_unbounded_count, 0u, 0u},
       .point_light_count = frame_constants.point_light_count,
       .custom_time = packet->clock_seconds,
       .shadow_texture_id = upload->shadow_texture_id,
@@ -2698,6 +2694,28 @@ vkr_metal_packet_tiled_decal_variant(const VkrPreparedFrame *packet) {
   return 0u;
 }
 
+/* The root of a tiled pass's light tile kernel, which lists each tile's
+   lights before the pass's draws read them from threadgroup memory; zero in
+   `out_root` when the pass shades no local lights. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_light_tile(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameUpload *upload,
+    VkrMetalTiledLighting lighting, uint32_t width, uint32_t height,
+    uint64_t *out_root) {
+  *out_root = 0u;
+  if (lighting == VKR_METAL_TILED_LIGHTING_NONE ||
+      renderer->gpu_draw_roots_gpu == 0u || width == 0u || height == 0u)
+    return true_v;
+  VkrMetalTiledLightTileRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), out_root);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalTiledLightTileRoot){
+      .camera_draw_root = renderer->gpu_draw_roots_gpu,
+      .inverse_extent = {1.0f / (float32_t)width, 1.0f / (float32_t)height},
+  };
+  return true_v;
+}
+
 /* Prepares the tiled pipeline's opaque pass (ADR-087): the camera's culled
    opaque draws, the clear sky's root, and multisampled targets in place of
    the pass's graph colour and depth, which they resolve into. Depth resolves
@@ -2804,11 +2822,20 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
       *root = (VkrMetalTiledDemandRoot){.words = upload->texture_demand_gpu};
     }
   }
+  uint64_t light_root = 0u;
+  if (!overdraw && !vkr_metal_packet_prepare_tiled_light_tile(
+                       renderer, upload, lighting, width, height, &light_root))
+    return false_v;
+  /* The forward entries read their tile's lights from threadgroup memory
+     (VkrMetalTiledLightTile), even the variants that shade none. */
+  descriptor.threadgroupMemoryLength = VKR_METAL_TILED_LIGHT_TILE_BYTES;
   descriptor.tileWidth = VKR_METAL_TILED_TILE_WIDTH;
   descriptor.tileHeight = VKR_METAL_TILED_TILE_HEIGHT;
   prepared->tiled.draws = draws;
   prepared->tiled.sky_root = sky_root;
   prepared->tiled.demand_root = demand_root;
+  prepared->tiled.light_root = light_root;
+  prepared->tiled.light_tile = !overdraw;
   prepared->tiled.decals = decals;
   prepared->tiled.probes = probes;
   prepared->tiled.lighting = lighting;
@@ -3470,6 +3497,20 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         renderer->tiled_brdf_draws && !overdraw
             ? renderer->tiled_blend_pipelines[1][probes][lighting]
             : nil;
+    /* Blended surfaces shade their tile's lights, which the pass lists
+       first as the opaque pass does. */
+    if (!overdraw) {
+      if (!vkr_metal_packet_prepare_tiled_light_tile(
+              renderer, upload, lighting, (uint32_t)target.width,
+              (uint32_t)target.height, &prepared->tiled.light_root))
+        return false_v;
+      MTL4RenderPassDescriptor *descriptor =
+          renderer->render_passes[prepared->index];
+      descriptor.threadgroupMemoryLength = VKR_METAL_TILED_LIGHT_TILE_BYTES;
+      descriptor.tileWidth = VKR_METAL_TILED_TILE_WIDTH;
+      descriptor.tileHeight = VKR_METAL_TILED_TILE_HEIGHT;
+      prepared->tiled.light_tile = true_v;
+    }
     return vkr_metal_packet_prepare_text_draws(
         renderer, &prepared->world.text, renderer->tiled_text_pipeline,
         renderer->depth_read_state, packet->input.world->text_draws,

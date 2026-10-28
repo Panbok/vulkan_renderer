@@ -10,10 +10,12 @@
 #include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_rooms.h"
 
-/* The tiled pipeline's bounded dynamic lights (ADR-087): the point and spot
-   lights it draws, nearest the camera first, and how many of them cast
-   shadows. */
-#define VKR_STANDARD_SCENE_TILED_LIGHT_MAX 16u
+/* The tiled pipeline's dynamic lights (ADR-087): the point and spot lights
+   it draws, nearest the camera first, and how many of them cast shadows.
+   Each tile walks only the drawn lights that may reach it, but the tiled
+   class pays about 0.7 ms per extra light reaching each pixel at 1280x720 on
+   the M1 Pro, so it keeps the 64 nearest (owner decision 2026-10-28). */
+#define VKR_STANDARD_SCENE_TILED_LIGHT_MAX 64u
 #define VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX 4u
 
 /* Payload storage for one scene frame. Each draw_frame stage fills its part
@@ -2494,11 +2496,6 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           application->lighting_system.rectangle_light_count,
       .point_lights = application->lighting_system.point_lights,
       .point_light_count = application->lighting_system.point_light_count,
-      /* Only the tiled pipeline reads the CPU light grid. */
-      .point_light_grid =
-          application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED
-              ? &application->lighting_system.point_light_grid
-              : NULL,
       .ibl_probes = frame_ibl_probes,
       .ibl_probe_count = frame_ibl_probe_count,
       .subsurface = active_scene &&
@@ -4003,15 +4000,12 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
           key.angular_diameter_degrees, application->display_exposure);
     }
     /* It draws a bounded set of the dynamic lights nearest the camera, and
-       shadows fewer still, through the CPU light grid; the desktop
-       pipeline bins the whole table on the GPU. */
+       shadows fewer still; both pipelines bin their lights on the GPU. */
     if (tiled && camera)
       vkr_lighting_system_limit_point_lights(
           &application->lighting_system, camera->position, (float32_t)delta,
           VKR_STANDARD_SCENE_TILED_LIGHT_MAX,
           VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX);
-    if (tiled)
-      vkr_lighting_system_build_point_light_grid(&application->lighting_system);
     /* The room frame is borrowed for these syncs only. */
     application->lighting_system.point_light_hidden = NULL;
     application->lighting_system.point_light_hidden_context = NULL;

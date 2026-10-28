@@ -734,10 +734,12 @@ bool8_t vkr_material_codegen_msl_entries(const char *function,
               "%s_vkr_metal_tiled_forward%s%s%s%s_fragment(\n"
               "    VkrMetalTiledVertexOutput input [[stage_in]],\n"
               "    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],\n"
+              "    threadgroup const VkrMetalTiledLightTile &light_tile\n"
+              "        [[threadgroup(0)]],\n"
               "    bool front_facing [[front_facing]]) {\n"
               "  return vkr_metal_tiled_forward<%s, %s, %s, %s,\n"
               "      VkrMetalCustomSurface<%s>>(input, root, front_facing,\n"
-              "                                 float3(0.0f));\n"
+              "                                 float3(0.0f), light_tile);\n"
               "}\n\n",
               function, lightings[l].suffix, coverage ? "_coverage" : "",
               probes ? "_probes" : "", decals ? "_decals" : "",
@@ -752,12 +754,14 @@ bool8_t vkr_material_codegen_msl_entries(const char *function,
         "%s_vkr_metal_tiled_forward_inspect%s_fragment(\n"
         "    VkrMetalTiledVertexOutput input [[stage_in]],\n"
         "    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],\n"
+        "    threadgroup const VkrMetalTiledLightTile &light_tile\n"
+        "        [[threadgroup(0)]],\n"
         "    bool front_facing [[front_facing]],\n"
         "    float3 barycentric [[barycentric_coord]]) {\n"
         "  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_INSPECT, "
         "%s, true, true,\n"
         "      VkrMetalCustomSurface<%s>>(input, root, front_facing,\n"
-        "                                 barycentric);\n"
+        "                                 barycentric, light_tile);\n"
         "}\n\n",
         function, coverage ? "_coverage" : "", coverage ? "true" : "false",
         function);

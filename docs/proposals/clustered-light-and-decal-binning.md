@@ -42,8 +42,12 @@ clustered culling. What decals write stays in
   [ADR-119](../adr/119-dynamic-diffuse-volume-layer.md)). Ray-traced
   reflections are planned to replace probes and planar reflections; they
   will shade hit points off-screen too.
-- **Tiled pipeline.** Metal keeps the CPU light and decal grids and draws
-  the 16 dynamic lights nearest the camera
+- **Tiled pipeline.** Since 2026-10-28 (M5 lights) a tile kernel at the
+  start of `Tiled.Opaque` and `Tiled.Blend` lists each 32x16 tile's lights
+  in threadgroup memory, and fragments walk their depth bin's part of it;
+  the class draws the 64 dynamic lights nearest the camera, about 0.7 ms
+  per extra light reaching each pixel at 1280x720 on the M1 Pro. Decals
+  keep the CPU grid
   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision 11).
 - **Measured on Vulkan** (orbit, `Lighting.Deferred` p50, shader-only
   A/Bs, 2026-10-26 and 2026-10-27): the old CPU grid 3.65 ms; an index

@@ -15,14 +15,15 @@ reach it, with one bit per row of the table, so the desktop light loops
 shade every row; deferred lighting, transmission shading, forward blended
 draws and `Shadow.LocalMask` walk it. Each frustum cluster, a tile's depth
 slice, lists the decal rows that reach it for the decal resolve. Since
-54c10645 the runtime builds the CPU light and decal grids only for the
-tiled pipeline: a desktop packet carries `point_light_grid` and
-`decal_grid` as NULL, frame validation accepts a frame without them, and
-`vkr_renderer_render_submitted` rejects a tiled frame with lights or decals
-but no grids. Native evidence is Vulkan on an RX 6700 XT (Evidence). Since
-2026-10-28 the light table holds 1024 rows (`VKR_MAX_SCENE_POINT_LIGHTS`);
-the tiled pipeline's grid still names only the head's 128, and Metal has
-not run the raised table. Depth bins for the light tiles, per-tile lists
+54c10645 the runtime builds the CPU decal grid only for the tiled pipeline
+(a desktop packet carries `decal_grid` as NULL, and
+`vkr_renderer_render_submitted` rejects a tiled frame with decals but no
+grid), and since 2026-10-28 it builds no CPU light grid at all: the tiled
+pipeline lists its lights per screen tile on the GPU too
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 11). Native
+evidence is Vulkan on an RX 6700 XT (Evidence). Since 2026-10-28 the light
+table holds 1024 rows (`VKR_MAX_SCENE_POINT_LIGHTS`); the tiled pipeline
+draws the 64 nearest. Depth bins for the light tiles, per-tile lists
 past the bitfields and the cluster counters in metrics are open
 ([Clustered light and decal binning](../proposals/clustered-light-and-decal-binning.md)).
 

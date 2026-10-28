@@ -1043,7 +1043,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                       constant VkrMetalPacketFrameRoot *frame,
                       const device VkrMetalPacketMaterial &material,
                       thread const VkrMetalTiledSurface &surface,
-                      bool front_facing, uint probe, uint instance_index) {
+                      bool front_facing, uint probe, uint instance_index,
+                      threadgroup const VkrMetalTiledLightTile &light_tile) {
   // Detail lighting and lighting only shade a neutral grey dielectric
   // without emission; lighting only also leaves out normal maps.
   const bool neutral = Lighting == VKR_METAL_TILED_LIGHTING_INSPECT &&
@@ -1126,13 +1127,13 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
           frame, input.world_position, normal, view, base, metallic,
           roughness, f0, energy, false, no_coat, false, no_sheen, 0.0f,
           punctual_irradiance, light.diffuse, light.specular, coat_unused,
-          sheen_unused, VkrMetalTiledNoLocalShadow{});
+          sheen_unused, VkrMetalTiledNoLocalShadow{}, light_tile);
     } else {
       vkr_metal_packet_punctual_layered<true>(
           frame, input.world_position, normal, view, base, metallic,
           roughness, f0, energy, false, no_coat, false, no_sheen, 0.0f,
           punctual_irradiance, light.diffuse, light.specular, coat_unused,
-          sheen_unused, VkrMetalTiledLocalShadow{geometric_normal});
+          sheen_unused, VkrMetalTiledLocalShadow{geometric_normal}, light_tile);
     }
     if (Lighting == VKR_METAL_TILED_LIGHTING_ALL ||
         Lighting == VKR_METAL_TILED_LIGHTING_INSPECT ||
@@ -1473,29 +1474,22 @@ vkr_metal_tiled_inspect_normal(thread const VkrMetalTiledVertexOutput &input,
 }
 
 // The local lights that reach `world_position`, for the light count view
-// (ADR-127): its light grid cell's punctual lights within their range and
-// cone, and the rectangle lights it faces whose diffuse light can pass the
-// shading cut-off. The sun is not counted.
-static uint vkr_metal_tiled_light_count(constant VkrMetalPacketFrameRoot *frame,
-                                        float3 world_position) {
+// (ADR-127): its tile's punctual lights within their range and cone, and the
+// rectangle lights it faces whose diffuse light can pass the shading cut-off.
+// The sun is not counted.
+static uint
+vkr_metal_tiled_light_count(constant VkrMetalPacketFrameRoot *frame,
+                            float3 world_position,
+                            threadgroup const VkrMetalTiledLightTile &light_tile) {
   uint count = 0u;
-  const uint4 point_mask =
-      vkr_metal_packet_point_light_mask(frame, world_position);
-  const uint point_count = min(frame->point_light_count, 128u);
-  for (uint word = 0u; word < 4u; ++word) {
-    uint remaining = point_mask[word];
-    while (remaining != 0u) {
-      const uint light_index = word * 32u + ctz(remaining);
-      remaining &= remaining - 1u;
-      if (light_index >= point_count)
-        continue;
-      const device VkrGpuPointLightRow &light =
-          frame->point_light_data[light_index];
-      const VkrPunctualLightTerm term = vkr_punctual_light_term(
-          light.p0, light.p1, light.p2, light.p3, world_position);
-      if (term.in_range && term.cone > 0.0f)
-        ++count;
-    }
+  const uint tile_count = light_tile.count;
+  for (uint entry = 0u; entry < tile_count; ++entry) {
+    const device VkrGpuPointLightRow &light =
+        frame->point_light_data[light_tile.entries[entry] & 0xFFFFu];
+    const VkrPunctualLightTerm term = vkr_punctual_light_term(
+        light.p0, light.p1, light.p2, light.p3, world_position);
+    if (term.in_range && term.cone > 0.0f)
+      ++count;
   }
   const constant VkrMetalPacketLtc &ltc = *frame->ltc;
   const uint rectangle_count = min(ltc.light_count, 8u);
@@ -1530,7 +1524,9 @@ static bool vkr_metal_tiled_inspect(
     constant VkrMetalPacketFrameRoot *frame,
     const device VkrMetalPacketMaterial &material,
     thread const VkrMetalTiledSurface &surface, float3 barycentric,
-    bool front_facing, uint state_flags, thread float3 &out_color) {
+    bool front_facing, uint state_flags,
+    threadgroup const VkrMetalTiledLightTile &light_tile,
+    thread float3 &out_color) {
   // The shadow views show the sun's shadow at the surface instead of light:
   // the cascade that shades it, its shadow factor or the map's stored depth.
   // They sample with the geometric normal, as shading does
@@ -1583,7 +1579,8 @@ static bool vkr_metal_tiled_inspect(
                           ? vkr_gpu_draw_morph(state_flags)
                           : 0.0f)
                 : vkr_editor_light_count_color(
-                      vkr_metal_tiled_light_count(frame, input.world_position));
+                      vkr_metal_tiled_light_count(frame, input.world_position,
+                                                  light_tile));
     const float facing = saturate(
         dot(vkr_metal_tiled_inspect_normal(input, surface, front_facing),
             vkr_metal_packet_view_direction(frame, input.world_position)));
@@ -1633,7 +1630,8 @@ template <VkrMetalTiledLighting Lighting, bool Coverage, bool Probes,
 static VkrMetalTiledForwardOutput
 vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
                         constant VkrMetalPacketDrawRoot *root,
-                        bool front_facing, float3 barycentric) {
+                        bool front_facing, float3 barycentric,
+                        threadgroup const VkrMetalTiledLightTile &light_tile) {
   constant VkrMetalPacketFrameRoot *frame = root->frame;
   const device VkrGpuVisibleDrawRow &visible =
       root->visible_rows[input.visible_row_index];
@@ -1658,7 +1656,8 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
-                                front_facing, visible.state_flags, inspected))
+                                front_facing, visible.state_flags, light_tile,
+                                inspected))
       return {float4(inspected, coverage), half4(0.0h),
               Coverage || !vkr_tiled_demand_output
                   ? early_demand
@@ -1674,7 +1673,7 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
     probe = vkr_metal_tiled_pixel_probe(frame, input.world_position);
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, surface, front_facing, probe,
-      visible.instance_index);
+      visible.instance_index, light_tile);
   return {float4(light.diffuse + light.specular + light.emissive, coverage),
           vkr_metal_tiled_unpack_sun(light.sun),
           Coverage || !vkr_tiled_demand_output
@@ -1685,83 +1684,93 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_punctual_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_shadowed_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_inspect_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]],
     float3 barycentric [[barycentric_coord]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_INSPECT, false, true, true>(
-      input, root, front_facing, barycentric);
+      input, root, front_facing, barycentric, light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_punctual_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_shadowed_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_inspect_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]],
     float3 barycentric [[barycentric_coord]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_INSPECT, true, true, true>(
-      input, root, front_facing, barycentric);
+      input, root, front_facing, barycentric, light_tile);
 }
 
 // The same variants for frames whose camera sees a reflection probe volume
@@ -1771,65 +1780,73 @@ fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_inspect_coverage_fra
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_punctual_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_shadowed_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_punctual_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_shadowed_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 // The same variants for frames whose camera sees a decal box (ADR-092);
@@ -1840,129 +1857,145 @@ fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_coverage_probes_
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_punctual_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_shadowed_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_coverage_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_punctual_coverage_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_shadowed_coverage_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_coverage_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_punctual_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_shadowed_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_coverage_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_punctual_coverage_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_shadowed_coverage_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_coverage_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 // The overdraw view (ADR-127): the opaque pass draws every opaque and
@@ -2034,6 +2067,90 @@ kernel void vkr_metal_tiled_demand_tile(
   device atomic_uint *row = root.words + (word >> VKR_METAL_TILED_DEMAND_SHIFT);
   if (demand > atomic_load_explicit(row, memory_order_relaxed))
     atomic_fetch_max_explicit(row, demand, memory_order_relaxed);
+}
+
+// The light tile kernel's root (VkrMetalTiledLightTileRoot): the camera's
+// draw root, whose frame root holds the jittered view-projection the raster
+// uses and the light rows, and the reciprocal of the pass's extent.
+struct VkrMetalTiledLightTileRoot {
+  constant VkrMetalPacketDrawRoot *camera;
+  float2 inverse_extent;
+};
+
+// Whether a light's sphere reaches the tile's screen frustum, given the
+// frustum's four side planes in world space. A light without a range, or a
+// polynomial one, reaches every tile, as the range test in
+// vkr_punctual_light_term passes it everywhere.
+static bool vkr_metal_tiled_light_reaches_tile(
+    const device VkrGpuPointLightRow &light, thread const float4 *planes) {
+  const uint kind = uint(light.p2.w + 0.5f);
+  const float range = light.p2.z;
+  if (kind == 0u || !(range > 0.0f))
+    return true;
+  for (uint i = 0u; i < 4u; ++i) {
+    if (dot(planes[i].xyz, light.p0.xyz) + planes[i].w <
+        -range * length(planes[i].xyz))
+      return false;
+  }
+  return true;
+}
+
+// The pass's light tile (VkrMetalTiledLightTile), dispatched before its
+// draws. A light enters when its sphere reaches the tile's side planes, half
+// a pixel wider than the tile on each side; the tiled class has no depth
+// prepass (ADR-087 decision 5), so the fragments narrow the list by their
+// depth bin and test each light's range. Entries ascend by depth rank. One
+// SIMD-group compacts the table 32 ranks at a time by ballot.
+kernel void vkr_metal_tiled_light_tile(
+    constant VkrMetalTiledLightTileRoot &root [[buffer(1)]],
+    threadgroup VkrMetalTiledLightTile &tile [[threadgroup(0)]],
+    uint2 tile_index [[threadgroup_position_in_grid]],
+    uint2 tile_size [[threads_per_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]) {
+  if (simd_group != 0u)
+    return;
+  constant VkrMetalPacketFrameRoot *frame = root.camera->frame;
+  const uint count = frame->point_light_count;
+  // The rows in depth-rank order follow the depth bins (point_light_bins).
+  const device ushort *order = reinterpret_cast<const device ushort *>(
+      frame->point_light_bins + frame->point_light_bin_counts.x);
+  const uint unbounded = frame->point_light_bin_counts.y;
+  const float2 low =
+      (float2(tile_index * tile_size) - 0.5f) * root.inverse_extent;
+  const float2 high =
+      (float2((tile_index + 1u) * tile_size) + 0.5f) * root.inverse_extent;
+  // Pixel rows grow down and clip-space y up.
+  const float left = low.x * 2.0f - 1.0f;
+  const float right = high.x * 2.0f - 1.0f;
+  const float bottom = 1.0f - high.y * 2.0f;
+  const float top = 1.0f - low.y * 2.0f;
+  // The raster takes clip = world * view_projection, so clip component j is
+  // the world point against column j.
+  const float4x4 clip = frame->view_projection;
+  const float4 planes[4] = {clip[0] - left * clip[3], right * clip[3] - clip[0],
+                            clip[1] - bottom * clip[3],
+                            top * clip[3] - clip[1]};
+  uint written = 0u;
+  for (uint base = 0u; base < count; base += 32u) {
+    const uint rank = base + lane;
+    const uint row = rank < count ? uint(order[rank]) : 0u;
+    const bool reaches =
+        rank < count && vkr_metal_tiled_light_reaches_tile(
+                            frame->point_light_data[row], planes);
+    const ulong vote =
+        static_cast<ulong>(static_cast<simd_vote::vote_t>(simd_ballot(reaches)));
+    const uint slot = written + uint(popcount(vote & ((1ul << lane) - 1ul)));
+    if (reaches && slot < VKR_METAL_TILED_TILE_LIGHT_MAX)
+      tile.entries[slot] = (rank << 16u) | row;
+    written += uint(popcount(vote));
+  }
+  if (lane == 0u) {
+    tile.count = min(written, VKR_METAL_TILED_TILE_LIGHT_MAX);
+    tile.dropped = written - tile.count;
+    // Unbounded lights reach every tile and hold the first ranks.
+    tile.unbounded = min(unbounded, tile.count);
+  }
 }
 
 // The MetalFX upscaler's camera motion (VkrMetalTiledMotionRoot): the
@@ -2304,7 +2421,8 @@ template <VkrMetalTiledLighting Lighting, bool Probes>
 static VkrMetalTiledBlendOutput
 vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
                       constant VkrMetalPacketDrawRoot *root,
-                      bool front_facing, float3 barycentric) {
+                      bool front_facing, float3 barycentric,
+                      threadgroup const VkrMetalTiledLightTile &light_tile) {
   constant VkrMetalPacketFrameRoot *frame = root->frame;
   const device VkrGpuVisibleDrawRow &visible =
       root->visible_rows[input.visible_row_index];
@@ -2339,7 +2457,8 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
-                                front_facing, visible.state_flags, inspected)) {
+                                front_facing, visible.state_flags, light_tile,
+                                inspected)) {
       output.color = float4(inspected * alpha, 0.0f);
       output.behind = float4(1.0f - alpha);
       return output;
@@ -2352,7 +2471,7 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
                               frame, visible.instance_index,
                               input.world_position))
              : 0u,
-      visible.instance_index);
+      visible.instance_index, light_tile);
   // The light behind a volume or rough glass, when this frame has the copy.
   bool refracted = false;
   float3 refracted_light = float3(0.0f);
@@ -2420,74 +2539,83 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_NONE, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_punctual_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_shadowed_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_SHADOWED, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_all_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_ALL, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_inspect_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]],
     float3 barycentric [[barycentric_coord]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_INSPECT, true>(
-      input, root, front_facing, barycentric);
+      input, root, front_facing, barycentric, light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_NONE, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_punctual_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_shadowed_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_SHADOWED, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_all_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_ALL, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 // The moving-caster variants (ADR-108): shadowed point and spot lights, and
@@ -2496,81 +2624,91 @@ fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_all_probes_fragment(
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS, false, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS, false, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS, false, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS, false, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS, true, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS, true, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_coverage_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS, true, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_coverage_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS, true, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_casters_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_CASTERS, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_casters_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_CASTERS, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 // The moving-caster variants with rectangle lights, for frames that select
@@ -2579,79 +2717,89 @@ fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_casters_probes_fragment(
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_all_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_all_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_all_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_all_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_all_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true, false, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_all_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true, true, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_all_coverage_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true, false, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_casters_all_coverage_probes_decals_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true, true, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_casters_all_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }
 
 fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_casters_all_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true>(
-      input, root, front_facing, float3(0.0f));
+      input, root, front_facing, float3(0.0f), light_tile);
 }

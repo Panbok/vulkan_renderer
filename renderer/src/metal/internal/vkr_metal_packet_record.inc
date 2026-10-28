@@ -562,6 +562,29 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   }
 }
 
+/* A tiled pass's light tile (VkrMetalTiledLightTile): the threadgroup memory
+   its draws read, and the kernel that lists each tile's lights into it
+   before them when the pass shades local lights. */
+vkr_internal void vkr_metal_packet_record_tiled_light_tile(
+    VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    const VkrMetalPacketPreparedPass *pass, id<MTLRenderPipelineState> pipeline)
+    API_AVAILABLE(macos(26.0)) {
+  if (!pass->tiled.light_tile)
+    return;
+  [encoder setThreadgroupMemoryLength:VKR_METAL_TILED_LIGHT_TILE_BYTES
+                               offset:0u
+                              atIndex:0u];
+  if (!pass->tiled.light_root)
+    return;
+  [renderer->argument_table setAddress:pass->tiled.light_root atIndex:1u];
+  [encoder setArgumentTable:renderer->argument_table
+                   atStages:MTLRenderStageTile];
+  vkr_metal_packet_set_render_pipeline(renderer, encoder, pipeline);
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
+  [encoder dispatchThreadsPerTile:MTLSizeMake(VKR_METAL_TILED_TILE_WIDTH,
+                                              VKR_METAL_TILED_TILE_HEIGHT, 1u)];
+}
+
 /* The tiled pipeline's opaque pass (ADR-087): shading of the opaque
    buckets, which cannot discard, so hidden-surface removal shades each
    sample's nearest surface once, then of the alpha-tested buckets, which lay
@@ -572,6 +595,10 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   const VkrMetalPacketIndirectPass *draw = &pass->tiled.draws;
   [encoder setViewport:draw->viewport];
+  vkr_metal_packet_record_tiled_light_tile(
+      renderer, encoder, pass,
+      renderer->tiled_light_pipelines[pass->tiled.sun != 0u ? 1u : 0u]
+                                     [pass->tiled.demand != 0u ? 1u : 0u]);
   if (draw->commands) {
     /* Opaque buckets shade first, without discard, then the alpha-tested
        ones write the samples their alpha covers. The overdraw view draws
@@ -762,6 +789,9 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     break;
   case VKR_RG_EXECUTOR_TILED_BLEND:
   case VKR_RG_EXECUTOR_PICKING: {
+    if (pass->kind == VKR_RG_EXECUTOR_TILED_BLEND)
+      vkr_metal_packet_record_tiled_light_tile(
+          renderer, encoder, pass, renderer->tiled_blend_light_pipeline);
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;
     if (direct->count)
       vkr_metal_packet_record_prepared_draws(

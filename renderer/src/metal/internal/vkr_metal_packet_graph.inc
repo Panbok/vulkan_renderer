@@ -1899,8 +1899,8 @@ vkr_internal bool8_t vkr_metal_packet_configure_render_pass(
     API_AVAILABLE(macos(26.0)) {
   (void)packet;
   /* Descriptors are reused across passes and frames; the tiled opaque pass
-     adds multisample resolves and a tile size that no other pass may
-     inherit. */
+     adds multisample resolves, and the tiled passes a tile size and light
+     tile memory, that no other pass may inherit. */
   for (uint32_t i = 0; i < VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS; ++i) {
     descriptor.colorAttachments[i].texture = nil;
     descriptor.colorAttachments[i].resolveTexture = nil;
@@ -1913,6 +1913,7 @@ vkr_internal bool8_t vkr_metal_packet_configure_render_pass(
       MTLMultisampleDepthResolveFilterSample0;
   descriptor.tileWidth = 0;
   descriptor.tileHeight = 0;
+  descriptor.threadgroupMemoryLength = 0;
   descriptor.renderTargetArrayLength = 1;
   descriptor.renderTargetWidth = 0;
   descriptor.renderTargetHeight = 0;

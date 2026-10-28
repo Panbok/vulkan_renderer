@@ -188,6 +188,12 @@ typedef struct VkrMetalPacketPreparedPass {
       /* VkrMetalTiledDemandRoot of the pass's texture demand tile kernel;
          zero when the frame reads back none. */
       uint64_t demand_root;
+      /* VkrMetalTiledLightTileRoot of the pass's light tile kernel; zero
+         when the pass shades no local lights. */
+      uint64_t light_root;
+      /* The pass's draws read a light tile from threadgroup memory; the
+         opaque pass always, the blend pass outside the overdraw view. */
+      bool8_t light_tile;
       /* VKR_METAL_TILED_DEMAND_VARIANT in a texture demand frame, else 0:
          the pass has the demand target and draws the demand variants. */
       uint32_t demand;

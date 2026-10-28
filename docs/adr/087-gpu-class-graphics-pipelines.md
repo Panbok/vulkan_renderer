@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-22
+updated: 2026-10-28
 authority: adr
 ---
 
@@ -424,8 +424,8 @@ pipeline rather than a backend mechanism.
     ([ADR-108](108-baked-lamp-direct-pages.md)). Then
     `vkr_lighting_system_limit_point_lights`
     ([`vkr_lighting_system.h`](../../runtime/src/renderer/systems/vkr_lighting_system.h))
-    selects the 16 dynamic point and spot lights nearest the camera by the
-    distance to their range, ties by the distance to their centre, and lets
+    selects the 64 dynamic point and spot lights nearest the camera by the
+    distance to their range (16 before 2026-10-28), ties by the distance to their centre, and lets
     the 4 nearest shadow casters among them cast shadows. A light selected
     or shadowed the frame before ranks as if the camera were 1.15 times
     closer, so membership does not flip while distances cross. A light
@@ -433,13 +433,35 @@ pipeline rather than a backend mechanism.
     shadow fade-in time: a leaving light keeps its slot until it has faded
     and loses its shadow, which the local shadow cache fades out over the
     same time (ADR-019), and an entering light takes the freed slot, so at
-    most 16 draw. The first frame and a camera cut snap. Before 2026-10-08
+    most 64 draw. The first frame and a camera cut snap. Before 2026-10-08
     ties fell to table order and the set and its shadows were recomputed
     every frame, so in a brush level of about 125 unbaked lamps whose ranges
     held the camera, lights and shadows popped as the camera moved (user
-    report). The forward shader evaluates them through the shared
-    light grid and local-light loop (`vkr_metal_packet_punctual_layered`),
-    and dynamic rectangle lights through the shared LTC path. A shadowed
+    report). Since 2026-10-28 the GPU finds each pixel's lights in place of
+    the CPU light grid: a tile kernel, `vkr_metal_tiled_light_tile` in
+    [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal),
+    runs at the start of `Tiled.Opaque` (early and late) and `Tiled.Blend`
+    and lists the lights whose sphere reaches each 32x16 tile's four side
+    planes into threadgroup memory (`VkrMetalTiledLightTile`, at most 512
+    entries), one SIMD-group compacting the table by ballot. The class
+    keeps no depth prepass (decision 5; owner decision 2026-10-28), so the
+    tiles have no depth bounds: the host sorts the rows by the near view
+    depth of their sphere each frame and writes 1024 linear depth bins over
+    them (`vkr_metal_packet_write_light_bins`), each the lowest and highest
+    rank that reaches it, and a fragment walks only its SIMD-group's depth
+    window of its tile's list, then tests each light's range
+    (`vkr_metal_packet_punctual_layered`); unbounded lights are always
+    walked. Dynamic rectangle lights take the shared LTC path. The tiled
+    class pays for each light that reaches a pixel, not for the table: on
+    the clustered Bistro street (392 lights, 1280x720, M1 Pro,
+    `bistro_clustered_tiled_timing`, `local-windowed-gpu`, not
+    authoritative) `Tiled.Opaque` p50 took 20.66 ms with 16 lights through
+    the grid, and 21.77, 24.13, 27.96 and 37.44 ms with 16, 32, 64 and all
+    lights through the tiles; on the 920-light stress street
+    (`bistro_clustered_stress_tiled_timing`) 19.80 ms before and 31.83 ms
+    at 64. With the kernel running and no light walked it took 9.47 ms, so
+    the light loop, not the binning, holds the cost; owner decision
+    2026-10-28 set 64. A shadowed
     light takes four bilinear comparisons of its local shadow map half a
     texel apart, a 3x3 tent kept a texel inside its face
     (`vkr_metal_packet_local_shadow_sample<false, false, true>` in

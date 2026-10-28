@@ -442,10 +442,16 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint32_t shadow_debug_mode;
   uint64_t froxel_integrated_texture_id;
   uint64_t point_light_data;
-  uint64_t point_light_masks;
-  Vec4 point_light_grid_origin_cell_size;
-  uint32_t point_light_grid_dimensions_count[4];
-  VkrPointLightMask point_light_global_mask;
+  /** The light depth bins (VKR_METAL_TILED_LIGHT_BIN_COUNT words, each the
+      lowest and highest depth rank of the bounded lights reaching the bin,
+      packed low | high << 16), then the rows in depth-rank order as 16-bit
+      indices: unbounded lights first, then bounded ones by near depth. */
+  uint64_t point_light_bins;
+  /** x: bins per metre of view depth. */
+  Vec4 point_light_bin_params;
+  /** x: bin count; y: unbounded lights, the first depth ranks. */
+  uint32_t point_light_bin_counts[4];
+  uint32_t point_light_bin_reserved[4];
   uint32_t point_light_count;
   /** Seconds the renderer's clock has run, which Custom graphs' time reads
       (ADR-096); it wraps hourly to keep its precision. */
@@ -889,6 +895,41 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTiledDemandRoot {
 
 _Static_assert(sizeof(VkrMetalTiledDemandRoot) == 16u,
                "Metal tiled texture demand root ABI drift");
+
+/** The light tile kernel of the tiled opaque pass (M5): the camera's draw
+    root, whose frame root holds the view-projection and the light rows,
+    and the reciprocal of the pass's extent. */
+typedef struct VKR_SIMD_ALIGN VkrMetalTiledLightTileRoot {
+  uint64_t camera_draw_root;
+  float32_t inverse_extent[2];
+} VkrMetalTiledLightTileRoot;
+
+_Static_assert(sizeof(VkrMetalTiledLightTileRoot) == 16u,
+               "Metal tiled light tile root ABI drift");
+
+/** The lights that may reach one tile of a tiled pass, in the pass's
+    threadgroup memory (VkrMetalTiledLightTile in lighting.metalh): each entry
+    a depth rank and its row (rank << 16 | row), ascending by rank; a tile
+    reached by more keeps the lowest ranks. */
+#define VKR_METAL_TILED_TILE_LIGHT_MAX 512u
+/** Linear view-depth bins over the bounded lights' depth (point_light_bins). */
+#define VKR_METAL_TILED_LIGHT_BIN_COUNT 1024u
+
+typedef struct VkrMetalTiledLightTile {
+  uint32_t count;
+  uint32_t dropped;
+  /** Entries whose light is unbounded: the first ones. */
+  uint32_t unbounded;
+  uint32_t reserved;
+  uint32_t entries[VKR_METAL_TILED_TILE_LIGHT_MAX];
+} VkrMetalTiledLightTile;
+
+_Static_assert(sizeof(VkrMetalTiledLightTile) == 2064u,
+               "Metal tiled light tile ABI drift");
+
+/* Threadgroup memory lengths are multiples of 16 bytes. */
+#define VKR_METAL_TILED_LIGHT_TILE_BYTES                                       \
+  ((sizeof(VkrMetalTiledLightTile) + 15u) & ~(size_t)15u)
 
 /** Per-frame sky-view lookup and aerial-perspective volume builders. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkyBuildRoot {

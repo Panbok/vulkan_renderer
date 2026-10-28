@@ -15,6 +15,7 @@
 #include <Block.h>
 #include <dispatch/dispatch.h>
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_byte_io.h"
@@ -416,7 +417,11 @@ typedef struct VkrMetalPacketFrameUpload {
   uint32_t gpu_draw_candidate_copy_count;
   uint64_t gpu_draw_state_zero_source_offset;
   uint64_t point_light_data_gpu;
-  uint64_t point_light_masks_gpu;
+  uint64_t point_light_bins_gpu;
+  /* point_light_bin_params.x and point_light_bin_counts.x and .y. */
+  float32_t point_light_bins_per_metre;
+  uint32_t point_light_bin_count;
+  uint32_t point_light_unbounded_count;
   uint64_t shadow_cascades_gpu;
   uint64_t shadow_texture_id;
   uint64_t local_shadow_texture_id;
@@ -1103,6 +1108,11 @@ struct VkrMetalPacketRenderer {
   /* The demand frames' texture demand tile kernel, by sun variant
      (ADR-024). */
   id<MTLRenderPipelineState> tiled_demand_pipelines[2];
+  /* The opaque pass's light tile kernel, which lists the lights that may
+     reach each tile before its draws, indexed like the resolve. */
+  id<MTLRenderPipelineState> tiled_light_pipelines[2][2];
+  /* The blend pass's light tile kernel, over its one-sample colour. */
+  id<MTLRenderPipelineState> tiled_blend_light_pipeline;
   id<MTLRenderPipelineState> tiled_atmosphere_pipelines[2][2];
   /* The overdraw view (ADR-127): every opaque and alpha-tested draw adds a
      layer in the opaque pass, by sun variant, and every blended draw one in

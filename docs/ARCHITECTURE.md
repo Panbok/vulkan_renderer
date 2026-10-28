@@ -833,8 +833,9 @@ resolve applies the same decals. Standard camera draws that cannot be
 lightmapped shade with pipelines that compile out the lightmap path, and on
 non-terrain materials the terrain layers, created in the background per
 shading variant ([ADR-129](adr/129-tiled-standard-draw-kinds.md)). It
-draws the 16 dynamic lights nearest the camera, 4 of them shadowed with a
-four-comparison tent each, holding the set with an incumbent bonus and fading
+draws the 64 dynamic lights nearest the camera, each tile walking the ones
+its tile kernel lists within the fragment's depth bin, 4 of them shadowed
+with a four-comparison tent each, holding the set with an incumbent bonus and fading
 lights in and out over 0.25 s, and no FXAA or screen-space effects. By
 default it renders one sample per pixel at 0.6 of each axis with a Halton
 jitter, and the MetalFX temporal scaler rebuilds the Scene at its output

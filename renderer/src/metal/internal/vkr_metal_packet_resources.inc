@@ -2438,8 +2438,8 @@ typedef struct VkrMetalPacketUploadPlan {
   /* Lights, shadows and lighting tables. */
   uint32_t point_light_count;
   uint64_t point_light_offset;
-  uint64_t point_light_masks_offset;
-  uint64_t point_light_masks_bytes;
+  uint64_t point_light_bins_offset;
+  uint64_t point_light_bins_bytes;
   uint32_t shadow_cascade_count;
   uint64_t shadow_cascades_offset;
   uint32_t local_shadow_view_count;
@@ -2724,22 +2724,24 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       plan->gpu_draw_instances_offset + gpu_draw_instances_bytes;
   plan->point_light_count =
       packet->input.lighting ? packet->input.lighting->point_light_count : 0;
-  const uint32_t point_light_cell_count =
-      plan->point_light_count > 0
-          ? packet->input.lighting->point_light_grid->cell_count
-          : 0;
   plan->point_light_offset =
       vkr_align_up_u64(instance_bytes, AlignOf(VkrGpuPointLightRow));
   const uint64_t point_light_bytes =
       (uint64_t)plan->point_light_count * sizeof(VkrGpuPointLightRow);
-  plan->point_light_masks_offset = vkr_align_up_u64(
-      plan->point_light_offset + point_light_bytes, AlignOf(VkrPointLightMask));
-  plan->point_light_masks_bytes =
-      (uint64_t)point_light_cell_count * sizeof(VkrPointLightMask);
+  /* The depth bins, then the rows in depth-rank order (point_light_bins). */
+  plan->point_light_bins_offset = vkr_align_up_u64(
+      plan->point_light_offset + point_light_bytes, sizeof(uint32_t));
+  plan->point_light_bins_bytes =
+      plan->point_light_count > 0
+          ? VKR_METAL_TILED_LIGHT_BIN_COUNT * sizeof(uint32_t) +
+                vkr_align_up_u64((uint64_t)plan->point_light_count *
+                                     sizeof(uint16_t),
+                                 sizeof(uint32_t))
+          : 0u;
   plan->shadow_cascade_count =
       packet->input.shadow ? packet->input.shadow->cascade_count : 0;
   plan->shadow_cascades_offset = vkr_align_up_u64(
-      plan->point_light_masks_offset + plan->point_light_masks_bytes,
+      plan->point_light_bins_offset + plan->point_light_bins_bytes,
       AlignOf(VkrMetalPacketShadowCascade));
   const uint64_t shadow_cascades_bytes = (uint64_t)plan->shadow_cascade_count *
                                          sizeof(VkrMetalPacketShadowCascade);
@@ -3103,6 +3105,93 @@ vkr_internal bool8_t vkr_metal_packet_pack_upload_candidates(
   return true_v;
 }
 
+/* A light's view-depth interval for the depth bins: its row and the near
+   depth it sorts by. */
+typedef struct VkrMetalLightDepth {
+  float32_t near_depth;
+  float32_t far_depth;
+  uint16_t row;
+} VkrMetalLightDepth;
+
+/* Near depth, then row: a total order, so the ranks are stable. */
+vkr_internal int32_t vkr_metal_light_depth_compare(const void *lhs,
+                                                   const void *rhs) {
+  const VkrMetalLightDepth *a = lhs;
+  const VkrMetalLightDepth *b = rhs;
+  if (a->near_depth != b->near_depth)
+    return a->near_depth < b->near_depth ? -1 : 1;
+  return a->row < b->row ? -1 : (a->row > b->row ? 1 : 0);
+}
+
+/* The tiled pass's light depth bins (point_light_bins): the frame's rows in
+   depth-rank order, unbounded lights first and bounded ones by the near view
+   depth of their sphere, and VKR_METAL_TILED_LIGHT_BIN_COUNT linear bins over
+   the bounded lights' depth, each the lowest and highest rank that reaches
+   it. A fragment walks only its bin's ranks of its tile's list (Drobot,
+   SIGGRAPH 2017); the tile shader has no depth bounds (ADR-087 decision 5).
+   Each interval widens by a millimetre and a part in a thousand of its depth,
+   so a fragment's own depth arithmetic never falls just outside it. */
+vkr_internal void
+vkr_metal_packet_write_light_bins(const VkrPreparedFrame *packet,
+                                  uint32_t *bins,
+                                  VkrMetalPacketFrameUpload *upload) {
+  const VkrFrameLighting *lighting = packet->input.lighting;
+  const uint32_t count = lighting->point_light_count;
+  const Mat4 view = packet->input.globals.view;
+  VkrMetalLightDepth bounded[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint16_t *order = (uint16_t *)(bins + VKR_METAL_TILED_LIGHT_BIN_COUNT);
+  uint32_t unbounded = 0u;
+  uint32_t bounded_count = 0u;
+  float32_t far_depth = 0.0f;
+  for (uint32_t row = 0u; row < count; ++row) {
+    const VkrPointLight *light = &lighting->point_lights[row];
+    if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL ||
+        !(light->range > 0.0f)) {
+      order[unbounded++] = (uint16_t)row;
+      continue;
+    }
+    const Vec4 center = mat4_mul_vec4(
+        view, vec4_new(light->position.x, light->position.y,
+                       light->position.z, 1.0f));
+    const float32_t depth = -center.z;
+    const float32_t margin = 1.0e-3f + 1.0e-3f * vkr_abs_f32(depth);
+    bounded[bounded_count++] = (VkrMetalLightDepth){
+        .near_depth = depth - light->range - margin,
+        .far_depth = depth + light->range + margin,
+        .row = (uint16_t)row,
+    };
+    far_depth = Max(far_depth, depth + light->range + margin);
+  }
+  vkr_sort(bounded, bounded_count, sizeof(*bounded),
+           vkr_metal_light_depth_compare);
+  const float32_t bins_per_metre =
+      far_depth > 0.0f ? (float32_t)VKR_METAL_TILED_LIGHT_BIN_COUNT / far_depth
+                       : 0.0f;
+  for (uint32_t bin = 0u; bin < VKR_METAL_TILED_LIGHT_BIN_COUNT; ++bin)
+    bins[bin] = 0xFFFFu;
+  for (uint32_t i = 0u; i < bounded_count; ++i) {
+    const VkrMetalLightDepth *depth = &bounded[i];
+    const uint32_t rank = unbounded + i;
+    order[rank] = depth->row;
+    if (depth->far_depth < 0.0f)
+      continue;
+    const uint32_t first = (uint32_t)Clamp(
+        vkr_floor_f32(Max(depth->near_depth, 0.0f) * bins_per_metre), 0.0f,
+        (float32_t)(VKR_METAL_TILED_LIGHT_BIN_COUNT - 1u));
+    const uint32_t last = (uint32_t)Clamp(
+        vkr_floor_f32(depth->far_depth * bins_per_metre), 0.0f,
+        (float32_t)(VKR_METAL_TILED_LIGHT_BIN_COUNT - 1u));
+    for (uint32_t bin = first; bin <= last; ++bin) {
+      const uint32_t low = Min(bins[bin] & 0xFFFFu, rank);
+      const uint32_t high = Max(bins[bin] >> 16u, rank);
+      bins[bin] = low | (high << 16u);
+    }
+  }
+  upload->point_light_bins_per_metre = bins_per_metre;
+  upload->point_light_bin_count = VKR_METAL_TILED_LIGHT_BIN_COUNT;
+  upload->point_light_unbounded_count = unbounded;
+}
+
 /* Writes point-light, shadow, rectangle-light, LTC and sheen data. */
 vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
@@ -3124,12 +3213,9 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
             (float32_t)packet->input.local_shadow->light_first_view[i];
     }
     upload->point_light_data_gpu = gpu + plan->point_light_offset;
-    if (plan->point_light_masks_bytes > 0) {
-      MemCopy(cpu + plan->point_light_masks_offset,
-              packet->input.lighting->point_light_grid->masks,
-              plan->point_light_masks_bytes);
-      upload->point_light_masks_gpu = gpu + plan->point_light_masks_offset;
-    }
+    vkr_metal_packet_write_light_bins(
+        packet, (uint32_t *)(cpu + plan->point_light_bins_offset), upload);
+    upload->point_light_bins_gpu = gpu + plan->point_light_bins_offset;
   }
   if (plan->shadow_cascade_count > 0) {
     VkrMetalPacketShadowCascade *cascades =

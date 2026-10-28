@@ -326,10 +326,10 @@ struct VkrMetalPacketFrameRoot {
   uint shadow_debug_mode;
   texture3d<float, access::sample> froxel_integrated;
   device VkrGpuPointLightRow *point_light_data;
-  device uint4 *point_light_masks;
-  float4 point_light_grid_origin_cell_size;
-  uint4 point_light_grid_dimensions_count;
-  uint4 point_light_global_mask;
+  device uint *point_light_bins;
+  float4 point_light_bin_params;
+  uint4 point_light_bin_counts;
+  uint4 point_light_bin_reserved;
   uint point_light_count;
   float custom_time;
   uint point_light_reserved_1;

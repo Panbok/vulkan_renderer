@@ -417,23 +417,50 @@ float vkr_metal_packet_probe_influence(
                                         probe.center_blend.w);
 }
 
-uint4 vkr_metal_packet_point_light_mask(constant VkrMetalPacketFrameRoot *root,
-                                        float3 world_position) {
-  uint4 result = root->point_light_global_mask;
-  uint4 dimensions = root->point_light_grid_dimensions_count;
-  float cell_size = root->point_light_grid_origin_cell_size.w;
-  if (dimensions.w == 0u || cell_size <= 0.0 ||
-      root->point_light_masks == nullptr)
-    return result;
-  int3 cell = int3(
-      floor((world_position - root->point_light_grid_origin_cell_size.xyz) /
-            cell_size));
-  if (any(cell < 0) || cell.x >= int(dimensions.x) ||
-      cell.y >= int(dimensions.y) || cell.z >= int(dimensions.z))
-    return result;
-  uint index = uint(cell.x) +
-               dimensions.x * (uint(cell.y) + dimensions.y * uint(cell.z));
-  return result | root->point_light_masks[index];
+// The light tile of a tiled pass's 32x16 tile (VkrMetalTiledLightTile in
+// vkr_metal_packet_abi.h): the lights whose sphere may reach the tile, each
+// entry its depth rank and row (rank << 16 | row), ascending by rank, which
+// vkr_metal_tiled_light_tile writes into threadgroup memory at the start of
+// the pass for its fragments. The first `unbounded` entries are lights
+// without a range. A tile reached by more than VKR_METAL_TILED_TILE_LIGHT_MAX
+// keeps the lowest ranks and counts the rest in `dropped`.
+#define VKR_METAL_TILED_TILE_LIGHT_MAX 512u
+
+struct VkrMetalTiledLightTile {
+  uint count;
+  uint dropped;
+  uint unbounded;
+  uint reserved;
+  uint entries[VKR_METAL_TILED_TILE_LIGHT_MAX];
+};
+
+// The window of depth ranks whose bounded lights may reach a fragment at
+// `world_position` (point_light_bins), widened to the SIMD-group's so the
+// walk stays uniform; low > high when none may.
+static uint2 vkr_metal_tiled_light_window(
+    constant VkrMetalPacketFrameRoot *frame, float3 world_position) {
+  const float depth = -(frame->view * float4(world_position, 1.0f)).z;
+  const float bin = max(depth, 0.0f) * frame->point_light_bin_params.x;
+  uint packed = 0xFFFFu;
+  if (bin < float(frame->point_light_bin_counts.x))
+    packed = frame->point_light_bins[uint(bin)];
+  return uint2(simd_min(packed & 0xFFFFu), simd_max(packed >> 16u));
+}
+
+// The first entry of `light_tile` past its unbounded ones whose rank is at
+// least `rank`, or its count.
+static uint vkr_metal_tiled_light_first(
+    threadgroup const VkrMetalTiledLightTile &light_tile, uint rank) {
+  uint low = light_tile.unbounded;
+  uint high = light_tile.count;
+  while (low < high) {
+    const uint middle = (low + high) / 2u;
+    if ((light_tile.entries[middle] >> 16u) < rank)
+      low = middle + 1u;
+    else
+      high = middle;
+  }
+  return low;
 }
 
 // Every enabled punctual light for one shaded point, traversed once for the
@@ -456,86 +483,85 @@ void vkr_metal_packet_punctual_layered(
     VkrSheenLayer sheen, float sheen_normalization,
     thread float3 &irradiance_sum, thread float3 &diffuse_sum,
     thread float3 &specular_sum, thread float3 &coat_sum,
-    thread float3 &sheen_sum, LocalShadow local_shadow) {
-  uint4 point_mask = vkr_metal_packet_point_light_mask(frame, world_position);
-  uint point_count = min(frame->point_light_count, 128u);
-  for (uint word = 0u; word < 4u; ++word) {
-    /* The mask comes from a per-pixel cluster cell, so lanes straddling a cell
-       boundary carry different masks and the SIMD-group already pays for the
-       union of their set bits. Iterating that union explicitly makes
-       `light_index` SIMD-uniform, which lets the light rows load as scalars
-       instead of per-lane vectors. Each lane still accumulates only its own
-       bits, so the summation order and result are unchanged. */
-    uint remaining = simd_or(point_mask[word]);
-    while (remaining != 0u) {
-      uint bit = ctz(remaining);
-      remaining &= remaining - 1u;
-      uint light_index = word * 32u + bit;
-      if (light_index >= point_count)
-        continue;
-      const device VkrGpuPointLightRow &light =
-          frame->point_light_data[light_index];
-      float4 p0 = light.p0;
-      float4 p1 = light.p1;
-      float4 p2 = light.p2;
-      float4 p3 = light.p3;
-      if ((point_mask[word] & (1u << bit)) == 0u)
-        continue;
-      VkrPunctualLightTerm term =
-          vkr_punctual_light_term(p0, p1, p2, p3, world_position);
-      if (!term.in_range || term.cone <= 0.0f)
-        continue;
-      uint kind = term.kind;
-      float3 light_direction = term.direction;
-      float attenuation = term.attenuation * term.cone;
-      local_shadow.measure(light_index,
-                           vkr_local_light_contribution(
-                               p1.rgb, p2.x, attenuation,
-                               dot(normal, light_direction),
-                               frame->pre_exposure));
-      bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
-                      dot(normal, light_direction) < 0.0f;
-      float3 shadow_normal = back_lit ? -normal : normal;
-      if (local_shadow.contribution_cutoff() &&
-          vkr_local_light_contribution(p1.rgb, p2.x, attenuation,
-                                       dot(shadow_normal, light_direction),
-                                       frame->pre_exposure) <
-              VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
-        continue;
-      /* The base lobes are zero for a light behind the shadow normal, so its
-         visibility is never looked up. */
-      float3 base_attenuation =
-          vkr_local_shadow_light_faces(shadow_normal, light_direction)
-              ? attenuation * local_shadow(frame, uint(p3.w), light_index,
-                                           kind, world_position,
-                                           shadow_normal)
-              : float3(0.0f);
-      float3 coat_attenuation = base_attenuation;
-      if (coat_active && any(coat.normal != shadow_normal)) {
-        coat_attenuation =
-            attenuation * vkr_metal_packet_local_shadow_sample(
-                frame, uint(p3.w), kind, world_position, coat.normal);
-      }
-      if (EvaluateDiffuse) {
-        VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
-            normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
-            albedo, metallic, roughness, f0, energy);
-        irradiance_sum += direct.irradiance;
-        diffuse_sum += direct.diffuse;
-        specular_sum += direct.specular;
-      } else {
-        specular_sum += vkr_metal_packet_direct_specular(
-            normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
-            roughness, f0, energy);
-      }
-      if (coat_active)
-        coat_sum += vkr_metal_packet_clearcoat_direct(
-            view, light_direction, p1.rgb * p2.x * coat_attenuation, coat);
-      if (sheen_active)
-        sheen_sum += vkr_metal_packet_sheen_direct(
-            normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
-            sheen, sheen_normalization);
+    thread float3 &sheen_sum, LocalShadow local_shadow,
+    threadgroup const VkrMetalTiledLightTile &light_tile) {
+  /* The tile's lights without a range, then those of the fragments' depth
+     window, in depth-rank order. The window and the tile's list are the same
+     for every lane, so `light_index` is SIMD-uniform and the light rows load
+     as scalars. */
+  const uint unbounded = light_tile.unbounded;
+  const uint2 window = vkr_metal_tiled_light_window(frame, world_position);
+  const uint first = vkr_metal_tiled_light_first(light_tile, window.x);
+  const uint tile_count = light_tile.count;
+  for (uint entry = 0u; entry < tile_count; ++entry) {
+    if (entry == unbounded && entry < first)
+      entry = first;
+    if (entry >= tile_count)
+      break;
+    const uint packed_entry = light_tile.entries[entry];
+    if (entry >= unbounded && (packed_entry >> 16u) > window.y)
+      break;
+    uint light_index = packed_entry & 0xFFFFu;
+    const device VkrGpuPointLightRow &light =
+        frame->point_light_data[light_index];
+    float4 p0 = light.p0;
+    float4 p1 = light.p1;
+    float4 p2 = light.p2;
+    float4 p3 = light.p3;
+    VkrPunctualLightTerm term =
+        vkr_punctual_light_term(p0, p1, p2, p3, world_position);
+    if (!term.in_range || term.cone <= 0.0f)
+      continue;
+    uint kind = term.kind;
+    float3 light_direction = term.direction;
+    float attenuation = term.attenuation * term.cone;
+    local_shadow.measure(light_index,
+                         vkr_local_light_contribution(
+                             p1.rgb, p2.x, attenuation,
+                             dot(normal, light_direction),
+                             frame->pre_exposure));
+    bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
+                    dot(normal, light_direction) < 0.0f;
+    float3 shadow_normal = back_lit ? -normal : normal;
+    if (local_shadow.contribution_cutoff() &&
+        vkr_local_light_contribution(p1.rgb, p2.x, attenuation,
+                                     dot(shadow_normal, light_direction),
+                                     frame->pre_exposure) <
+            VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
+      continue;
+    /* The base lobes are zero for a light behind the shadow normal, so its
+       visibility is never looked up. */
+    float3 base_attenuation =
+        vkr_local_shadow_light_faces(shadow_normal, light_direction)
+            ? attenuation * local_shadow(frame, uint(p3.w), light_index,
+                                         kind, world_position,
+                                         shadow_normal)
+            : float3(0.0f);
+    float3 coat_attenuation = base_attenuation;
+    if (coat_active && any(coat.normal != shadow_normal)) {
+      coat_attenuation =
+          attenuation * vkr_metal_packet_local_shadow_sample(
+              frame, uint(p3.w), kind, world_position, coat.normal);
     }
+    if (EvaluateDiffuse) {
+      VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
+          normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+          albedo, metallic, roughness, f0, energy);
+      irradiance_sum += direct.irradiance;
+      diffuse_sum += direct.diffuse;
+      specular_sum += direct.specular;
+    } else {
+      specular_sum += vkr_metal_packet_direct_specular(
+          normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+          roughness, f0, energy);
+    }
+    if (coat_active)
+      coat_sum += vkr_metal_packet_clearcoat_direct(
+          view, light_direction, p1.rgb * p2.x * coat_attenuation, coat);
+    if (sheen_active)
+      sheen_sum += vkr_metal_packet_sheen_direct(
+          normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+          sheen, sheen_normalization);
   }
 }
 
