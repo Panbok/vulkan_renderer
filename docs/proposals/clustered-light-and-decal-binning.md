@@ -142,6 +142,116 @@ afford is set by how many lights reach each pixel, not by the table size.
 9. **Tile classification.** Deferred lighting keeps its 8x8 classification
    tiles.
 
+## Design: GPU-resident light table (item 1)
+
+Mac design for review by Windows (work split M6, 2026-10-28).
+
+**Today.** Each frame `sync_point_lights_cb` reads every point-light entity,
+`vkr_lighting_system_select_point_lights` ranks up to 2,048 candidates with
+several sorts and copies up to 1,024 rows
+([`vkr_lighting_system.c`](../../runtime/src/renderer/systems/vkr_lighting_system.c)),
+and both backends pack every row into per-frame upload memory
+(`vkr_metal_packet_write_upload_lights`, `vkr_vk_upload_point_lights`).
+`vkr_point_light_pack` multiplies each row's intensity by the frame's
+pre-exposure ([`vkr_lighting.c`](../../renderer/src/vkr_lighting.c)), so
+automatic exposure changes every row every frame. Nothing keeps lights on
+the GPU between frames.
+
+1. **Rows.** Every enabled, visible point or spot light owns one row of a
+   dense table `[0, count)`, with `count` at most 65,535 and `0xFFFF` as the
+   empty 16-bit index. The row stays the 64-byte `VkrGpuPointLightRow`
+   (4 MB at capacity). A light keeps its row while it lives. Removing a
+   light moves the last row into its hole, so the table stays dense and
+   the desktop bitfields walk `count` rows, not the capacity. The lighting
+   system maps `render_id` to row.
+2. **Exposure leaves the rows.** Shaders multiply a row's intensity by the
+   frame's pre-exposure where they read it (desktop deferred, transmission
+   and forward blend; tiled forward). This changes shaders on both
+   backends and lands first and alone, with image parity on both classes.
+3. **Updates.** The runtime sends a frame's row updates as pairs of row
+   index and row: new and edited lights, moved lights, the row a removal
+   moves, and shadow-view changes (item 5). The packet carries the
+   updates, the row count and a table generation. A new generation (scene
+   load, capacity growth, device loss, or more updates than the frame's
+   budget) sends every row. Packet validation checks each update (row
+   below the count, finite values, valid kind); unchanged rows are not
+   validated again.
+4. **Change detection.** The lighting system keeps each light's last
+   written world position and direction and its component revision. When
+   the scene's `transform_revision` and the light component revisions have
+   not changed, no row changes. Otherwise it compares each light's world
+   position and direction with the cached ones: one read per light, no
+   sort and no row copy. The scene's changed-entity list
+   (`vkr_scene_changed_entities`) cannot replace the compare: it omits
+   children that move with their parent, which is how movers carry lights,
+   and it has one consumer. Edits overwrite `ScenePointLight` in place
+   ([`vkr_scene_edit.c`](../../runtime/src/renderer/systems/vkr_scene_edit.c)),
+   so the component needs a revision. The sync takes a spot light's
+   direction from the entity's local rotation, not its world rotation; the
+   change fixes that, which changes spot lights under rotated parents.
+5. **Shadow head.** The CPU ranks only the lights that cast shadows, by
+   camera distance with today's incumbent bonus and fades, and keeps at
+   most 128. The packet carries the head as 16-bit row indices with
+   `light_first_view` per head entry. A row's shadow view stays in
+   `p3.w`: a light that enters or leaves the head, or changes view, sends
+   one row update. Lights that cast no shadow need no ranking and no order.
+6. **Capacity.** Past 65,535 lights the lights with the highest
+   `render_id` are not resident, and the editor's `light_overflow` warns.
+   A residency by camera distance would rank every light again whenever
+   the camera moves.
+7. **GPU table and last use.** Each backend owns one device-local table
+   buffer, sized to the generation's count rounded up to a power of two;
+   growth starts a new generation, and the old buffer retires after the
+   last frame that read it, by its submit value. A graph pass at the start
+   of the frame scatters the frame's updates from the frame's upload slice
+   into the table, one thread per update, before `Lighting.Clusters` and
+   every pass that shades lights. The upload slice is protected by the
+   current per-slot retirement (Metal 2 slots, Vulkan 3). Only that pass
+   writes the table, on the frame's queue; the graph declares the table as
+   a persistent imported buffer, so it orders the write after the last
+   frame's reads (write after read) and every read after the write.
+8. **CPU rows.** The lighting system keeps the rows in a CPU array, the
+   source of updates and of the CPU readers: the froxel fog's two-light
+   pick, local-shadow candidates, metrics, and the tiled class's 16-light
+   limit until M5. Until M5 the tiled packet names its 16 lights as row
+   indices into the table, with the CPU grid over those entries.
+9. **Unchanged consumers.** Contribution counters stay per head row with
+   their `render_id` map (`vkr_vk_set_light_contribution_source`); the
+   local shadow cache stays keyed by `render_id`; the diffuse volume's
+   dynamic layer keeps its own light scan until the world grid (W5).
+   Rectangle lights stay a per-frame array.
+10. **Packet contract.** `VkrFrameLighting` replaces `point_lights` and
+    `point_light_count` with the row count, table generation, updates and
+    head ([`vkr_frame_input.h`](../../renderer/src/vkr_frame_input.h));
+    ADR-019 and ADR-044 record it.
+
+**Steps.** Each step keeps both backends working.
+
+- **2a** Exposure out of the rows (item 2): Metal on the Mac, Vulkan on
+  Windows, image parity on both classes.
+- **2b** Runtime: resident rows, change detection, updates, head ranking
+  and CPU rows. A renderer helper applies the updates to a CPU copy, so a
+  backend can keep uploading whole rows until it moves. CPU tests: a light
+  keeps its row across frames, a removal moves one row, a new generation
+  sends every row, and the head keeps its hysteresis.
+- **2c** Metal table and scatter pass (Mac). **2d** Vulkan table and scatter
+  pass (Windows); then the helper goes.
+
+**Evidence.** CPU time of the lighting system and upload bytes per frame at
+2,500 and 20,000 lights, before and after, on a still scene (no updates) and
+on the mover cases; image parity on the clustered, stress and lamp captures
+on both classes.
+
+**Open choices** (recommendation first):
+
+- Removal: move the last row into the hole, so loops walk a dense table;
+  or a free list, which keeps every row in place but leaves holes that
+  bitfield loops walk.
+- Over capacity: drop by `render_id`, stable and cheap; or keep the
+  nearest, which needs a residency pass on camera moves.
+- Shadow view: in the row's `p3.w`, so rows stay the one source; or a
+  separate per-row array, which a frame rewrites whole.
+
 ## Owner decisions
 
 On 2026-10-20 the owner accepted these recommendations; the ones marked
