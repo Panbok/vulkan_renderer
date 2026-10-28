@@ -87,6 +87,12 @@ vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
    w occlusion strength, unclamped like the common row's surface. */
 Vec4 vkr_packet_terrain_layer_surface(const VkrMaterialLayer *layer);
 
+/* A material's detail row (ADR-136): x the detail UV scale, y the detail
+   normal's strength, z the albedo overlay's weight (zero without an albedo
+   map), w 1 when the base colour's alpha weighs both. Zero when the
+   material does not shade with detail maps (vkr_material_detail_active). */
+Vec4 vkr_packet_material_detail(const VkrMaterial *material);
+
 typedef struct VkrRenderGraphFrameInfo VkrRenderGraphFrameInfo;
 
 /* The LOD policy of each culling view in their order: the camera, the

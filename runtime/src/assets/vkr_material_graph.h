@@ -25,7 +25,7 @@ extern "C" {
 /* Node ids and parameter names: [a-z0-9_], 1 to 31 bytes. */
 #define VKR_MATERIAL_GRAPH_ID_CAPACITY 32u
 #define VKR_MATERIAL_GRAPH_PATH_CAPACITY 256u
-#define VKR_MATERIAL_GRAPH_INPUT_MAX 30u
+#define VKR_MATERIAL_GRAPH_INPUT_MAX 34u
 #define VKR_MATERIAL_GRAPH_OUTPUT_MAX 5u
 #define VKR_MATERIAL_GRAPH_PARAM_MAX 32u
 #define VKR_MATERIAL_GRAPH_ERROR_CAPACITY 192u
@@ -142,6 +142,19 @@ typedef enum VkrMaterialGraphMask {
 /* Mask names as documents store them, indexed by VkrMaterialGraphMask. */
 extern const char *const vkr_material_graph_mask_names[];
 
+/* What weighs a graph's detail maps (ADR-136); the loader's `detail_mask`
+   values. */
+typedef enum VkrMaterialGraphDetailMask {
+  VKR_MATERIAL_GRAPH_DETAIL_MASK_NONE = 0,
+  /* The base colour's alpha, on an opaque surface only. */
+  VKR_MATERIAL_GRAPH_DETAIL_MASK_BASE_ALPHA,
+  VKR_MATERIAL_GRAPH_DETAIL_MASK_COUNT,
+} VkrMaterialGraphDetailMask;
+
+/* Detail mask names as documents and definitions store them, indexed by
+   VkrMaterialGraphDetailMask. */
+extern const char *const vkr_material_graph_detail_mask_names[];
+
 typedef struct VkrMaterialNode {
   char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
   VkrMaterialNodeKind kind;
@@ -183,6 +196,8 @@ typedef struct VkrMaterialGraphSettings {
      (zero unset, which is 1 m), and the surface tag's name (empty none). */
   Vec2 world_size;
   char surface[VKR_MATERIAL_GRAPH_ID_CAPACITY];
+  /* What weighs the detail maps the surface output's detail inputs give. */
+  VkrMaterialGraphDetailMask detail_mask;
 } VkrMaterialGraphSettings;
 
 typedef struct VkrMaterialGraph {

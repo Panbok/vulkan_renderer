@@ -119,6 +119,21 @@ vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
   };
 }
 
+Vec4 vkr_packet_material_detail(const VkrMaterial *material) {
+  if (!material || !vkr_material_detail_active(material))
+    return vec4_zero();
+  const VkrPbrProperties *pbr = &material->pbr;
+  /* Without an albedo map the overlay's weight is zero, so the detail
+     pipelines skip its sample and the slot's stand-in never shows. */
+  const float32_t albedo =
+      material->textures[VKR_TEXTURE_SLOT_DETAIL_ALBEDO].enabled
+          ? pbr->detail_albedo_strength
+          : 0.0f;
+  return vec4_new(
+      pbr->detail_uv_scale, pbr->detail_normal_scale, albedo,
+      pbr->detail_mask == VKR_MATERIAL_DETAIL_MASK_BASE_ALPHA ? 1.0f : 0.0f);
+}
+
 /* LOD policy of each culling view in their order: the camera, cascades,
    the cascades' dynamic casters, then opaque and transmitting local faces
    (ADR-084). */

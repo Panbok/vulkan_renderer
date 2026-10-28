@@ -47,6 +47,10 @@ typedef struct VkrParsedMaterialData {
   uint8_t layer_mask;
   Vec2 layer_mask_range;
   char layer_paths[VKR_MATERIAL_TERRAIN_LAYERS - 1u][VKR_MATERIAL_PATH_MAX];
+  /** A `detail_` key appeared (ADR-136); each needs
+   * `detail_normal_texture`. The detail values live in `pbr`, the maps in
+   * the detail texture slots. */
+  bool8_t detail;
   /** A Custom graph's function (`custom_function=`) and parameters
    * (`custom_param<k>=`); its textures fill the Custom texture slots
    * (`custom<k>_texture=`, with `custom<k>_colorspace=` or

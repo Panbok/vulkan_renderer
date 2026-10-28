@@ -1476,7 +1476,7 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanResolveRoot),
                                  &prepared->root_address))
     return false_v;
-  const VkrVulkanDeferredPipeline pipeline =
+  const VkrVulkanDeferredPipeline captured =
       sample_one ? VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE
       : emissive_capture
           ? (resolve_debug_capture
@@ -1484,6 +1484,20 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                  : VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE)
           : (resolve_debug_capture ? VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DEBUG
                                    : VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE);
+  /* A frame whose scene has a material with detail maps takes the same
+     resolve with them (ADR-136); the others never carry the detail code. */
+  _Static_assert(
+      VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DETAIL_NONE -
+                  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE ==
+              4 &&
+          VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DETAIL_EMISSIVE_DEBUG -
+                  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG ==
+              4,
+      "Each resolve's detail variant follows the four resolves");
+  const VkrVulkanDeferredPipeline pipeline =
+      renderer->prepared_frame.detail_maps_enabled
+          ? (VkrVulkanDeferredPipeline)(captured + 4u)
+          : captured;
   prepared->pipelines[prepared->dispatch_count] =
       renderer->deferred_pipelines[pipeline];
   if (sample1_arguments) {

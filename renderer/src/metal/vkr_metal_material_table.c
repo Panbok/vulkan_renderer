@@ -8,8 +8,14 @@ _Static_assert(offsetof(VkrMetalMaterialGpuRow, material_brdf) == 352u &&
                    offsetof(VkrMetalMaterialGpuRow, material_specular_tint) ==
                        368u,
                "Metal BRDF material ABI offset drift");
-_Static_assert(sizeof(VkrMetalMaterialGpuRow) == 384,
-               "Metal material row ABI must remain 384 bytes");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, material_detail) == 384u &&
+                   offsetof(VkrMetalMaterialGpuRow, detail_normal_texture_id) ==
+                       400u &&
+                   offsetof(VkrMetalMaterialGpuRow, detail_albedo_sampler_id) ==
+                       424u,
+               "Metal detail material ABI offset drift");
+_Static_assert(sizeof(VkrMetalMaterialGpuRow) == 432,
+               "Metal material row ABI must remain 432 bytes");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, base_color_texture_id) == 16,
                "Metal material base texture offset changed");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, base_color_sampler_id) == 48,

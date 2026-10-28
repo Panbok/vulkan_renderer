@@ -27,6 +27,9 @@ vkr_internal uint32_t vkr_scene_material_features(const VkrMaterial *material) {
   if (vkr_pbr_brdf_extensions_active(&material->pbr)) {
     features |= VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION;
   }
+  if (vkr_material_detail_active(material)) {
+    features |= VKR_WORLD_MATERIAL_FEATURE_DETAIL;
+  }
   return features;
 }
 

@@ -137,6 +137,7 @@ vkr_internal void vkr_material_system_init_surface_material(
   material->pbr.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
   material->pbr.attenuation_distance = 0.0f;
   vkr_pbr_reset_brdf_extensions(&material->pbr);
+  vkr_pbr_reset_detail(&material->pbr);
 
   vkr_material_system_reset_texture_slots(material);
   vkr_material_system_apply_default_surface_textures(system, material);
@@ -965,6 +966,30 @@ vkr_material_system_required_extent(const VkrMaterialSystem *system,
   return value ? 1u << (value - 1u) : 0u;
 }
 
+/* The extent a stream's texture needs: its material's, which the GPU
+ * measures at UV0, and for a detail map that times the detail UV scale, at
+ * which it repeats (ADR-136). */
+static uint32_t vkr_material_system_stream_required_extent(
+    VkrMaterialSystem *system, const VkrMaterialTextureStream *stream) {
+  const uint32_t required =
+      vkr_material_system_required_extent(system, stream->material);
+  if (!required || (stream->slot != VKR_TEXTURE_SLOT_DETAIL_NORMAL &&
+                    stream->slot != VKR_TEXTURE_SLOT_DETAIL_ALBEDO)) {
+    return required;
+  }
+  const VkrMaterial *material =
+      vkr_material_system_get_by_handle(system, stream->material);
+  if (!material) {
+    return required;
+  }
+  const float32_t scaled = vkr_ceil_f32(
+      (float32_t)required * Clamp(material->pbr.detail_uv_scale,
+                                  VKR_MATERIAL_DETAIL_UV_SCALE_MIN,
+                                  VKR_MATERIAL_DETAIL_UV_SCALE_MAX));
+  return scaled >= (float32_t)(1u << 30u) ? 1u << 30u
+                                          : Max(1u, (uint32_t)scaled);
+}
+
 /* Fills texture_candidates with each resident texture except
  * `protected_texture`, one entry per shared texture, and returns their count.
  * `out_projected` receives the resident bytes once every pending cap change
@@ -992,7 +1017,7 @@ static uint32_t vkr_material_system_texture_candidates(
         .limitable =
             vkr_material_stream_carries_limit(stream) && !stream->replacement,
         .required_extent =
-            vkr_material_system_required_extent(system, stream->material),
+            vkr_material_system_stream_required_extent(system, stream),
         .unmeasured = demand_settled && vkr_material_system_material_unmeasured(
                                             system, stream->material),
         .idle =
@@ -1756,7 +1781,7 @@ vkr_material_stream_need_shortfall(VkrMaterialSystem *system,
                                    const VkrMaterialTextureStream *stream,
                                    bool8_t *out_measured) {
   const uint32_t required =
-      vkr_material_system_required_extent(system, stream->material);
+      vkr_material_system_stream_required_extent(system, stream);
   *out_measured = required != 0u;
   if (!required) {
     return 0u;

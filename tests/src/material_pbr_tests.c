@@ -3119,6 +3119,100 @@ vkr_internal void test_material_brdf_keys(MaterialPbrTestContext *ctx) {
   printf("  test_material_brdf_keys PASSED\n");
 }
 
+/* The detail map keys (ADR-136) parse into the detail values and the two
+ * detail slots, and a file without them keeps the defaults; the texture
+ * keys fill their own slots, not the base normal slot their names contain.
+ * A material the detail pipelines would not draw is refused: a detail key
+ * without a detail normal map, a value out of range or not finite, an
+ * unknown mask or misspelt key, a blended (explicit or inferred), refracting,
+ * layered or Custom material, and the base-alpha mask without
+ * alpha_mode=opaque. */
+vkr_internal void test_material_detail_keys(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_detail_keys...\n");
+  const char *const layer_file = "tests/tmp/material_pbr/detail_layer.mt";
+  char absolute[1024];
+  snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, layer_file);
+  assert(material_pbr_test_write_text_file(absolute,
+                                           "name=detail_layer\ntype=pbr\n"));
+  const String8 path = string8_lit("tests/tmp/material_pbr/detail.mt");
+  VkrParsedMaterialData parsed;
+  assert(vkr_material_loader_parse_definition(
+      &ctx->temp_allocator, path, string8_lit("name=plain\nshininess=8\n"),
+      &parsed));
+  assert(!parsed.detail && parsed.material_type == VKR_MATERIAL_TYPE_PHONG);
+  assert(parsed.pbr.detail_uv_scale == 8.0f &&
+         parsed.pbr.detail_normal_scale == 1.0f &&
+         parsed.pbr.detail_albedo_strength == 1.0f &&
+         parsed.pbr.detail_mask == VKR_MATERIAL_DETAIL_MASK_NONE);
+  assert(parsed.texture_paths[VKR_TEXTURE_SLOT_DETAIL_NORMAL][0] == '\0' &&
+         parsed.texture_paths[VKR_TEXTURE_SLOT_DETAIL_ALBEDO][0] == '\0');
+
+  assert(vkr_material_loader_parse_definition(
+      &ctx->temp_allocator, path,
+      string8_lit("normal_texture=./base_n.vkt\nalpha_mode=opaque\n"
+                  "detail_normal_texture=./weave_n.vkt\n"
+                  "detail_normal_scale=0.5\ndetail_uv_scale=16\n"
+                  "detail_albedo_texture=./weave.vkt\n"
+                  "detail_albedo_strength=0.25\ndetail_mask=base_alpha\n"),
+      &parsed));
+  assert(parsed.detail && parsed.material_type == VKR_MATERIAL_TYPE_PBR);
+  assert(parsed.pbr.detail_uv_scale == 16.0f &&
+         parsed.pbr.detail_normal_scale == 0.5f &&
+         parsed.pbr.detail_albedo_strength == 0.25f &&
+         parsed.pbr.detail_mask == VKR_MATERIAL_DETAIL_MASK_BASE_ALPHA);
+  assert(strstr(parsed.texture_paths[VKR_TEXTURE_SLOT_DETAIL_NORMAL],
+                "tests/tmp/material_pbr/weave_n.vkt") != NULL);
+  assert(strstr(parsed.texture_paths[VKR_TEXTURE_SLOT_DETAIL_ALBEDO],
+                "tests/tmp/material_pbr/weave.vkt") != NULL);
+  assert(strstr(parsed.texture_paths[VKR_TEXTURE_SLOT_NORMAL],
+                "tests/tmp/material_pbr/base_n.vkt") != NULL);
+
+  /* An alpha-tested material takes detail maps without a mask. */
+  assert(vkr_material_loader_parse_definition(
+      &ctx->temp_allocator, path,
+      string8_lit("alpha_mode=mask\ndetail_normal_texture=./weave_n.vkt\n"),
+      &parsed));
+  assert(parsed.detail && parsed.alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT);
+
+  const char *const refused[] = {
+      "type=pbr\ndetail_uv_scale=4\n",
+      "type=pbr\ndetail_albedo_texture=./weave.vkt\n",
+      "type=pbr\ndetail_normal_texture=./weave_n.vkt\ndetail_uv_scale=0\n",
+      "type=pbr\ndetail_normal_texture=./weave_n.vkt\ndetail_uv_scale=nan\n",
+      "type=pbr\ndetail_normal_texture=./weave_n.vkt\ndetail_normal_scale=9\n",
+      "type=pbr\ndetail_normal_texture=./weave_n.vkt\n"
+      "detail_albedo_strength=1.5\n",
+      "type=pbr\ndetail_normal_texture=./weave_n.vkt\n"
+      "detail_mask=vertex_color\n",
+      "type=pbr\ndetail_normal_texture=./weave_n.vkt\n"
+      "detail_normal_strength=0.5\n",
+      "type=pbr\nalpha_mode=blend\ndetail_normal_texture=./weave_n.vkt\n",
+      "type=pbr\nbase_color=1,1,1,0.5\ndetail_normal_texture=./weave_n.vkt\n",
+      "type=pbr\ntransmission_factor=0.5\n"
+      "detail_normal_texture=./weave_n.vkt\n",
+      "type=pbr\nlayer1=./detail_layer.mt\n"
+      "detail_normal_texture=./weave_n.vkt\n",
+      "type=pbr\ncustom_function=vkr_custom_0123456789abcdef\n"
+      "detail_normal_texture=./weave_n.vkt\n",
+      "type=pbr\ndetail_normal_texture=./weave_n.vkt\ndetail_mask=base_alpha\n",
+      "type=pbr\nalpha_mode=mask\ndetail_normal_texture=./weave_n.vkt\n"
+      "detail_mask=base_alpha\n",
+  };
+  for (uint32_t i = 0u; i < ArrayCount(refused); ++i) {
+    assert(!vkr_material_loader_parse_definition(
+        &ctx->temp_allocator, path,
+        string8_create_from_cstr((const uint8_t *)refused[i],
+                                 strlen(refused[i])),
+        &parsed));
+  }
+  /* The same layer file layers a material without detail maps. */
+  assert(vkr_material_loader_parse_definition(
+      &ctx->temp_allocator, path,
+      string8_lit("type=pbr\nlayer1=./detail_layer.mt\n"), &parsed));
+  material_pbr_test_remove_file(layer_file);
+  printf("  test_material_detail_keys PASSED\n");
+}
+
 /* Shadows read an opaque material's geometry alone: publishing it again
    with another texture changes no caster's shadow. Its first publication, a
    change in culling or alpha testing, a new texture in a slot a shadow pass
@@ -3249,6 +3343,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_terrain_composes_layers(&context);
   test_material_layered_keys(&context);
   test_material_brdf_keys(&context);
+  test_material_detail_keys(&context);
   test_compressed_texture_subresource_shapes(&context);
   test_texture_request_owns_pending_publication(&context);
   test_material_texture_limit_reloads_changed_textures(&context);

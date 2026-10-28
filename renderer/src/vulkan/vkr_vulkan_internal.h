@@ -229,6 +229,15 @@ static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
   "packet.gbuffer_resolve.debug.comp.spv"
 #define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV              \
   "packet.gbuffer_resolve.emissive_debug.comp.spv"
+/* The resolve variants that sample detail maps (ADR-136). */
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_NONE_COMP_SPV                 \
+  "packet.gbuffer_resolve.detail_none.comp.spv"
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_EMISSIVE_COMP_SPV             \
+  "packet.gbuffer_resolve.detail_emissive.comp.spv"
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_DEBUG_COMP_SPV                \
+  "packet.gbuffer_resolve.detail_debug.comp.spv"
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_EMISSIVE_DEBUG_COMP_SPV       \
+  "packet.gbuffer_resolve.detail_emissive_debug.comp.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV                           \
   "packet.local_shadow_mask.comp.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_COMP_SPV                   \
@@ -539,6 +548,12 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DEBUG,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG,
+  /* The same four resolves with detail maps (ADR-136), in the same order,
+     for frames whose scene has a material with them. */
+  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DETAIL_NONE,
+  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DETAIL_EMISSIVE,
+  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DETAIL_DEBUG,
+  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DETAIL_EMISSIVE_DEBUG,
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK,
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT,
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_BAKED,
@@ -640,6 +655,9 @@ typedef enum VkrVulkanMaterialFlag {
   /* A terrain material: the vertex color weighs layer 0 against the terrain
      segment's layers 1 to 3. */
   VKR_VULKAN_MATERIAL_TERRAIN = 1u << 11u,
+  /* A material with detail maps (vkr_material_detail_active): the G-buffer
+     resolve's detail variant samples them (ADR-136). */
+  VKR_VULKAN_MATERIAL_DETAIL = 1u << 13u,
 } VkrVulkanMaterialFlag;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanMaterialGpuRow {
@@ -688,6 +706,14 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanMaterialGpuRow {
   Vec4 material_brdf;
   /** Linear RGB F82 tint in xyz, dual-specular roughness scale in w. */
   Vec4 material_specular_tint;
+  /** Detail maps (ADR-136, vkr_packet_material_detail): x UV scale, y normal
+   * strength, z albedo overlay weight, w 1 when the base colour's alpha
+   * weighs them. Only the G-buffer resolve's detail variant reads them. */
+  Vec4 material_detail;
+  uint32_t detail_normal_texture;
+  uint32_t detail_normal_sampler;
+  uint32_t detail_albedo_texture;
+  uint32_t detail_albedo_sampler;
 } VkrVulkanMaterialGpuRow;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionMaterialGpuRow {
@@ -2208,7 +2234,13 @@ _Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_brdf) == 288u &&
                    offsetof(VkrVulkanMaterialGpuRow, material_specular_tint) ==
                        304u,
                "Vulkan BRDF material ABI offset drift");
-_Static_assert(sizeof(VkrVulkanMaterialGpuRow) == 320u,
+_Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_detail) == 320u &&
+                   offsetof(VkrVulkanMaterialGpuRow, detail_normal_texture) ==
+                       336u &&
+                   offsetof(VkrVulkanMaterialGpuRow, detail_albedo_sampler) ==
+                       348u,
+               "Vulkan detail material ABI offset drift");
+_Static_assert(sizeof(VkrVulkanMaterialGpuRow) == 352u,
                "Vulkan material row ABI drift");
 _Static_assert(offsetof(VkrVulkanMaterialGpuRow, base_color_texture) == 16u,
                "Vulkan material texture ABI drift");

@@ -80,6 +80,14 @@ struct VkrMetalPacketMaterial {
   float4 material_brdf;
   // RGB linear F82 tint, A dual-specular roughness scale.
   float4 material_specular_tint;
+  // Detail maps (ADR-136): x UV scale, y normal strength, z albedo overlay
+  // weight, w 1 when the base colour's alpha weighs them. Only the detail
+  // kinds' pipelines read them.
+  float4 material_detail;
+  texture2d<float, access::sample> detail_normal_texture;
+  texture2d<float, access::sample> detail_albedo_texture;
+  sampler detail_normal_sampler;
+  sampler detail_albedo_sampler;
 };
 
 struct VkrMetalPacketTransmissionMaterial {
@@ -668,8 +676,8 @@ static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
               "Geometry decode record ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketInstance) == 160,
               "Prepared instance Metal ABI must remain 160 bytes");
-static_assert(sizeof(VkrMetalPacketMaterial) == 384,
-              "Metal material row ABI must remain 384 bytes");
+static_assert(sizeof(VkrMetalPacketMaterial) == 432,
+              "Metal material row ABI must remain 432 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketFrameRoot) == 592,

@@ -85,6 +85,14 @@ struct VkrVulkanMaterial
     float4 material_brdf;
     // RGB linear F82 tint, A dual-specular roughness scale.
     float4 material_specular_tint;
+    // Detail maps (ADR-136): x UV scale, y normal strength, z albedo overlay
+    // weight, w 1 when the base colour's alpha weighs them. Only the
+    // G-buffer resolve's detail variant reads them.
+    float4 material_detail;
+    uint detail_normal_texture;
+    uint detail_normal_sampler;
+    uint detail_albedo_texture;
+    uint detail_albedo_sampler;
 };
 
 // Terrain layers 1 to 3 of a terrain material, segmented from the common row

@@ -122,6 +122,12 @@ static bool8_t graph_test_same(const VkrParsedMaterialData *a,
        p->dual_specular_roughness_scale == q->dual_specular_roughness_scale);
   SAME(specular_f82_tint,
        graph_test_vec3(p->specular_f82_tint, q->specular_f82_tint));
+  SAME(detail, a->detail == b->detail);
+  SAME(detail_uv_scale, p->detail_uv_scale == q->detail_uv_scale);
+  SAME(detail_normal_scale, p->detail_normal_scale == q->detail_normal_scale);
+  SAME(detail_albedo_strength,
+       p->detail_albedo_strength == q->detail_albedo_strength);
+  SAME(detail_mask, p->detail_mask == q->detail_mask);
   /* A colour space without a texture samples nothing, so only textured
      slots compare it. */
   for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
@@ -1169,6 +1175,83 @@ static void test_graph_round_trip(VkrAllocator *allocator) {
   free(lowered);
 }
 
+/* Detail maps (ADR-136) stay Standard: a definition with them becomes a
+   graph whose detail inputs and detail mask lower back to the same material
+   at the Standard tier, without a Custom function. Detail inputs without a
+   detail normal texture, detail maps beside layers and a base-alpha mask on
+   a surface that is not opaque each name the output node. */
+static void test_graph_detail(VkrAllocator *allocator) {
+  static const char definition[] =
+      "type=pbr\nalpha_mode=opaque\n"
+      "base_color_texture=./../../textures/a.png\n"
+      "detail_normal_texture=./../../textures/weave_n.png\n"
+      "detail_normal_scale=0.5\ndetail_uv_scale=16\n"
+      "detail_albedo_texture=./../../textures/weave.png\n"
+      "detail_albedo_strength=0.25\ndetail_mask=base_alpha\n";
+  const char *path = "assets/materials/fixture/detail.mt";
+  const char *graph_path = "assets/materials/fixture/detail.mtg";
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  VkrParsedMaterialData *direct = malloc(sizeof(*direct));
+  VkrParsedMaterialData *lowered = malloc(sizeof(*lowered));
+  assert(graph && direct && lowered);
+  uint32_t skipped = 0u;
+  assert(graph_test_round_trip(allocator, path, graph_test_str(definition),
+                               graph, direct, lowered, &skipped));
+  assert(skipped == 0u && direct->detail &&
+         direct->pbr.detail_mask == VKR_MATERIAL_DETAIL_MASK_BASE_ALPHA);
+
+  /* The graph keeps its detail mask through its document. */
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  String8 json = {0};
+  assert(vkr_material_graph_write(graph, allocator, &json));
+  assert(vkr_material_graph_read(json, graph, error, sizeof(error)));
+  assert(graph->settings.detail_mask ==
+         VKR_MATERIAL_GRAPH_DETAIL_MASK_BASE_ALPHA);
+  String8 text = {0};
+  VkrMaterialLowering lowering = {0};
+  assert(vkr_material_graph_lower(graph, graph_test_str(graph_path), NULL, 0u,
+                                  allocator, &text, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_STANDARD &&
+         lowering.function[0] == '\0' && lowering.samples == 3u);
+
+  const uint32_t output =
+      vkr_material_graph_find(graph, graph_test_str("output"));
+  assert(output != UINT32_MAX);
+  const uint32_t detail_normal = vkr_material_node_input(
+      VKR_MATERIAL_NODE_SURFACE_OUTPUT, graph_test_str("detail_normal"));
+  const uint32_t layers = vkr_material_node_input(
+      VKR_MATERIAL_NODE_SURFACE_OUTPUT, graph_test_str("layers"));
+  assert(detail_normal != UINT32_MAX && layers != UINT32_MAX);
+
+  /* A base-alpha mask on an alpha-tested surface. */
+  graph->settings.alpha_mode = VKR_MATERIAL_GRAPH_ALPHA_MASK;
+  assert(!vkr_material_graph_lower(graph, graph_test_str(graph_path), NULL, 0u,
+                                   allocator, &text, &lowering));
+  assert(strcmp(lowering.node, "output") == 0);
+  graph->settings.alpha_mode = VKR_MATERIAL_GRAPH_ALPHA_OPAQUE;
+
+  /* Detail maps beside a layer blend. */
+  const uint32_t blend =
+      vkr_material_graph_add(graph, VKR_MATERIAL_NODE_LAYER_BLEND, "layers");
+  assert(blend != UINT32_MAX);
+  graph->nodes[output].inputs[layers] =
+      (VkrMaterialLink){.node = (uint16_t)(blend + 1u)};
+  assert(!vkr_material_graph_lower(graph, graph_test_str(graph_path), NULL, 0u,
+                                   allocator, &text, &lowering));
+  assert(strcmp(lowering.node, "output") == 0);
+  graph->nodes[output].inputs[layers] = (VkrMaterialLink){0};
+
+  /* The other detail inputs without the detail normal. */
+  graph->nodes[output].inputs[detail_normal] = (VkrMaterialLink){0};
+  assert(!vkr_material_graph_lower(graph, graph_test_str(graph_path), NULL, 0u,
+                                   allocator, &text, &lowering));
+  assert(strcmp(lowering.node, "output") == 0);
+  free(graph);
+  free(direct);
+  free(lowered);
+  printf("  test_graph_detail PASSED\n");
+}
+
 bool32_t run_material_graph_tests(void) {
   printf("--- Material Graph Tests ---\n");
   Arena *arena = arena_create(MB(64), MB(4));
@@ -1181,6 +1264,7 @@ bool32_t run_material_graph_tests(void) {
   test_graph_tiers(&allocator);
   test_graph_art_metadata(&allocator);
   test_graph_layers(&allocator);
+  test_graph_detail(&allocator);
   test_graph_custom(&allocator);
   test_graph_texture_factors(&allocator);
   test_graph_opacity_scale(&allocator);

@@ -355,6 +355,11 @@ vkr_global const VkrVulkanReflectedField s_vk_material_row_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, material_subsurface),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, material_brdf),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, material_specular_tint),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, material_detail),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, detail_normal_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, detail_normal_sampler),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, detail_albedo_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, detail_albedo_sampler),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, temporal_reactivity),
 };
 
@@ -1932,6 +1937,18 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
         VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV,
         "vk_gbuffer_resolve", s_vk_resolve_fields, VkrVulkanResolveRoot),
     VKR_VULKAN_REFLECTED_ROOT(
+        VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_NONE_COMP_SPV,
+        "vk_gbuffer_resolve", s_vk_resolve_fields, VkrVulkanResolveRoot),
+    VKR_VULKAN_REFLECTED_ROOT(
+        VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_EMISSIVE_COMP_SPV,
+        "vk_gbuffer_resolve", s_vk_resolve_fields, VkrVulkanResolveRoot),
+    VKR_VULKAN_REFLECTED_ROOT(
+        VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_DEBUG_COMP_SPV,
+        "vk_gbuffer_resolve", s_vk_resolve_fields, VkrVulkanResolveRoot),
+    VKR_VULKAN_REFLECTED_ROOT(
+        VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_EMISSIVE_DEBUG_COMP_SPV,
+        "vk_gbuffer_resolve", s_vk_resolve_fields, VkrVulkanResolveRoot),
+    VKR_VULKAN_REFLECTED_ROOT(
         VKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV,
         "atmosphere_transmittance_compute", s_vk_atmosphere_fields,
         VkrVulkanAtmosphereRoot),
@@ -3171,6 +3188,10 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV,
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV,
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_NONE_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_EMISSIVE_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_DEBUG_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DETAIL_EMISSIVE_DEBUG_COMP_SPV,
       VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV,
       VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_COMP_SPV,
       VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_BAKED_COMP_SPV,
@@ -3255,6 +3276,10 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "vk_light_cluster_bin",
       "vk_skinning",
       "vk_temporal_transform",
+      "vk_gbuffer_resolve",
+      "vk_gbuffer_resolve",
+      "vk_gbuffer_resolve",
+      "vk_gbuffer_resolve",
       "vk_gbuffer_resolve",
       "vk_gbuffer_resolve",
       "vk_gbuffer_resolve",

@@ -596,6 +596,9 @@ typedef struct VkrRenderGraphFrameInfo {
   /** A scene material uses a BRDF extension (ADR-113): the frame takes the
    * extension shading variants. */
   bool8_t brdf_extensions_enabled;
+  /** An opaque or alpha-tested scene material has detail maps (ADR-136):
+   * the desktop G-buffer resolve takes its detail variant. */
+  bool8_t detail_maps_enabled;
   /** Any of clearcoat, sheen, anisotropy, a BRDF extension or
    * `local_shadow_mask_overflow`: deferred lighting splits its tiles between a
    * base kernel and the layered pass, which runs the layered kernel for layer

@@ -332,6 +332,46 @@
       ]
     },
     {
+      "name": "packet.gbuffer_resolve.detail_none.comp",
+      "entry": "vk_gbuffer_resolve",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=0",
+        "-DVKR_VULKAN_GBUFFER_WRITE_DEBUG=0",
+        "-DVKR_VULKAN_GBUFFER_DETAIL=1"
+      ]
+    },
+    {
+      "name": "packet.gbuffer_resolve.detail_emissive.comp",
+      "entry": "vk_gbuffer_resolve",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=1",
+        "-DVKR_VULKAN_GBUFFER_WRITE_DEBUG=0",
+        "-DVKR_VULKAN_GBUFFER_DETAIL=1"
+      ]
+    },
+    {
+      "name": "packet.gbuffer_resolve.detail_debug.comp",
+      "entry": "vk_gbuffer_resolve",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=0",
+        "-DVKR_VULKAN_GBUFFER_WRITE_DEBUG=1",
+        "-DVKR_VULKAN_GBUFFER_DETAIL=1"
+      ]
+    },
+    {
+      "name": "packet.gbuffer_resolve.detail_emissive_debug.comp",
+      "entry": "vk_gbuffer_resolve",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=1",
+        "-DVKR_VULKAN_GBUFFER_WRITE_DEBUG=1",
+        "-DVKR_VULKAN_GBUFFER_DETAIL=1"
+      ]
+    },
+    {
       "name": "packet.diffuse_volume_sample.comp",
       "entry": "vk_diffuse_volume_sample",
       "stage": "compute"

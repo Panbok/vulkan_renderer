@@ -1026,6 +1026,49 @@ vkr_metal_packet_custom_row(const struct VkrMaterial *material,
   return row;
 }
 
+/* A published material's row flags (VkrMetalPacketMaterialTextureFlag): a
+   bit per map its slots hold, then its terrain, rough and detail bits;
+   `detail` is vkr_material_detail_active's answer. */
+static uint32_t
+vkr_metal_packet_material_flags(const struct VkrMaterial *material,
+                                bool8_t detail) {
+  static const struct {
+    VkrTextureSlot slot;
+    uint32_t flag;
+  } maps[] = {
+      {VKR_TEXTURE_SLOT_NORMAL, VKR_METAL_PACKET_MATERIAL_TEXTURE_NORMAL},
+      {VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS,
+       VKR_METAL_PACKET_MATERIAL_TEXTURE_ORM},
+      {VKR_TEXTURE_SLOT_EMISSION, VKR_METAL_PACKET_MATERIAL_TEXTURE_EMISSIVE},
+      {VKR_TEXTURE_SLOT_TRANSMISSION,
+       VKR_METAL_PACKET_MATERIAL_TEXTURE_TRANSMISSION},
+      {VKR_TEXTURE_SLOT_THICKNESS, VKR_METAL_PACKET_MATERIAL_TEXTURE_THICKNESS},
+      {VKR_TEXTURE_SLOT_CLEARCOAT, VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT},
+      {VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS,
+       VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT_ROUGHNESS},
+      {VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL,
+       VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT_NORMAL},
+      {VKR_TEXTURE_SLOT_SHEEN_COLOR,
+       VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_COLOR},
+      {VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS,
+       VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_ROUGHNESS},
+      {VKR_TEXTURE_SLOT_ANISOTROPY,
+       VKR_METAL_PACKET_MATERIAL_TEXTURE_ANISOTROPY},
+  };
+  uint32_t flags = 0u;
+  for (uint32_t i = 0; i < ArrayCount(maps); ++i) {
+    if (material->textures[maps[i].slot].enabled)
+      flags |= maps[i].flag;
+  }
+  if (material->terrain)
+    flags |= VKR_METAL_PACKET_MATERIAL_TERRAIN;
+  if (material->rough)
+    flags |= VKR_METAL_PACKET_MATERIAL_ROUGH;
+  if (detail)
+    flags |= VKR_METAL_PACKET_MATERIAL_DETAIL;
+  return flags;
+}
+
 bool8_t
 vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                                            VkrMaterialHandle handle,
@@ -1088,14 +1131,22 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
             ? VKR_TEXTURE_SLOT_ANISOTROPY
             : VKR_TEXTURE_SLOT_DIFFUSE,
     };
-    /* Layer slots, the layer mask and the Custom slots follow, in slot
-       order. A material without layers points the layer slots at its base
-       color, and a slot a Custom material leaves empty does too; nothing
+    /* Layer slots, the layer mask, the detail maps and the Custom slots
+       follow, in slot order. A material without layers points the layer
+       slots at its base color, so do a material without detail maps its
+       detail slots and a Custom material a slot it leaves empty; nothing
        samples them. */
     _Static_assert(ArrayCount(common_slots) + VKR_TEXTURE_SLOT_CUSTOM7 + 1u -
                            VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR ==
                        VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT,
                    "Metal tracks every texture slot from the first layer on");
+    _Static_assert(ArrayCount(common_slots) + VKR_TEXTURE_SLOT_DETAIL_NORMAL -
+                               VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR ==
+                           22u &&
+                       VKR_TEXTURE_SLOT_DETAIL_ALBEDO ==
+                           VKR_TEXTURE_SLOT_DETAIL_NORMAL + 1u,
+                   "The detail maps take texture references 22 and 23");
+    const bool8_t detail = vkr_material_detail_active(material);
     VkrTextureSlot source_slots[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT];
     MemCopy(source_slots, common_slots, sizeof(common_slots));
     for (uint32_t i = ArrayCount(common_slots); i < ArrayCount(source_slots);
@@ -1103,9 +1154,11 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       const VkrTextureSlot extra_slot =
           (VkrTextureSlot)(VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR +
                            (i - ArrayCount(common_slots)));
-      const bool8_t used = extra_slot >= VKR_TEXTURE_SLOT_CUSTOM0
-                               ? material->custom_function[0] != '\0'
-                               : material->terrain;
+      const bool8_t used =
+          extra_slot >= VKR_TEXTURE_SLOT_CUSTOM0
+              ? material->custom_function[0] != '\0'
+          : extra_slot >= VKR_TEXTURE_SLOT_DETAIL_NORMAL ? detail
+                                                         : material->terrain;
       source_slots[i] = used && material->textures[extra_slot].enabled
                             ? extra_slot
                             : VKR_TEXTURE_SLOT_DIFFUSE;
@@ -1122,33 +1175,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
         return false_v;
       texture_handles[i] = source->handle;
     }
-    uint32_t flags = 0;
-    if (material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_NORMAL;
-    if (material->textures[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_ORM;
-    if (material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_EMISSIVE;
-    if (material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_TRANSMISSION;
-    if (material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_THICKNESS;
-    if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT;
-    if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT_ROUGHNESS;
-    if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT_NORMAL;
-    if (material->textures[VKR_TEXTURE_SLOT_SHEEN_COLOR].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_COLOR;
-    if (material->textures[VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_ROUGHNESS;
-    if (material->textures[VKR_TEXTURE_SLOT_ANISOTROPY].enabled)
-      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_ANISOTROPY;
-    if (material->terrain)
-      flags |= VKR_METAL_PACKET_MATERIAL_TERRAIN;
-    if (material->rough)
-      flags |= VKR_METAL_PACKET_MATERIAL_ROUGH;
+    uint32_t flags = vkr_metal_packet_material_flags(material, detail);
     /* A Custom material's graph slot; the frame's ready mask decides whether
        it shades with its graph's pipelines (ADR-096). */
     const uint32_t custom_slot =
@@ -1235,6 +1262,11 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                                         0.0f},
                 .material_brdf = material_constants.brdf,
                 .material_specular_tint = material_constants.specular_tint,
+                .material_detail = vkr_packet_material_detail(material),
+                .detail_normal_texture_id = textures[22]->resource.resource_id,
+                .detail_albedo_texture_id = textures[23]->resource.resource_id,
+                .detail_normal_sampler_id = textures[22]->sampler_resource_id,
+                .detail_albedo_sampler_id = textures[23]->sampler_resource_id,
             },
         .transmission =
             {
@@ -2624,12 +2656,17 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
        Standard draws (ADR-113). */
     renderer->tiled_brdf_draws =
         vkr_metal_packet_tiled_brdf_frame(renderer, packet);
-    /* The Standard kinds take their ranges there too (ADR-129). */
+    /* The Standard kinds take their ranges there too (ADR-129), the detail
+       kinds while the scene has a material with detail maps (ADR-136). */
+    const VkrWorldPassPayload *world = packet->input.world;
     renderer->standard_kind_mask =
-        packet->scene_rendering && packet->input.world
+        packet->scene_rendering && world
             ? vkr_metal_packet_standard_kind_mask(
                   renderer, vkr_metal_packet_tiled_frame_variant(renderer),
-                  renderer->tiled_brdf_draws)
+                  renderer->tiled_brdf_draws,
+                  world->opaque_material_features_valid &&
+                      (world->opaque_material_features &
+                       VKR_WORLD_MATERIAL_FEATURE_DETAIL) != 0u)
             : 0u;
     const uint32_t custom_cells = renderer->custom_graph_count ||
                                           renderer->tiled_brdf_draws ||

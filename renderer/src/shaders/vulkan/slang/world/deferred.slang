@@ -228,6 +228,14 @@ struct VkrVkResolveRoot
 #ifndef VKR_VULKAN_GBUFFER_WRITE_DEBUG
 #define VKR_VULKAN_GBUFFER_WRITE_DEBUG 0
 #endif
+// The G-buffer resolve's detail variant (ADR-136), which frames whose scene
+// has a material with detail maps take; the other resolves and the
+// transmission layers compile the detail code out.
+#ifndef VKR_VULKAN_GBUFFER_DETAIL
+#define VKR_VULKAN_GBUFFER_DETAIL 0
+#endif
+// Mirrors VKR_VULKAN_MATERIAL_DETAIL of VkrVulkanMaterial.flags.
+static const uint VKR_VK_MATERIAL_DETAIL = 8192u;
 
 struct VkrVkTemporalResolveRoot
 {
@@ -2093,6 +2101,49 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
             material.material_surface.z);
         surface.normal_mapped = 1u;
     }
+#if VKR_VULKAN_GBUFFER_DETAIL
+    // Detail maps (ADR-136): the detail normal, at UV0 times the detail UV
+    // scale with the base normal map's footprint, reorients onto the tangent
+    // normal, and the grey albedo overlay scales the base colour. The base
+    // colour's alpha weighs both under the base-alpha mask.
+    if ((material.flags & VKR_VK_MATERIAL_DETAIL) != 0u)
+    {
+        float4 detail = material.material_detail;
+        float2 detail_uv = uv * detail.x;
+        float2 detail_dx = uv_dx * detail.x;
+        float2 detail_dy = uv_dy * detail.x;
+        float weight = detail.w != 0.0f ? saturate(base.a) : 1.0f;
+        if (!skip_normal_map)
+        {
+            float3 detail_normal = vkr_normal_map_decode(
+                g_textures[NonUniformResourceIndex(
+                               material.detail_normal_texture)]
+                    .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                    material.detail_normal_sampler)],
+                                detail_uv,
+                                detail_dx * VKR_VK_SPECULAR_FOOTPRINT_SCALE,
+                                detail_dy * VKR_VK_SPECULAR_FOOTPRINT_SCALE)
+                    .xyz,
+                detail.y * weight);
+            surface.tangent_normal = vkr_detail_normal_blend(
+                surface.normal_mapped != 0u ? surface.tangent_normal
+                                            : float3(0.0f, 0.0f, 1.0f),
+                detail_normal);
+            surface.normal_mapped = 1u;
+        }
+        if (!neutral_lighting && detail.z > 0.0f)
+        {
+            float3 overlay =
+                g_textures[NonUniformResourceIndex(
+                               material.detail_albedo_texture)]
+                    .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                    material.detail_albedo_sampler)],
+                                detail_uv, detail_dx, detail_dy)
+                    .rgb;
+            base.rgb = vkr_detail_albedo(base.rgb, overlay, detail.z * weight);
+        }
+    }
+#endif
     float3 emissive =
         neutral_lighting ? float3(0.0f) : material.material_emissive.rgb;
     if (!neutral_lighting && (material.flags & 4u) != 0u)

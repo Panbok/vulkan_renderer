@@ -125,9 +125,10 @@ static uint vkr_metal_sdf_field_row(
 // planes by BRDF variant (ADR-113): plane 0 holds the Custom graphs' draws;
 // plane 1 the draws whose material uses a BRDF extension, Standard ones in
 // slot 0 and Custom ones in their graph's slot. Plane 0's slot 0 stays empty.
-// The Standard draw kinds (ADR-129) follow the Custom slots in both planes.
+// The Standard draw kinds (ADR-129, ADR-136) follow the Custom slots in both
+// planes.
 #define VKR_METAL_CUSTOM_GRAPH_SLOTS 33u
-#define VKR_METAL_STANDARD_KIND_COUNT 2u
+#define VKR_METAL_STANDARD_KIND_COUNT 4u
 #define VKR_METAL_COMPACTION_SLOTS                                              \
   (VKR_METAL_CUSTOM_GRAPH_SLOTS + VKR_METAL_STANDARD_KIND_COUNT)
 #define VKR_METAL_CUSTOM_COMPACTION_PLANES 2u
@@ -144,13 +145,17 @@ static uint vkr_metal_sdf_field_row(
 #define VKR_METAL_KIND_CLASS_BIT 64u
 #define VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT 27u
 // The Standard draw kinds: draws that cannot be lightmapped on non-terrain
-// materials, and on terrain materials. A draw that can be lightmapped keeps
-// the general pipelines.
+// materials, and on terrain materials (ADR-129); draws of materials with
+// detail maps that can be lightmapped, and that cannot (ADR-136). Another
+// draw that can be lightmapped keeps the general pipelines.
 #define VKR_METAL_STANDARD_KIND_UNLIT 0u
 #define VKR_METAL_STANDARD_KIND_TERRAIN 1u
-#define VKR_METAL_STANDARD_KIND_NONE 2u
-// Mirrors the terrain bit of VkrMetalPacketMaterial.flags.
+#define VKR_METAL_STANDARD_KIND_DETAIL 2u
+#define VKR_METAL_STANDARD_KIND_DETAIL_UNLIT 3u
+#define VKR_METAL_STANDARD_KIND_NONE 4u
+// Mirror the terrain and detail bits of VkrMetalPacketMaterial.flags.
 #define VKR_METAL_MATERIAL_TERRAIN 2048u
+#define VKR_METAL_MATERIAL_DETAIL 8192u
 struct VkrMetalCustomCompaction {
   uint2 execution_ranges[VKR_METAL_CUSTOM_COMPACTION_PLANES]
                         [VKR_METAL_COMPACTION_SLOTS][8];
@@ -223,7 +228,8 @@ static bool vkr_metal_packet_brdf_extended(
 // pipelines exist this frame, or VKR_METAL_STANDARD_KIND_NONE. A draw can be
 // lightmapped when its instance has a lightmap slot and its geometry
 // lightmap UVs, as the vertex tests; such a draw keeps the general
-// pipelines.
+// pipelines unless its material has detail maps. A detail draw whose kind
+// is not ready also keeps them, and draws without its detail maps.
 static uint vkr_metal_packet_standard_kind(
     constant VkrMetalPacketGpuDrawRoot &root,
     const device VkrGpuCandidateDrawRow &candidate,
@@ -232,18 +238,21 @@ static uint vkr_metal_packet_standard_kind(
   if (root.custom_compaction == nullptr ||
       root.custom_compaction->kind_ready_mask == 0u)
     return VKR_METAL_STANDARD_KIND_NONE;
-  const bool terrain =
-      (root.custom_compaction->materials[candidate.material_index].flags &
-       VKR_METAL_MATERIAL_TERRAIN) != 0u;
+  const uint material_flags =
+      root.custom_compaction->materials[candidate.material_index].flags;
+  const bool terrain = (material_flags & VKR_METAL_MATERIAL_TERRAIN) != 0u;
+  const bool detail = (material_flags & VKR_METAL_MATERIAL_DETAIL) != 0u;
   const device VkrGpuGeometryDecodeRecord *records =
       (const device VkrGpuGeometryDecodeRecord *)geometry.decode_address;
   const bool lightmapped =
       uint(instance.normal_column2.w) != 0u &&
       (records[candidate.decode_index].flags &
        VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) != 0u;
-  const uint kind = lightmapped ? VKR_METAL_STANDARD_KIND_NONE
-                    : terrain   ? VKR_METAL_STANDARD_KIND_TERRAIN
-                                : VKR_METAL_STANDARD_KIND_UNLIT;
+  const uint kind = detail ? (lightmapped ? VKR_METAL_STANDARD_KIND_DETAIL
+                                          : VKR_METAL_STANDARD_KIND_DETAIL_UNLIT)
+                    : lightmapped ? VKR_METAL_STANDARD_KIND_NONE
+                    : terrain     ? VKR_METAL_STANDARD_KIND_TERRAIN
+                                  : VKR_METAL_STANDARD_KIND_UNLIT;
   if (kind == VKR_METAL_STANDARD_KIND_NONE ||
       ((root.custom_compaction->kind_ready_mask >>
         (plane * VKR_METAL_STANDARD_KIND_COUNT + kind)) &

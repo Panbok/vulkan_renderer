@@ -111,6 +111,12 @@ _Static_assert(ArrayCount(vkr_material_graph_mask_names) ==
                    VKR_MATERIAL_GRAPH_MASK_COUNT + 1u,
                "one name per mask");
 
+const char *const vkr_material_graph_detail_mask_names[] = {"none",
+                                                            "base_alpha", NULL};
+_Static_assert(ArrayCount(vkr_material_graph_detail_mask_names) ==
+                   VKR_MATERIAL_GRAPH_DETAIL_MASK_COUNT + 1u,
+               "one name per detail mask");
+
 /* The surface output's inputs, and the `.mt` keys each lowers to: the
    factor, the texture slot, the channel a scalar reads from its texture
    (0 to 3 for r to a; -1 for rgb) and whether the slot's colour defaults
@@ -174,7 +180,16 @@ _Static_assert(ArrayCount(vkr_material_graph_mask_names) ==
   X(DIFFUSE_TRANSMISSION_COLOR, "diffuse_transmission_color",                  \
     "Diffuse transmission colour", COLOR, "diffuse_transmission_color", NULL,  \
     -1, false_v)                                                               \
-  X(LAYERS, "layers", "Layers", LAYERS, NULL, NULL, -1, false_v)
+  X(LAYERS, "layers", "Layers", LAYERS, NULL, NULL, -1, false_v)               \
+  X(DETAIL_NORMAL, "detail_normal", "Detail normal", NORMAL,                   \
+    "detail_normal_scale", "detail_normal_texture", -1, false_v)               \
+  X(DETAIL_UV_SCALE, "detail_uv_scale", "Detail UV scale", SCALAR,             \
+    "detail_uv_scale", NULL, -1, false_v)                                      \
+  X(DETAIL_ALBEDO, "detail_albedo", "Detail albedo", COLOR, NULL,              \
+    "detail_albedo_texture", -1, false_v)                                      \
+  X(DETAIL_ALBEDO_STRENGTH, "detail_albedo_strength",                          \
+    "Detail albedo strength", SCALAR, "detail_albedo_strength", NULL, -1,      \
+    false_v)
 
 typedef struct SurfaceInput {
   VkrMaterialPortDesc port;
@@ -227,6 +242,9 @@ static const Vec3 s_factor_defaults[SURFACE_INPUT_COUNT] = {
     [SURFACE_ATTENUATION_COLOR] = {1.0f, 1.0f, 1.0f},
     [SURFACE_IOR] = {1.5f, 0.0f, 0.0f},
     [SURFACE_DIFFUSE_TRANSMISSION_COLOR] = {1.0f, 1.0f, 1.0f},
+    [SURFACE_DETAIL_NORMAL] = {1.0f, 0.0f, 0.0f},
+    [SURFACE_DETAIL_UV_SCALE] = {8.0f, 0.0f, 0.0f},
+    [SURFACE_DETAIL_ALBEDO_STRENGTH] = {1.0f, 0.0f, 0.0f},
 };
 
 /* Whether a texture alone on surface input `input` lowers with the factor 1
@@ -1034,6 +1052,14 @@ bool8_t vkr_material_graph_read(String8 json, VkrMaterialGraph *out,
         !vkr_json_parse_bool(&member, &out->settings.double_sided)) {
       return graph_fail(error, capacity, "\"double_sided\" is true or false");
     }
+    uint32_t detail_mask = (uint32_t)out->settings.detail_mask;
+    if (!json_enum(&settings, "detail_mask",
+                   vkr_material_graph_detail_mask_names,
+                   VKR_MATERIAL_GRAPH_DETAIL_MASK_COUNT, &detail_mask)) {
+      return graph_fail(error, capacity,
+                        "\"detail_mask\" is none or base_alpha");
+    }
+    out->settings.detail_mask = (VkrMaterialGraphDetailMask)detail_mask;
   }
   /* Nodes: types and fields first, so links may name later nodes. */
   VkrJsonReader nodes = root;
@@ -1208,6 +1234,10 @@ bool8_t vkr_material_graph_write(const VkrMaterialGraph *graph,
   if (settings->surface[0]) {
     text_append(&text, ", \"surface\": ");
     text_json_string(&text, settings->surface);
+  }
+  if (settings->detail_mask != VKR_MATERIAL_GRAPH_DETAIL_MASK_NONE) {
+    text_append(&text, ", \"detail_mask\": \"%s\"",
+                vkr_material_graph_detail_mask_names[settings->detail_mask]);
   }
   text_append(&text, "},\n  \"nodes\": [");
   for (uint32_t i = 0; i < graph->node_count; ++i) {
@@ -1592,6 +1622,47 @@ static bool8_t lower_settings(LowerContext *context, GraphText *text) {
   if (settings->surface[0]) {
     text_append(text, "surface=%s\n", settings->surface);
   }
+  if (settings->detail_mask != VKR_MATERIAL_GRAPH_DETAIL_MASK_NONE) {
+    text_append(text, "detail_mask=%s\n",
+                vkr_material_graph_detail_mask_names[settings->detail_mask]);
+  }
+  return true_v;
+}
+
+/* Whether the surface output's detail inputs (ADR-136) lower to keys the
+   loader takes: any of them, or a detail mask, needs a detail normal
+   texture, and detail maps shade only an opaque or alpha-tested surface
+   without layers or refraction; the base-alpha mask only an opaque one. */
+static bool8_t lower_detail(LowerContext *context,
+                            const VkrMaterialNode *output,
+                            const LowerSource *sources) {
+  const VkrMaterialGraphSettings *settings = &context->graph->settings;
+  const bool8_t detail =
+      output->inputs[SURFACE_DETAIL_NORMAL].node ||
+      output->inputs[SURFACE_DETAIL_UV_SCALE].node ||
+      output->inputs[SURFACE_DETAIL_ALBEDO].node ||
+      output->inputs[SURFACE_DETAIL_ALBEDO_STRENGTH].node ||
+      settings->detail_mask != VKR_MATERIAL_GRAPH_DETAIL_MASK_NONE;
+  if (!detail) {
+    return true_v;
+  }
+  if (!sources[SURFACE_DETAIL_NORMAL].texture) {
+    return lower_fail(context, output,
+                      "Detail maps need a detail normal texture");
+  }
+  if (output->inputs[SURFACE_LAYERS].node ||
+      output->inputs[SURFACE_TRANSMISSION].node ||
+      output->inputs[SURFACE_THICKNESS].node ||
+      settings->alpha_mode == VKR_MATERIAL_GRAPH_ALPHA_BLEND) {
+    return lower_fail(context, output,
+                      "Detail maps need an opaque or alpha-tested surface "
+                      "without layers or refraction");
+  }
+  if (settings->detail_mask == VKR_MATERIAL_GRAPH_DETAIL_MASK_BASE_ALPHA &&
+      settings->alpha_mode != VKR_MATERIAL_GRAPH_ALPHA_OPAQUE) {
+    return lower_fail(context, output,
+                      "A base-alpha detail mask needs the opaque alpha mode");
+  }
   return true_v;
 }
 
@@ -1818,6 +1889,9 @@ static bool8_t lower_standard(const VkrMaterialGraph *graph, String8 graph_path,
         !lower_source(&context, output->inputs[input], &sources[input])) {
       return false_v;
     }
+  }
+  if (!lower_detail(&context, output, sources)) {
+    return false_v;
   }
 
   /* Base colour carries opacity in its factor's alpha; a texture opacity is
@@ -2115,6 +2189,17 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
     MemCopy(settings->surface, value.str, value.length);
     settings->surface[value.length] = '\0';
     return true_v;
+  }
+  if (graph_equals(key, "detail_mask")) {
+    for (uint32_t m = 0; m < VKR_MATERIAL_GRAPH_DETAIL_MASK_COUNT; ++m) {
+      if (graph_equals(value, vkr_material_graph_detail_mask_names[m])) {
+        settings->detail_mask = (VkrMaterialGraphDetailMask)m;
+        return true_v;
+      }
+    }
+    return graph_fail(context->error, context->capacity,
+                      "detail_mask '%.*s' is none or base_alpha",
+                      (int)value.length, value.str);
   }
   if (graph_equals(key, "subsurface_profile")) {
     if (!string8_to_u32(&value, &settings->subsurface_profile) ||
@@ -2600,6 +2685,10 @@ bool8_t vkr_material_graph_describe(const VkrMaterialGraph *graph,
   }
   if (settings->surface[0]) {
     text_append(&text, " surface=%s", settings->surface);
+  }
+  if (settings->detail_mask != VKR_MATERIAL_GRAPH_DETAIL_MASK_NONE) {
+    text_append(&text, " detail_mask=%s",
+                vkr_material_graph_detail_mask_names[settings->detail_mask]);
   }
   text_append(&text, "\n");
   for (uint32_t i = 0; i < graph->node_count; ++i) {

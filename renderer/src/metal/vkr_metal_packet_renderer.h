@@ -195,6 +195,9 @@ typedef enum VkrMetalPacketMaterialTextureFlag {
   /* A rough surface (VkrMaterial::rough): thin glass with it blurs through
      the tiled pipeline's refraction copy. */
   VKR_METAL_PACKET_MATERIAL_ROUGH = 1u << 12u,
+  /* A material with detail maps (vkr_material_detail_active): the camera
+     classifier sends its draws to the detail kinds (ADR-136). */
+  VKR_METAL_PACKET_MATERIAL_DETAIL = 1u << 13u,
 } VkrMetalPacketMaterialTextureFlag;
 
 /* A Custom material's graph slot (1 to VKR_METAL_CUSTOM_GRAPH_SLOTS - 1)
@@ -205,9 +208,9 @@ typedef enum VkrMetalPacketMaterialTextureFlag {
 #define VKR_METAL_PACKET_MATERIAL_CUSTOM_MASK 0x3Fu
 
 /* Texture references a published material tracks: the twelve common-row and
-   transmission textures, three per extra terrain layer, the layer mask,
-   then the eight Custom-graph textures. */
-#define VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT 30u
+   transmission textures, three per extra terrain layer, the layer mask, the
+   two detail maps, then the eight Custom-graph textures. */
+#define VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT 32u
 
 typedef struct VkrMetalPacketRgba8TextureCreateInfo {
   const uint8_t *pixels;

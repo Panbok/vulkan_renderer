@@ -755,11 +755,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
    buckets. */
 #define VKR_METAL_CUSTOM_COMPACTION_PLANES 2u
 
-/* The Standard draw kinds (ADR-129): Standard camera draws that cannot be
-   lightmapped, on non-terrain and on terrain materials. Each kind shades
-   with pipelines that compile out the code its draws never run, in the
-   compaction slots after the Custom graphs'. */
-#define VKR_METAL_STANDARD_KIND_COUNT 2u
+/* The Standard draw kinds: Standard camera draws that cannot be lightmapped,
+   on non-terrain and on terrain materials (ADR-129), then the draws of
+   materials with detail maps that can be lightmapped and that cannot
+   (ADR-136). Each kind shades with pipelines that compile out the code its
+   draws never run, or compile in the detail maps, in the compaction slots
+   after the Custom graphs'. */
+#define VKR_METAL_STANDARD_KIND_COUNT 4u
 #define VKR_METAL_COMPACTION_SLOTS                                             \
   (VKR_METAL_CUSTOM_GRAPH_SLOTS + VKR_METAL_STANDARD_KIND_COUNT)
 

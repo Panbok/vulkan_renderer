@@ -425,6 +425,11 @@ bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {
   if (!vkr_pbr_brdf_extensions_valid(pbr)) {
     return false_v;
   }
+  /* Detail values reach the GPU only while the material shades with its
+     detail maps (ADR-136). */
+  if (vkr_material_detail_active(material) && !vkr_pbr_detail_valid(pbr)) {
+    return false_v;
+  }
   /* A terrain material blends opaque PBR layers in the visibility resolve,
      which forward and transmission shading never reach. */
   if (material->terrain) {

@@ -13299,6 +13299,19 @@ static bool8_t ops_material_settings(OpsContext *ctx, VkrMaterialGraph *graph,
   }
   settings->double_sided =
       ops_arg_bool(edit, "double_sided", settings->double_sided);
+  String8 detail_mask = {0};
+  if (vkr_bakery_json_get_string(edit, "detail_mask", &detail_mask)) {
+    uint32_t mask = UINT32_MAX;
+    for (uint32_t i = 0; i < VKR_MATERIAL_GRAPH_DETAIL_MASK_COUNT; ++i) {
+      mask = ops_equals(detail_mask, vkr_material_graph_detail_mask_names[i])
+                 ? i
+                 : mask;
+    }
+    if (mask == UINT32_MAX) {
+      return ops_fail(ctx, OPS_INVALID, "'detail_mask' is none or base_alpha");
+    }
+    settings->detail_mask = (VkrMaterialGraphDetailMask)mask;
+  }
   return ops_material_art_keys(ctx, edit, &settings->world_size,
                                settings->surface, sizeof(settings->surface));
 }
@@ -20433,7 +20446,9 @@ static const OpsDef s_ops[] = {
      "position?, rename?} or settings {alpha_mode?, alpha_cutoff?, "
      "double_sided?, subsurface_profile?, temporal_reactivity?, "
      "roughness_max?, world_size? (m per repeat on brush faces), surface? "
-     "(tag)}. A failed edit or an invalid graph changes nothing. "
+     "(tag), detail_mask? (none or base_alpha: what weighs the output's "
+     "detail_normal and detail_albedo maps)}. A failed edit or an invalid "
+     "graph changes nothing. "
      "Answers how the graph lowers.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
      "\"string\"},\"edits\":{\"type\":\"array\",\"items\":{\"type\":"

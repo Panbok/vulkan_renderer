@@ -48,6 +48,15 @@ constant bool vkr_tiled_kind_no_terrain =
     is_function_constant_defined(vkr_tiled_kind_no_terrain_constant) &&
     vkr_tiled_kind_no_terrain_constant;
 
+// The detail kinds' pipelines (ADR-136) set this: every draw they shade has
+// a material with detail maps, which they sample over the material's own.
+// Other pipelines leave it undefined, so the detail code and its registers
+// compile out of them.
+constant bool vkr_tiled_detail_constant [[function_constant(6)]];
+constant bool vkr_tiled_detail =
+    is_function_constant_defined(vkr_tiled_detail_constant) &&
+    vkr_tiled_detail_constant;
+
 // The opaque pass's outputs: the lit colour and, in sun contact frames, the
 // sun's light within it, after its cascades and cloud shadow.
 // Texture demand (ADR-024) leaves the opaque pass as a colour target, a
@@ -616,6 +625,40 @@ vkr_metal_tiled_base(thread const VkrMetalTiledVertexOutput &input,
          material.tint * (terrain ? float4(1.0f) : input.color);
 }
 
+// A material's detail maps over its surface (ADR-136), in the detail kinds'
+// pipelines: the detail normal, at UV0 times the detail UV scale with the
+// material's filtering and LOD bias, reorients onto the surface's tangent
+// normal, and the grey albedo overlay scales its base colour. The base
+// colour's alpha weighs both under the base-alpha mask. The UV scale and the
+// overlay's weight are one per material, so a draw's quads take the overlay
+// branch together and its sample keeps implicit derivatives.
+static void vkr_metal_tiled_detail(thread const VkrMetalTiledVertexOutput &input,
+                                   constant VkrMetalPacketFrameRoot *frame,
+                                   const device VkrMetalPacketMaterial &material,
+                                   thread VkrMetalTiledSurface &surface) {
+  const float4 detail = material.material_detail;
+  const float2 detail_uv = input.texcoord * detail.x;
+  const float weight = detail.w != 0.0f ? saturate(surface.base.a) : 1.0f;
+  const float3 detail_normal = vkr_normal_map_decode(
+      material.detail_normal_texture
+          .sample(material.detail_normal_sampler, detail_uv,
+                  bias(frame->texture_lod_bias))
+          .xyz,
+      detail.y * weight);
+  surface.tangent_normal =
+      vkr_detail_normal_blend(surface.tangent_normal, detail_normal);
+  surface.normal_mapped = true;
+  if (detail.z > 0.0f) {
+    const float3 overlay =
+        material.detail_albedo_texture
+            .sample(material.detail_albedo_sampler, detail_uv,
+                    bias(frame->texture_lod_bias))
+            .rgb;
+    surface.base.rgb =
+        vkr_detail_albedo(surface.base.rgb, overlay, detail.z * weight);
+  }
+}
+
 static VkrMetalTiledSurface
 vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
                         constant VkrMetalPacketFrameRoot *frame,
@@ -684,6 +727,8 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
                                          input.texcoord,
                                          bias(frame->texture_lod_bias))
             .rgb;
+  if (vkr_tiled_detail)
+    vkr_metal_tiled_detail(input, frame, material, surface);
   return surface;
 }
 
@@ -1424,11 +1469,15 @@ template <typename Graph> struct VkrMetalCustomSurface {
 };
 
 // Texture samples a pixel of `material` takes: its base colour, each map
-// its flags enable, and a layered or terrain material's layers and mask.
+// its flags enable, a layered or terrain material's layers and mask, and
+// its detail normal and albedo overlay (ADR-136).
 static float vkr_metal_tiled_material_samples(
     const device VkrMetalPacketMaterial &material) {
+  const float detail = (material.flags & 8192u) == 0u ? 0.0f
+                       : material.material_detail.z > 0.0f ? 2.0f
+                                                           : 1.0f;
   return 1.0f + float(popcount(material.flags & 0x7FFu)) +
-         ((material.flags & 2048u) != 0u ? 10.0f : 0.0f);
+         ((material.flags & 2048u) != 0u ? 10.0f : 0.0f) + detail;
 }
 
 // The base colour texture's texels per metre on the surface: its texel

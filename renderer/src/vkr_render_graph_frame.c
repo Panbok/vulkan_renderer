@@ -288,6 +288,9 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->brdf_extensions_enabled =
       packet->scene_rendering &&
       (material_features & VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION) != 0u;
+  frame->detail_maps_enabled =
+      packet->scene_rendering &&
+      (material_features & VKR_WORLD_MATERIAL_FEATURE_DETAIL) != 0u;
   frame->editor_image_available = packet->editor_image_available;
   frame->editor_presenter = packet->editor_presenter;
   frame->editor_overlay_enabled = packet->scene_rendering &&

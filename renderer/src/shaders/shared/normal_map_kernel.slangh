@@ -20,3 +20,26 @@ float3 vkr_normal_map_decode(float3 encoded, float strength)
         ? normal * rsqrt(length_squared)
         : float3(0.0f, 0.0f, 1.0f);
 }
+
+// Detail maps (ADR-136). The detail normal reorients onto the base normal
+// (reoriented normal mapping, Barre-Brisebois and Hill 2012): the detail's
+// up axis turns to the base normal, so its relief follows the slopes of the
+// base map instead of flattening them. Both are unit tangent-space normals
+// of the positive hemisphere vkr_normal_map_decode gives, so base.z + 1 is at
+// least 1. A flat detail returns the base, a flat base the detail.
+float3 vkr_detail_normal_blend(float3 base, float3 detail)
+{
+    float3 t = float3(base.xy, base.z + 1.0f);
+    float3 u = float3(-detail.xy, detail.z);
+    float3 r = t * (dot(t, u) / t.z) - u;
+    float length_squared = dot(r, r);
+    return length_squared > 1e-12f ? r * rsqrt(length_squared) : base;
+}
+
+// The detail albedo overlay: a linear grey map about 0.5 scales the base
+// colour by twice its value, weighed by `weight`; 0 keeps the base colour and
+// 0.5 in the map always does.
+float3 vkr_detail_albedo(float3 base, float3 overlay, float weight)
+{
+    return base * (1.0f + weight * (2.0f * overlay - 1.0f));
+}

@@ -204,16 +204,21 @@ typedef enum VkrTextureSlot {
   /* A layered material's mask: its RGBA weigh layers 0 to 3 when the mask
      source is VKR_MATERIAL_LAYER_MASK_TEXTURE. */
   VKR_TEXTURE_SLOT_LAYER_MASK = 23,
+  /* A Standard material's detail maps (ADR-136), sampled at UV0 times the
+     detail UV scale: a tangent-space normal over the material's own, and a
+     linear grey overlay on its base colour. */
+  VKR_TEXTURE_SLOT_DETAIL_NORMAL = 24,
+  VKR_TEXTURE_SLOT_DETAIL_ALBEDO = 25,
   /* A Custom graph's textures (vkr_material_codegen.h), in its binding's
      order; their class comes from the material file, not the slot. */
-  VKR_TEXTURE_SLOT_CUSTOM0 = 24,
-  VKR_TEXTURE_SLOT_CUSTOM1 = 25,
-  VKR_TEXTURE_SLOT_CUSTOM2 = 26,
-  VKR_TEXTURE_SLOT_CUSTOM3 = 27,
-  VKR_TEXTURE_SLOT_CUSTOM4 = 28,
-  VKR_TEXTURE_SLOT_CUSTOM5 = 29,
-  VKR_TEXTURE_SLOT_CUSTOM6 = 30,
-  VKR_TEXTURE_SLOT_CUSTOM7 = 31,
+  VKR_TEXTURE_SLOT_CUSTOM0 = 26,
+  VKR_TEXTURE_SLOT_CUSTOM1 = 27,
+  VKR_TEXTURE_SLOT_CUSTOM2 = 28,
+  VKR_TEXTURE_SLOT_CUSTOM3 = 29,
+  VKR_TEXTURE_SLOT_CUSTOM4 = 30,
+  VKR_TEXTURE_SLOT_CUSTOM5 = 31,
+  VKR_TEXTURE_SLOT_CUSTOM6 = 32,
+  VKR_TEXTURE_SLOT_CUSTOM7 = 33,
   VKR_TEXTURE_SLOT_COUNT
 } VkrTextureSlot;
 
@@ -338,9 +343,54 @@ typedef struct VkrPbrProperties {
   /** Linear F82 tint (Hoffman/Kutz), each channel in [0,1]; white is
    * Schlick Fresnel. */
   Vec3 specular_f82_tint;
+  /** Detail maps (ADR-136): repeats of the detail textures per UV0 unit, the
+   * detail normal's strength, the albedo overlay's weight and what weighs
+   * both (a VkrMaterialDetailMask). They shade only while the detail normal
+   * slot holds a map. */
+  float32_t detail_uv_scale;
+  float32_t detail_normal_scale;
+  float32_t detail_albedo_strength;
+  uint32_t detail_mask;
 } VkrPbrProperties;
 
 #define VKR_MATERIAL_DUAL_SPECULAR_ROUGHNESS_SCALE_MAX 16.0f
+
+/* What weighs a material's detail maps (ADR-136). */
+typedef enum VkrMaterialDetailMask {
+  /* The detail covers the whole surface. */
+  VKR_MATERIAL_DETAIL_MASK_NONE = 0,
+  /* The base colour's alpha weighs it; only an opaque material, whose
+     alpha is otherwise unused, takes this mask. */
+  VKR_MATERIAL_DETAIL_MASK_BASE_ALPHA = 1,
+  VKR_MATERIAL_DETAIL_MASK_COUNT,
+} VkrMaterialDetailMask;
+
+/* The ranges the detail values take (ADR-136). */
+#define VKR_MATERIAL_DETAIL_UV_SCALE_MIN 0.01f
+#define VKR_MATERIAL_DETAIL_UV_SCALE_MAX 1024.0f
+#define VKR_MATERIAL_DETAIL_NORMAL_SCALE_MAX 8.0f
+
+/* Writes the detail values a material without detail keys has. */
+static inline void vkr_pbr_reset_detail(VkrPbrProperties *pbr) {
+  pbr->detail_uv_scale = 8.0f;
+  pbr->detail_normal_scale = 1.0f;
+  pbr->detail_albedo_strength = 1.0f;
+  pbr->detail_mask = VKR_MATERIAL_DETAIL_MASK_NONE;
+}
+
+/* Whether every detail value is finite and in its range. */
+static inline bool8_t vkr_pbr_detail_valid(const VkrPbrProperties *pbr) {
+  return vkr_is_finite_f32(pbr->detail_uv_scale) &&
+         pbr->detail_uv_scale >= VKR_MATERIAL_DETAIL_UV_SCALE_MIN &&
+         pbr->detail_uv_scale <= VKR_MATERIAL_DETAIL_UV_SCALE_MAX &&
+         vkr_is_finite_f32(pbr->detail_normal_scale) &&
+         pbr->detail_normal_scale >= 0.0f &&
+         pbr->detail_normal_scale <= VKR_MATERIAL_DETAIL_NORMAL_SCALE_MAX &&
+         vkr_is_finite_f32(pbr->detail_albedo_strength) &&
+         pbr->detail_albedo_strength >= 0.0f &&
+         pbr->detail_albedo_strength <= 1.0f &&
+         pbr->detail_mask < VKR_MATERIAL_DETAIL_MASK_COUNT;
+}
 
 /* Writes the identity BRDF extensions: Lambert diffuse, no smooth
    terminator, one specular lobe and Schlick Fresnel. */
@@ -444,6 +494,18 @@ typedef struct VkrMaterial {
 } VkrMaterial;
 
 Array(VkrMaterial);
+
+/* Whether `material` shades with its detail maps (ADR-136): an opaque or
+   alpha-tested Standard PBR material without layers or refraction whose
+   detail normal slot holds a map. The slot stays empty while its map
+   streams in, so the material draws without detail until then. */
+static inline bool8_t vkr_material_detail_active(const VkrMaterial *material) {
+  return material->material_type == VKR_MATERIAL_TYPE_PBR &&
+         material->textures[VKR_TEXTURE_SLOT_DETAIL_NORMAL].enabled &&
+         material->alpha_mode != VKR_MATERIAL_ALPHA_BLEND &&
+         !material->terrain && material->pbr.transmission_factor <= 0.0f &&
+         material->custom_function[0] == '\0';
+}
 
 typedef struct VkrMeshInstanceHandle {
   uint32_t id;

@@ -2946,6 +2946,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
     material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_ANISOTROPY;
   if (material->terrain)
     material_flags |= VKR_VULKAN_MATERIAL_TERRAIN;
+  if (vkr_material_detail_active(material))
+    material_flags |= VKR_VULKAN_MATERIAL_DETAIL;
   const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                         ? material->pbr.base_color
                         : material->phong.diffuse_color;
@@ -3028,6 +3030,17 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
                                       0.0f},
               .material_brdf = material_constants.brdf,
               .material_specular_tint = material_constants.specular_tint,
+              /* Only a material with detail maps has its detail row read;
+                 an empty slot's index stays zero. */
+              .material_detail = vkr_packet_material_detail(material),
+              .detail_normal_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_DETAIL_NORMAL],
+              .detail_normal_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_DETAIL_NORMAL],
+              .detail_albedo_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_DETAIL_ALBEDO],
+              .detail_albedo_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_DETAIL_ALBEDO],
           },
       .transmission =
           {

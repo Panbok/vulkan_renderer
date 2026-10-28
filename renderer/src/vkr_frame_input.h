@@ -316,7 +316,10 @@ typedef struct VkrPreparedUiDrawList {
 /* ADR-113: a material whose BRDF extensions differ from identity selects
    the frame's extension shading variants. */
 #define VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION 0x8u
-#define VKR_WORLD_MATERIAL_FEATURE_ALL 0xfu
+/* ADR-136: an opaque or alpha-tested material with detail maps selects the
+   pipelines that sample them. */
+#define VKR_WORLD_MATERIAL_FEATURE_DETAIL 0x10u
+#define VKR_WORLD_MATERIAL_FEATURE_ALL 0x1fu
 
 /** Immutable source arrays and current pose borrowed through render_frame.
  * Vertices use the complete geometry-local order. Unreferenced vertices may

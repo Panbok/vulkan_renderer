@@ -73,6 +73,16 @@ vkr_global const VkrMetalPacketAbiField vkr_material_fields[] = {
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_brdf, "material_brdf", 352),
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_specular_tint,
                   "material_specular_tint", 368),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_detail, "material_detail",
+                  384),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, detail_normal_texture_id,
+                  "detail_normal_texture", 400),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, detail_albedo_texture_id,
+                  "detail_albedo_texture", 408),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, detail_normal_sampler_id,
+                  "detail_normal_sampler", 416),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, detail_albedo_sampler_id,
+                  "detail_albedo_sampler", 424),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_transmission_material_fields[] = {
@@ -1019,7 +1029,7 @@ vkr_global const VkrMetalPacketAbiRecord
     vkr_metal_packet_abi_records[VKR_METAL_PACKET_ABI_RECORD_COUNT] = {
         [VKR_METAL_PACKET_ABI_MATERIAL] =
             VKR_ABI_RECORD(VkrMetalMaterialGpuRow, "VkrMetalPacketMaterial",
-                           384, 16, vkr_material_fields),
+                           432, 16, vkr_material_fields),
         [VKR_METAL_PACKET_ABI_TRANSMISSION_MATERIAL] =
             VKR_ABI_RECORD(VkrMetalTransmissionMaterialGpuRow,
                            "VkrMetalPacketTransmissionMaterial", 32, 16,

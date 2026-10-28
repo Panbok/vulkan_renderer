@@ -224,6 +224,7 @@ vkr_internal void vkr_material_init_defaults(VkrMaterial *material,
   material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
   material->pbr.temporal_reactivity = 0.0f;
   vkr_pbr_reset_brdf_extensions(&material->pbr);
+  vkr_pbr_reset_detail(&material->pbr);
   material->alpha_cutoff = 0.0f;
 
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
@@ -432,6 +433,7 @@ vkr_internal VkrMaterialTextureClass vkr_material_texture_class_from_slot(
   case VKR_TEXTURE_SLOT_LAYER1_NORMAL:
   case VKR_TEXTURE_SLOT_LAYER2_NORMAL:
   case VKR_TEXTURE_SLOT_LAYER3_NORMAL:
+  case VKR_TEXTURE_SLOT_DETAIL_NORMAL:
     return VKR_MATERIAL_TEXTURE_CLASS_NORMAL_RG;
   case VKR_TEXTURE_SLOT_SPECULAR:
   case VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS:
@@ -446,6 +448,9 @@ vkr_internal VkrMaterialTextureClass vkr_material_texture_class_from_slot(
   case VKR_TEXTURE_SLOT_LAYER2_ORM:
   case VKR_TEXTURE_SLOT_LAYER3_ORM:
   case VKR_TEXTURE_SLOT_LAYER_MASK:
+  /* The detail albedo is a linear grey overlay about 0.5, data rather than
+     a colour (ADR-136). */
+  case VKR_TEXTURE_SLOT_DETAIL_ALBEDO:
     return VKR_MATERIAL_TEXTURE_CLASS_DATA_MASK;
   default:
     return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB
@@ -504,6 +509,10 @@ vkr_internal const char *vkr_material_slot_name(VkrTextureSlot slot) {
     return "layer3_orm";
   case VKR_TEXTURE_SLOT_LAYER_MASK:
     return "layer_mask";
+  case VKR_TEXTURE_SLOT_DETAIL_NORMAL:
+    return "detail_normal";
+  case VKR_TEXTURE_SLOT_DETAIL_ALBEDO:
+    return "detail_albedo";
   case VKR_TEXTURE_SLOT_CUSTOM0:
     return "custom0";
   case VKR_TEXTURE_SLOT_CUSTOM1:
@@ -1429,6 +1438,7 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   material->pbr.emissive_factor = vec3_zero();
   material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
   vkr_pbr_reset_brdf_extensions(&material->pbr);
+  vkr_pbr_reset_detail(&material->pbr);
   material->alpha_cutoff = 0.0f;
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
     material->textures[tex_slot].handle = VKR_TEXTURE_HANDLE_INVALID;
@@ -1653,6 +1663,7 @@ vkr_material_loader_set_parse_defaults(VkrParsedMaterialData *out_data) {
   out_data->pbr.attenuation_distance = 0.0f;
   out_data->pbr.temporal_reactivity = 0.0f;
   vkr_pbr_reset_brdf_extensions(&out_data->pbr);
+  vkr_pbr_reset_detail(&out_data->pbr);
   out_data->alpha_cutoff = 0.0f;
   out_data->alpha_cutoff_set = false_v;
   out_data->cutout_enabled = false_v;
@@ -1802,6 +1813,80 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_brdf_key(
     out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return VKR_MATERIAL_KEY_INVALID;
   }
+  return VKR_MATERIAL_KEY_MATCHED;
+}
+
+/* Detail map keys (ADR-136): the detail normal and albedo textures and their
+ * colour spaces, the detail UV scale, the detail normal's strength, the
+ * albedo overlay's strength and the detail mask. Any other `detail_` key, or
+ * a value out of its range, rejects the material, so a misspelt key fails
+ * instead of shading at its default. */
+vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_detail_key(
+    VkrParsedMaterialData *out_data, String8 path, String8 key, String8 value) {
+  if (!vkr_material_key_has_prefix(key, "detail_")) {
+    return VKR_MATERIAL_KEY_UNMATCHED;
+  }
+
+  VkrPbrProperties *pbr = &out_data->pbr;
+  bool8_t valid = true_v;
+  const bool8_t normal_texture =
+      vkr_string8_equals_cstr_i(&key, "detail_normal_texture");
+  const bool8_t albedo_texture =
+      vkr_string8_equals_cstr_i(&key, "detail_albedo_texture");
+  const bool8_t normal_space =
+      vkr_string8_equals_cstr_i(&key, "detail_normal_colorspace");
+  const bool8_t albedo_space =
+      vkr_string8_equals_cstr_i(&key, "detail_albedo_colorspace");
+  if (normal_texture || albedo_texture) {
+    const VkrTextureSlot slot = normal_texture ? VKR_TEXTURE_SLOT_DETAIL_NORMAL
+                                               : VKR_TEXTURE_SLOT_DETAIL_ALBEDO;
+    valid = value.length > 0 && value.length < VKR_MATERIAL_PATH_MAX;
+    if (valid) {
+      MemCopy(out_data->texture_paths[slot], value.str, (size_t)value.length);
+      out_data->texture_paths[slot][value.length] = '\0';
+    }
+  } else if (normal_space || albedo_space) {
+    const VkrTextureSlot slot = normal_space ? VKR_TEXTURE_SLOT_DETAIL_NORMAL
+                                             : VKR_TEXTURE_SLOT_DETAIL_ALBEDO;
+    const String8 name = string8_create_from_cstr(
+        (const uint8_t *)out_data->name, string_length(out_data->name));
+    vkr_material_parse_colorspace_field(key, value, name,
+                                        &out_data->texture_colorspace[slot],
+                                        vkr_material_slot_name(slot));
+  } else if (vkr_string8_equals_cstr_i(&key, "detail_uv_scale")) {
+    valid = vkr_material_parse_bounded_f32(
+        value, VKR_MATERIAL_DETAIL_UV_SCALE_MIN,
+        VKR_MATERIAL_DETAIL_UV_SCALE_MAX, &pbr->detail_uv_scale);
+  } else if (vkr_string8_equals_cstr_i(&key, "detail_normal_scale")) {
+    valid = vkr_material_parse_bounded_f32(value, 0.0f,
+                                           VKR_MATERIAL_DETAIL_NORMAL_SCALE_MAX,
+                                           &pbr->detail_normal_scale);
+  } else if (vkr_string8_equals_cstr_i(&key, "detail_albedo_strength")) {
+    valid = vkr_material_parse_bounded_f32(value, 0.0f, 1.0f,
+                                           &pbr->detail_albedo_strength);
+  } else if (vkr_string8_equals_cstr_i(&key, "detail_mask")) {
+    if (vkr_string8_equals_cstr_i(&value, "none")) {
+      pbr->detail_mask = VKR_MATERIAL_DETAIL_MASK_NONE;
+    } else if (vkr_string8_equals_cstr_i(&value, "base_alpha")) {
+      pbr->detail_mask = VKR_MATERIAL_DETAIL_MASK_BASE_ALPHA;
+    } else {
+      valid = false_v;
+    }
+  } else {
+    log_error("Material: unknown detail key '%.*s' in '%.*s'", (int)key.length,
+              key.str, (int)path.length, path.str);
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return VKR_MATERIAL_KEY_INVALID;
+  }
+
+  if (!valid) {
+    log_error("Material: invalid %.*s in '%.*s'", (int)key.length, key.str,
+              (int)path.length, path.str);
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return VKR_MATERIAL_KEY_INVALID;
+  }
+  out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+  out_data->detail = true_v;
   return VKR_MATERIAL_KEY_MATCHED;
 }
 
@@ -2193,6 +2278,12 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
     return true_v;
   }
 
+  const VkrMaterialKeyResult detail =
+      vkr_material_loader_parse_detail_key(out_data, path, key, value);
+  if (detail != VKR_MATERIAL_KEY_UNMATCHED) {
+    return detail == VKR_MATERIAL_KEY_MATCHED;
+  }
+
   if (vkr_string8_equals_cstr_i(&key, "surface")) {
     char name[32] = {0};
     VkrSurface surface = VKR_SURFACE_NONE;
@@ -2288,10 +2379,54 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
   return result != VKR_MATERIAL_KEY_INVALID;
 }
 
-/* Derives the cutoff and PBR type the parsed keys imply, rejects layer maps
- * without their declared texture intent and unsupported combinations of
- * subsurface, diffuse transmission, anisotropy and refraction, then wraps the
- * anisotropy rotation. */
+/* Rejects detail keys (ADR-136) the shaders would not draw: any of them
+ * without a detail normal map, detail maps on a blended, refracting,
+ * layered or Custom material, and the base-alpha mask on a material whose
+ * alpha mode is not explicitly opaque, since an alpha test or blend reads
+ * that alpha too. */
+vkr_internal bool8_t
+vkr_material_loader_validate_detail(VkrParsedMaterialData *out_data) {
+  const bool8_t detail_normal =
+      out_data->texture_paths[VKR_TEXTURE_SLOT_DETAIL_NORMAL][0] != '\0';
+  if (out_data->detail && !detail_normal) {
+    log_error("Material: detail keys need detail_normal_texture");
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (!detail_normal) {
+    return true_v;
+  }
+
+  bool8_t layered =
+      out_data->texture_paths[VKR_TEXTURE_SLOT_LAYER_MASK][0] != '\0';
+  for (uint32_t i = 0; i < VKR_MATERIAL_TERRAIN_LAYERS - 1u; ++i) {
+    layered = layered || out_data->layer_paths[i][0] != '\0';
+  }
+  const bool8_t blended =
+      out_data->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+      (!out_data->alpha_mode_explicit && out_data->pbr.base_color.w < 0.999f);
+  if (blended || layered || out_data->pbr.transmission_factor > 0.0f ||
+      out_data->pbr.thickness_factor > 0.0f ||
+      out_data->custom_function[0] != '\0') {
+    log_error("Material: detail maps need an opaque or alpha-tested Standard "
+              "material without layers or refraction");
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (out_data->pbr.detail_mask == VKR_MATERIAL_DETAIL_MASK_BASE_ALPHA &&
+      !(out_data->alpha_mode_explicit &&
+        out_data->alpha_mode == VKR_MATERIAL_ALPHA_OPAQUE)) {
+    log_error("Material: detail_mask=base_alpha needs alpha_mode=opaque");
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  return true_v;
+}
+
+/* Derives the cutoff and PBR type the parsed keys imply, rejects layer and
+ * detail maps without their declared texture intent and unsupported
+ * combinations of subsurface, diffuse transmission, anisotropy, refraction
+ * and detail maps, then wraps the anisotropy rotation. */
 vkr_internal bool8_t
 vkr_material_loader_validate_parsed(VkrParsedMaterialData *out_data) {
   if (out_data->alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT &&
@@ -2320,7 +2455,7 @@ vkr_material_loader_validate_parsed(VkrParsedMaterialData *out_data) {
   /* Custom slots take their class from the file, so they are not checked
      against a slot's intent. */
   for (uint32_t slot = VKR_TEXTURE_SLOT_CLEARCOAT;
-       slot <= VKR_TEXTURE_SLOT_LAYER_MASK; ++slot) {
+       slot <= VKR_TEXTURE_SLOT_DETAIL_ALBEDO; ++slot) {
     String8 texture_path =
         string8_create_from_cstr((const uint8_t *)out_data->texture_paths[slot],
                                  string_length(out_data->texture_paths[slot]));
@@ -2342,7 +2477,7 @@ vkr_material_loader_validate_parsed(VkrParsedMaterialData *out_data) {
         (has_class && (!class_known ||
                        texture_class != vkr_material_texture_class_from_slot(
                                             (VkrTextureSlot)slot, expected)))) {
-      log_error("Material: layer maps require their declared color/data/normal "
+      log_error("Material: layer and detail maps require their declared "
                 "texture intent");
       out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       return false_v;
@@ -2378,6 +2513,9 @@ vkr_material_loader_validate_parsed(VkrParsedMaterialData *out_data) {
       out_data->pbr.transmission_factor > 0.0f) {
     log_error("Material: anisotropy with refraction is unsupported");
     out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (!vkr_material_loader_validate_detail(out_data)) {
     return false_v;
   }
   out_data->pbr.anisotropy_rotation =
@@ -2797,7 +2935,8 @@ bool8_t vkr_material_loader_replace_terrain(
   /* A terrain is opaque PBR, so the extensions an opaque terrain cannot
      carry are off; its vertex colours weigh the layers. Layer 0's BRDF
      extensions would shade every blended layer, so the terrain keeps the
-     identity BRDF. */
+     identity BRDF, and no detail maps (ADR-136), which a layered surface
+     does not take. */
   parsed->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
   parsed->alpha_cutoff = 0.0f;
   parsed->alpha_cutoff_set = false_v;
@@ -2808,6 +2947,9 @@ bool8_t vkr_material_loader_replace_terrain(
   parsed->pbr.diffuse_transmission_strength = 0.0f;
   parsed->pbr.subsurface_strength = 0.0f;
   vkr_pbr_reset_brdf_extensions(&parsed->pbr);
+  vkr_pbr_reset_detail(&parsed->pbr);
+  parsed->texture_paths[VKR_TEXTURE_SLOT_DETAIL_NORMAL][0] = '\0';
+  parsed->texture_paths[VKR_TEXTURE_SLOT_DETAIL_ALBEDO][0] = '\0';
   parsed->layer_mask = VKR_MATERIAL_LAYER_MASK_VERTEX_COLOR;
   parsed->texture_paths[VKR_TEXTURE_SLOT_LAYER_MASK][0] = '\0';
   for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {

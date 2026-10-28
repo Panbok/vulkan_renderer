@@ -70,6 +70,14 @@ typedef struct VKR_SIMD_ALIGN VkrMetalMaterialGpuRow {
   Vec4 material_brdf;
   /** Linear RGB F82 tint in xyz, dual-specular roughness scale in w. */
   Vec4 material_specular_tint;
+  /** Detail maps (ADR-136, vkr_packet_material_detail): x UV scale, y normal
+   * strength, z albedo overlay weight, w 1 when the base colour's alpha
+   * weighs them. Only the detail kinds' pipelines read these fields. */
+  Vec4 material_detail;
+  uint64_t detail_normal_texture_id;
+  uint64_t detail_albedo_texture_id;
+  uint64_t detail_normal_sampler_id;
+  uint64_t detail_albedo_sampler_id;
 } VkrMetalMaterialGpuRow;
 
 // Cold transmission-only resource identifiers are segmented from the common

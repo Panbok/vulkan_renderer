@@ -250,20 +250,27 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
   }
 }
 
-/* The Standard draw kinds (ADR-129), in the order of their compaction slots:
-   draws that cannot be lightmapped, on non-terrain and on terrain
-   materials. Lightmapped draws keep the general pipelines: a lightmapped
+/* The Standard draw kinds, in the order of their compaction slots: draws
+   that cannot be lightmapped, on non-terrain and on terrain materials
+   (ADR-129). Lightmapped draws keep the general pipelines: a lightmapped
    kind without the terrain layers cost more in executes and pipeline
-   changes than it saved. */
+   changes than it saved. Then the draws of materials with detail maps that
+   can be lightmapped and that cannot (ADR-136): only their pipelines
+   compile in the detail maps, so the general pipelines never carry them.
+   A material with detail maps has no layers, so both compile out the
+   terrain layers. */
 enum {
   VKR_METAL_STANDARD_KIND_UNLIT = 0,
   VKR_METAL_STANDARD_KIND_TERRAIN = 1,
+  VKR_METAL_STANDARD_KIND_DETAIL = 2,
+  VKR_METAL_STANDARD_KIND_DETAIL_UNLIT = 3,
 };
 
 /* Creates Standard kind `kind`'s forward and alpha-tested pipelines of
    shading variant `variant` from the Standard entries, with the function
-   constants that compile out the code the kind's draws never run, then
-   marks the variant ready or failed. Runs as a background build. */
+   constants that compile out the code the kind's draws never run and, for
+   a detail kind, compile in the detail maps, then marks the variant ready
+   or failed. Runs as a background build. */
 vkr_internal void
 vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
                                       uint32_t kind, uint32_t variant)
@@ -280,8 +287,10 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
     const bool8_t extension = (variant & 1u) != 0u;
     const bool8_t sun = (variant & VKR_METAL_TILED_SUN_VARIANT) != 0u;
     const bool8_t demand = (variant & VKR_METAL_TILED_DEMAND_VARIANT) != 0u;
-    const bool8_t no_lightmap = true_v;
+    const bool8_t no_lightmap = kind != VKR_METAL_STANDARD_KIND_DETAIL;
     const bool8_t no_terrain = kind != VKR_METAL_STANDARD_KIND_TERRAIN;
+    const bool8_t detail = kind == VKR_METAL_STANDARD_KIND_DETAIL ||
+                           kind == VKR_METAL_STANDARD_KIND_DETAIL_UNLIT;
     MTLFunctionConstantValues *constants =
         [[MTLFunctionConstantValues new] autorelease];
     [constants setConstantValue:&extension type:MTLDataTypeBool atIndex:0];
@@ -289,9 +298,12 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
     [constants setConstantValue:&no_lightmap type:MTLDataTypeBool atIndex:2];
     [constants setConstantValue:&no_terrain type:MTLDataTypeBool atIndex:3];
     [constants setConstantValue:&demand type:MTLDataTypeBool atIndex:5];
+    [constants setConstantValue:&detail type:MTLDataTypeBool atIndex:6];
     static NSString *const labels[VKR_METAL_STANDARD_KIND_COUNT] = {
         @"VKR tiled forward, unlightmapped kind",
         @"VKR tiled forward, unlightmapped terrain kind",
+        @"VKR tiled forward, detail kind",
+        @"VKR tiled forward, unlightmapped detail kind",
     };
     bool8_t ok = renderer->fragment_library != nil;
     for (uint32_t decals = 0;
@@ -456,27 +468,33 @@ vkr_metal_packet_background_wait(VkrMetalPacketRenderer *renderer)
   (void)vkr_job_wait(renderer->job_system, renderer->custom_compile_job);
 }
 
-/* This frame's ready Standard kinds (ADR-129), bit
+/* This frame's ready Standard kinds (ADR-129, ADR-136), bit
    plane * VKR_METAL_STANDARD_KIND_COUNT + kind, for the frame's sun and
    demand variant bits `frame_variant` in plane 0 and, when it buckets
-   extended draws, plane 1. A kind
-   variant a frame first asks for starts creating in the background; its
-   draws keep the general pipelines until it is READY. The
-   VKR_STANDARD_KINDS_DISABLED diagnostic keeps every draw on them. */
+   extended draws, plane 1; the detail kinds only when `detail_frame`, whose
+   scene has a material with detail maps. A kind variant a frame first asks
+   for starts creating in the background; its draws keep the general
+   pipelines until it is READY, a detail draw without its detail maps. The
+   VKR_STANDARD_KINDS_DISABLED diagnostic keeps every draw without detail
+   maps on them. */
 vkr_internal uint32_t vkr_metal_packet_standard_kind_mask(
     VkrMetalPacketRenderer *renderer, uint32_t frame_variant,
-    bool8_t brdf_frame) API_AVAILABLE(macos(26.0)) {
+    bool8_t brdf_frame, bool8_t detail_frame) API_AVAILABLE(macos(26.0)) {
   static int32_t disabled = -1;
   if (disabled < 0)
     disabled =
         vkr_platform_environment_flag("VKR_STANDARD_KINDS_DISABLED") ? 1 : 0;
-  if (disabled == 1 || !renderer->fragment_library)
+  if (!renderer->fragment_library)
     return 0u;
 
+  const uint32_t first_kind =
+      disabled == 1 ? VKR_METAL_STANDARD_KIND_DETAIL : 0u;
+  const uint32_t kind_end = detail_frame ? VKR_METAL_STANDARD_KIND_COUNT
+                                         : VKR_METAL_STANDARD_KIND_DETAIL;
   uint32_t mask = 0u;
   for (uint32_t plane = 0u; plane < (brdf_frame ? 2u : 1u); ++plane) {
     const uint32_t variant = plane | frame_variant;
-    for (uint32_t kind = 0u; kind < VKR_METAL_STANDARD_KIND_COUNT; ++kind) {
+    for (uint32_t kind = first_kind; kind < kind_end; ++kind) {
       VkrMetalCustomGraph *graph = &renderer->standard_kinds[kind];
       const uint32_t state = vkr_atomic_uint32_load(&graph->state[variant],
                                                     VKR_MEMORY_ORDER_ACQUIRE);

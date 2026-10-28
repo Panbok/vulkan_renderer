@@ -9,7 +9,10 @@ the shared source and is tracked in
 `docs/adr/044-shader-cross-backend-contract.md`.
 `normal_map_kernel.slangh` owns the positive-hemisphere tangent-space decode
 used by every Metal and Vulkan material path, including two-channel BC5 and EAC
-RG11 sources.
+RG11 sources, and the detail-map blends (ADR-136): the reoriented blend of a
+detail normal onto the material's and the grey albedo overlay. The Metal tiled
+forward detail pipelines and the Vulkan G-buffer resolve's detail variant
+consume them.
 
 `terrain_kernel.slangh` owns the layer blend of terrain and layered Standard
 materials: weights from the mask source (the vertex color, a mask texture,
