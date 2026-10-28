@@ -20291,7 +20291,7 @@ static const OpsDef s_ops[] = {
      "delay) a door its arrival opens that closes by itself or one its "
      "on_depart closes that outlasts its delay ('value' the seconds), "
      "light_overflow: the scene has more enabled point lights than "
-     "the renderer's 128-light table, which keeps those nearest the "
+     "the renderer's 1024-light table, which keeps those nearest the "
      "camera ('value' the count, 'position' their centroid), "
      "and rooms: a portal with one space on both sides or whose door is "
      "no mover, a gap in a room's walls, floor or ceiling that no solid, "

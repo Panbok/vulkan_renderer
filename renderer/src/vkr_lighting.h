@@ -19,11 +19,11 @@ typedef enum VkrPointLightKind {
  */
 #define VKR_POINT_LIGHT_SOURCE_RADIUS_MAX 1.0f
 
-/* Point and spot lights one frame's table holds (ADR-019). It stays at the
- * head's width until the desktop lighting kernels shade the rows past it:
- * a tail loop costs their registers even when it never runs (clustered
- * binning proposal, W4). */
-#define VKR_MAX_SCENE_POINT_LIGHTS 128u
+/* Point and spot lights one frame's table holds (ADR-019). The desktop
+ * pipeline shades every row from its light tiles (ADR-135); the tiled
+ * pipeline's CPU grid names only the head's rows, so it draws no row past
+ * them. */
+#define VKR_MAX_SCENE_POINT_LIGHTS 1024u
 /* The light head: the table's first min(count,
  * VKR_POINT_LIGHT_GRID_LIGHT_MAX) rows hold its highest-ranked lights. Only
  * head rows enter the CPU light grid, cast local shadows and take
