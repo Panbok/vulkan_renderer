@@ -3201,9 +3201,11 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
   if (plan->point_light_count > 0) {
     VkrGpuPointLightRow *packed =
         (VkrGpuPointLightRow *)(cpu + plan->point_light_offset);
+    /* Rows carry intensity before exposure; the tiled shaders multiply it
+       by the frame's pre-exposure once per light (ADR-019). */
     for (uint32_t i = 0; i < plan->point_light_count; ++i)
-      vkr_point_light_pack(&packet->input.lighting->point_lights[i],
-                           packet->exposure.pre_exposure, &packed[i]);
+      vkr_point_light_pack(&packet->input.lighting->point_lights[i], 1.0f,
+                           &packed[i]);
     if (plan->local_shadow_view_count > 0u) {
       /* Only the light head has shadow views (ADR-019). */
       const uint32_t head_count =

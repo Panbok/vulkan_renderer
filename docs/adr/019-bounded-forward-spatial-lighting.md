@@ -63,10 +63,11 @@ grid of the head's rows. CPU scene synchronization
 owns membership; shaders perform exact range and spot-cone rejection.
 Four-vector, 64-byte light rows share position/range, direction/cone,
 color/intensity and type semantics across Metal and Vulkan shading paths.
-Since 2026-10-28 the Vulkan rows carry intensity before exposure and its
-shaders multiply by the frame's pre-exposure where they read it; Metal rows
-stay pre-exposed until the Metal half of that step lands (clustered binning
-proposal, M6 step 2a).
+Since 2026-10-28 the rows carry intensity before exposure on both backends,
+and the shaders multiply by the frame's pre-exposure once per light where
+they read it (clustered binning proposal, M6 step 2a); baked-lamp rows keep
+their own pre-exposed packing. On Metal the tiled lamp, clustered and
+four-sample captures stayed byte-identical.
 When more lights are offered than the table
 holds, it keeps the 1024 nearest the camera by the distance to their range,
 ties by the distance to their centre, and a light selected the frame before

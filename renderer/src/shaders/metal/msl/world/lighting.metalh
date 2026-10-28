@@ -508,6 +508,9 @@ void vkr_metal_packet_punctual_layered(
     float4 p1 = light.p1;
     float4 p2 = light.p2;
     float4 p3 = light.p3;
+    // The row's intensity is before exposure (ADR-019); the product is the
+    // one the host formed when rows were uploaded pre-exposed.
+    const float intensity = p2.x * frame->pre_exposure;
     VkrPunctualLightTerm term =
         vkr_punctual_light_term(p0, p1, p2, p3, world_position);
     if (!term.in_range || term.cone <= 0.0f)
@@ -545,22 +548,22 @@ void vkr_metal_packet_punctual_layered(
     }
     if (EvaluateDiffuse) {
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
-          normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+          normal, view, light_direction, p1.rgb * intensity * base_attenuation,
           albedo, metallic, roughness, f0, energy);
       irradiance_sum += direct.irradiance;
       diffuse_sum += direct.diffuse;
       specular_sum += direct.specular;
     } else {
       specular_sum += vkr_metal_packet_direct_specular(
-          normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+          normal, view, light_direction, p1.rgb * intensity * base_attenuation,
           roughness, f0, energy);
     }
     if (coat_active)
       coat_sum += vkr_metal_packet_clearcoat_direct(
-          view, light_direction, p1.rgb * p2.x * coat_attenuation, coat);
+          view, light_direction, p1.rgb * intensity * coat_attenuation, coat);
     if (sheen_active)
       sheen_sum += vkr_metal_packet_sheen_direct(
-          normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+          normal, view, light_direction, p1.rgb * intensity * base_attenuation,
           sheen, sheen_normalization);
   }
 }
