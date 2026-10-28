@@ -117,7 +117,11 @@ afford is set by how many lights reach each pixel, not by the table size.
    fine per-tile cull into compact 16-bit lists, with depth bounds from the
    depth prepass for deferred lighting and depth bins for glass and
    forward blend. Measure lists against bitfields on the stress case to
-   set the crossover.
+   set the crossover. On 2026-10-28 a per-wave range skip, which drops what
+   tile depth bounds would, saved only 0.2 to 0.3 ms of 10 to 15 ms on the
+   stress cases at 1,024 rows (ADR-135, Evidence): below that size the
+   lights in range set the cost, so the crossover lies past 1,024 rows and
+   waits for M6's table.
 4. **Z-binned light bitfields (W4a).** Stage 1 landed: per-tile light
    bitfields in table order with the tile taken from the pixel. Depth bins
    that narrow the words a pixel walks come only if the stress case shows

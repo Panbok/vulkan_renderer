@@ -86,8 +86,10 @@ than depth culling saves.
    ([`default.slang`](../../renderer/src/shaders/vulkan/slang/world/default.slang))
    walks the tile's words in order, ORs each across the wave and loads each
    light row as a scalar. Deferred lighting and `Shadow.LocalMask` take the
-   tile from their render pixel; forward and transmission shading project
-   their world position. `vkr_vk_apply_decals`
+   tile from their render pixel, and skip, once per wave, a ranged light
+   whose range misses the box of the wave's world positions, which no pixel
+   of the wave could pass the range test for (2026-10-28); forward and
+   transmission shading project their world position. `vkr_vk_apply_decals`
    ([`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang))
    merges the lanes' decal lists with `WaveActiveMin`, so each decal row
    loads once per wave and decals blend in table order.
@@ -152,6 +154,20 @@ than depth culling saves.
 
 Vulkan Release, RX 6700 XT, 2560x1440 High, validation unset.
 
+- **Per-wave range skip (2026-10-28).** A CPU estimate from the depth of
+  `bistro_clustered_stress_capture` gives 106 lights tested per pixel from
+  the 32 px tile bitfields, 48 with tile depth bounds and 18 in range. The
+  skip, measured with the shader catalog against the same build under
+  `local-offscreen-gpu-repeated`: `bistro_clustered_stress_1440`
+  `Lighting.Deferred.Fullscreen` 10.185 to 9.976 ms (run
+  `20261028T124433.084Z-000465`), `bistro_clustered_dense_1440` 15.026 to
+  14.698 ms (`20261028T125526.425Z-0027a8`), and the Bistro orbit under
+  `local-windowed-gpu` 3.668 against 3.662 ms. Rejecting an out-of-range
+  light was already cheap, so the lights in range set the cost, and tile
+  depth bounds or per-tile lists wait for tables past 1024 rows (proposal
+  item 3). The lamp HDR capture is byte-identical to a run without the skip;
+  one earlier run without it differed in 68,410 pixels, as two runs of the
+  same shaders can, since the shadowed head follows contribution samples.
 - **1024-row table (2026-10-28).** With `VKR_MAX_SCENE_POINT_LIGHTS` at
   1024, `bistro_clustered_1440` selects all 392 lights and drops none
   (`lighting.point.selected` 392); with the half-resolution local shadow
