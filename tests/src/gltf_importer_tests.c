@@ -39,6 +39,8 @@ typedef struct GltfImporterTestCapture {
   Vec2 first_texcoords[3];
   uint32_t first_position_count;
   Vec3 first_positions[3];
+  Vec4 first_tangent;
+  bool8_t first_preserve_tangents;
   String8 first_material_path;
 } GltfImporterTestCapture;
 
@@ -362,6 +364,10 @@ gltf_test_capture_primitive(void *user_data,
     return false_v;
   }
 
+  if (capture->primitive_count == 0) {
+    capture->first_tangent = primitive->vertices[0].tangent;
+    capture->first_preserve_tangents = primitive->preserve_tangents;
+  }
   capture->primitive_count++;
   capture->total_vertices += primitive->vertex_count;
   capture->total_indices += primitive->index_count;
@@ -935,6 +941,138 @@ static void test_gltf_import_converts_texture_coordinates(void) {
   gltf_test_remove_source_files(stem);
 
   printf("  test_gltf_import_converts_texture_coordinates PASSED\n");
+}
+
+typedef struct GltfTangentCaseResult {
+  bool8_t parsed;
+  Vec4 tangent;
+  bool8_t preserved;
+} GltfTangentCaseResult;
+
+/* One triangle in the XY plane facing +Z, UVs along +X, with the authored
+   `tangent` on every vertex, under a node scaled by `node_scale`. */
+static GltfTangentCaseResult
+gltf_test_run_tangent_case(const char *stem, Vec4 tangent, Vec3 node_scale) {
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+
+  char gltf_path[1024];
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  char bin_path[1024];
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+
+  const float32_t positions[9] = {
+      0.0f, 0.0f, 0.0f, //
+      1.0f, 0.0f, 0.0f, //
+      0.0f, 1.0f, 0.0f, //
+  };
+  const float32_t normals[9] = {
+      0.0f, 0.0f, 1.0f, //
+      0.0f, 0.0f, 1.0f, //
+      0.0f, 0.0f, 1.0f, //
+  };
+  const float32_t texcoords[6] = {
+      0.0f, 1.0f, //
+      1.0f, 1.0f, //
+      0.0f, 0.0f, //
+  };
+  const float32_t tangents[12] = {
+      tangent.x, tangent.y, tangent.z, tangent.w, //
+      tangent.x, tangent.y, tangent.z, tangent.w, //
+      tangent.x, tangent.y, tangent.z, tangent.w, //
+  };
+  const uint16_t indices[3] = {0u, 1u, 2u};
+  uint8_t bytes[150] = {0};
+  uint64_t offset = 0;
+  MemCopy(bytes + offset, positions, sizeof(positions));
+  offset += sizeof(positions);
+  MemCopy(bytes + offset, normals, sizeof(normals));
+  offset += sizeof(normals);
+  MemCopy(bytes + offset, texcoords, sizeof(texcoords));
+  offset += sizeof(texcoords);
+  MemCopy(bytes + offset, tangents, sizeof(tangents));
+  offset += sizeof(tangents);
+  MemCopy(bytes + offset, indices, sizeof(indices));
+  assert(gltf_test_write_file_bytes(bin_path, bytes, sizeof(bytes)) == true_v);
+
+  char gltf_json[4096];
+  snprintf(gltf_json, sizeof(gltf_json),
+           "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+           "\"scenes\":[{\"nodes\":[0]}],"
+           "\"nodes\":[{\"mesh\":0,\"scale\":[%g,%g,%g]}],"
+           "\"meshes\":[{\"primitives\":[{\"attributes\":{"
+           "\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2,\"TANGENT\":3},"
+           "\"indices\":4}]}],"
+           "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":150}],"
+           "\"bufferViews\":["
+           "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+           "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+           "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":24},"
+           "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":48},"
+           "{\"buffer\":0,\"byteOffset\":144,\"byteLength\":6}],"
+           "\"accessors\":["
+           "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+           "\"type\":\"VEC3\"},"
+           "{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+           "\"type\":\"VEC3\"},"
+           "{\"bufferView\":2,\"componentType\":5126,\"count\":3,"
+           "\"type\":\"VEC2\"},"
+           "{\"bufferView\":3,\"componentType\":5126,\"count\":3,"
+           "\"type\":\"VEC4\"},"
+           "{\"bufferView\":4,\"componentType\":5123,\"count\":3,"
+           "\"type\":\"SCALAR\"}]}",
+           node_scale.x, node_scale.y, node_scale.z, stem);
+  assert(gltf_test_write_file_text(gltf_path, gltf_json) == true_v);
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch_allocator));
+
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  GltfImporterTestCapture capture = {.allocator = &allocator};
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch_allocator, gltf_path, &error, &capture);
+  GltfTangentCaseResult result = {
+      .parsed = vkr_mesh_loader_gltf_parse(&parse_info),
+      .tangent = capture.first_tangent,
+      .preserved = capture.first_preserve_tangents,
+  };
+
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  gltf_test_remove_source_files(stem);
+  return result;
+}
+
+static void test_gltf_import_keeps_authored_tangents(void) {
+  printf("  Running test_gltf_import_keeps_authored_tangents...\n");
+
+  /* A tangent along +Y differs from the +X one generation derives from these
+     UVs, so only a kept authored basis passes. The V flip on import reverses
+     the bitangent, so the handedness flips. */
+  GltfTangentCaseResult kept = gltf_test_run_tangent_case(
+      "gltf_import_tangent_kept", vec4_new(0.0f, 1.0f, 0.0f, 1.0f),
+      vec3_new(1.0f, 1.0f, 1.0f));
+  assert(kept.parsed == true_v);
+  assert(kept.preserved == true_v);
+  assert(fabsf(kept.tangent.x) < 1e-5f);
+  assert(fabsf(kept.tangent.y - 1.0f) < 1e-5f);
+  assert(fabsf(kept.tangent.z) < 1e-5f);
+  assert(kept.tangent.w == -1.0f);
+
+  /* A tangent along the normal has no basis: the cook generates one. */
+  GltfTangentCaseResult degenerate = gltf_test_run_tangent_case(
+      "gltf_import_tangent_degenerate", vec4_new(0.0f, 0.0f, 1.0f, 1.0f),
+      vec3_new(1.0f, 1.0f, 1.0f));
+  assert(degenerate.parsed == true_v);
+  assert(degenerate.preserved == false_v);
+
+  printf("  test_gltf_import_keeps_authored_tangents PASSED\n");
 }
 
 static void test_gltf_import_fails_without_position(void) {
@@ -2607,6 +2745,7 @@ bool32_t run_gltf_importer_tests(void) {
   test_gltf_import_embedded_decal_metadata_overrides_sidecar();
   test_gltf_import_rejects_invalid_decal_sidecar();
   test_gltf_import_converts_texture_coordinates();
+  test_gltf_import_keeps_authored_tangents();
   test_gltf_import_fails_without_position();
   test_gltf_import_rejects_data_uri_images();
   test_gltf_import_rejects_buffer_view_images();

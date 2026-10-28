@@ -3770,6 +3770,30 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_orthonormalize_tangents(
   return true_v;
 }
 
+/**
+ * Makes authored tangents orthogonal to their normals with a unit-sign
+ * handedness. Returns false when any basis is degenerate, so the cook
+ * generates the primitive's tangents instead.
+ */
+vkr_internal bool8_t vkr_mesh_loader_gltf_repair_authored_tangents(
+    VkrVertex3d *vertices, uint32_t vertex_count) {
+  for (uint32_t i = 0; i < vertex_count; ++i) {
+    const Vec3 n = vkr_vertex_unpack_vec3(vertices[i].normal);
+    Vec3 t = vec3_new(vertices[i].tangent.x, vertices[i].tangent.y,
+                      vertices[i].tangent.z);
+    t = vec3_sub(t, vec3_scale(n, vec3_dot(n, t)));
+    if (!isfinite(t.x) || !isfinite(t.y) || !isfinite(t.z) ||
+        vec3_length(t) < 1e-6f || !isfinite(vertices[i].tangent.w) ||
+        fabsf(vertices[i].tangent.w) < 0.5f) {
+      return false_v;
+    }
+    t = vec3_normalize(t);
+    vertices[i].tangent =
+        vec4_new(t.x, t.y, t.z, vertices[i].tangent.w < 0.0f ? -1.0f : 1.0f);
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
     const cgltf_mesh *mesh, const cgltf_primitive *primitive, Mat4 world,
@@ -3811,6 +3835,11 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
   const bool8_t anisotropic =
       primitive->material && primitive->material->has_anisotropy &&
       primitive->material->anisotropy.anisotropy_strength > 0.0f;
+  // Authored tangents carry the basis the normal maps were baked against
+  // (MikkTSpace from DCC tools), so they replace generated ones whenever the
+  // primitive has the normals and UVs they belong to.
+  const bool8_t authored_tangents =
+      tangent_accessor && normal_accessor && texcoord_accessor;
   float32_t decal_normal_offset_meters = 0.0f;
   if (!vkr_mesh_loader_gltf_resolve_decal_offset(
           info, data, primitive, decal_overrides, normal_accessor,
@@ -3955,9 +3984,12 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     vertices[i].normal = vkr_vertex_pack_vec3(world_normal);
     vertices[i].texcoord = texcoord;
     vertices[i].colour = color;
+    // The V flip above reverses the bitangent, so an authored handedness
+    // flips with it.
+    const float32_t handedness =
+        anisotropic || authored_tangents ? -tangent.w : tangent.w;
     vertices[i].tangent =
-        vec4_new(world_tangent.x, world_tangent.y, world_tangent.z,
-                 anisotropic ? -tangent.w : tangent.w);
+        vec4_new(world_tangent.x, world_tangent.y, world_tangent.z, handedness);
   }
 
   if (!vkr_mesh_loader_gltf_read_indices(info, primitive, &primitive_scope,
@@ -3988,6 +4020,17 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     }
   }
 
+  bool8_t preserve_tangents = anisotropic;
+  if (!anisotropic && authored_tangents) {
+    preserve_tangents =
+        vkr_mesh_loader_gltf_repair_authored_tangents(vertices, vertex_count);
+    if (!preserve_tangents) {
+      log_warn("MeshLoader(glTF): mesh '%s' has a degenerate authored TANGENT; "
+               "generating tangents instead",
+               mesh && mesh->name ? mesh->name : "<unnamed>");
+    }
+  }
+
   VkrMeshLoaderGltfPrimitive out_primitive = {
       .vertices = vertices,
       .skin_vertices = skin_vertices,
@@ -3995,7 +4038,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
       .indices = indices,
       .index_count = index_count,
       .material_path = material_path,
-      .preserve_tangents = anisotropic,
+      .preserve_tangents = preserve_tangents,
   };
   if (!info->on_primitive ||
       !info->on_primitive(info->user_data, &out_primitive)) {

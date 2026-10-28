@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-17
+updated: 2026-10-28
 authority: adr
 ---
 # ADR-030: Versioned meshoptimizer-cooked mesh artifacts
@@ -169,6 +169,18 @@ Normal directions therefore use the renderer's inverse-transpose model
 transport and tangents use its linear model transport, as for other mesh
 instances. Primitive winding and tangent handedness are retained.
 
+A primitive with NORMAL, TEXCOORD_0 and TANGENT keeps its authored tangents:
+they carry the basis its normal maps were baked against (MikkTSpace in
+Blender and most DCC tools), which the cook's generator does not reproduce.
+Import flips image V, so the authored handedness is negated, as for
+anisotropic tangents ([ADR-064](064-anisotropic-ggx-reflection.md)). Each
+tangent is made orthogonal to its normal; a primitive with a degenerate
+authored tangent, or without TANGENT, gets generated tangents.
+Bistro's glTF (FBX2glTF 0.9.7) pairs DirectX-convention normal maps with
+tangents of the opposite handedness, so its maps shade with the right
+vertical sense only from its authored tangents; generated tangents inverted
+their Y until the 2026-10-28 change.
+
 Authored decal offsets are measured in source-world meters. Only decal meshes
 whose node linear transforms require different corrections receive geometry
 variants. Import transforms the world normal offset back to local space before
@@ -210,3 +222,19 @@ artifact contract.
   [encode](../../tools/assets/vkr_mesh_encode.c)
 - [meshoptimizer bridge](../../tools/assets/vkr_meshoptimizer_bridge.cpp)
 - [glTF meshopt input decode](../../tools/assets/mesh_loader_gltf.c)
+
+## Evidence
+
+- Authored tangents (2026-10-28): `vulkan_renderer_tester --suite
+  run_gltf_importer_tests` passes `test_gltf_import_keeps_authored_tangents`
+  (a +Y tangent the generator would not derive survives with negated
+  handedness; a tangent along the normal falls back to generation).
+- On a Blender 5.2 glTF export (a filing cabinet, 3,444 vertex corners), the
+  negated authored handedness matched the generator's sign at every corner.
+  On the first 200 meshes of `assets/models/bistro.gltf` it was opposite at
+  99% of 1.87 million corners, and the brick normal maps' green channel
+  correlates with downward height slope (r = -0.51 and -0.45 for
+  `brick_large_01` and `brick_large_03`, against +0.55 and +0.46 for red with
+  the horizontal slope): DirectX-convention maps.
+- Unavailable: a Bistro capture after a re-cook with this importer (the
+  Bistro mesh cook was not run on the 16 GB Mac for this change).
