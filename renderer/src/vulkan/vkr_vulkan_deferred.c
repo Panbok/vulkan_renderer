@@ -1604,7 +1604,13 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(
   return true_v;
 }
 
-/* The tag Shadow.LocalMask writes to the overflow layer of a pixel with more
+/* A half-resolution image's extent, as the graph's viewport divisor 2 floors
+   it: Shadow.SunContact and Shadow.LocalMask. */
+vkr_internal uint32_t vkr_vk_half_extent(uint32_t extent) {
+  return Max(extent / 2u, 1u);
+}
+
+/* The tag Shadow.LocalMask writes to the overflow layer of a texel with more
    shadowed lights than slots, and deferred lighting looks for: 1 to 255 by
    frame, so a mark an earlier frame left behind names another tag. */
 vkr_internal uint32_t
@@ -1832,6 +1838,9 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
       .baked_lamps_texture = baked_lamps_texture,
       .overflow_tag = vkr_vk_local_shadow_overflow_tag(packet),
       .mask_lights = renderer->prepared_frame.local_shadow_mask_lights,
+      .mask_extent =
+          {vkr_vk_half_extent(renderer->prepared_frame.viewport_width),
+           vkr_vk_half_extent(renderer->prepared_frame.viewport_height)},
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLocalShadowMaskRoot),
@@ -1849,17 +1858,14 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                      : VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK);
   prepared->pipelines[prepared->dispatch_count] =
       renderer->deferred_pipelines[mask_pipeline];
-  prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
-  prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
+  /* One thread per 2x2 block of the mask's half-resolution extent. */
+  prepared->groups[prepared->dispatch_count][0] =
+      (root.mask_extent[0] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][1] =
+      (root.mask_extent[1] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][2] = 1u;
   prepared->dispatch_count++;
   return true_v;
-}
-
-/* Shadow.SunContact's half-resolution extent, as the graph's divided
-   viewport extent floors it. */
-vkr_internal uint32_t vkr_vk_sun_contact_extent(uint32_t extent) {
-  return Max(extent / 2u, 1u);
 }
 
 /* Ray-query sun shadows: rays cover view depths below the range's end
@@ -2061,8 +2067,7 @@ bool8_t vkr_vk_prepare_sun_contact(VkrVulkanRenderer *renderer,
       .normal_texture = normal,
       .contact_texture = contact,
       .extent = {width, height},
-      .contact_extent = {vkr_vk_sun_contact_extent(width),
-                         vkr_vk_sun_contact_extent(height)},
+      .contact_extent = {vkr_vk_half_extent(width), vkr_vk_half_extent(height)},
       .noise_index = vkr_vk_sun_noise_index(packet),
       /* The rays find the contacts where they cover the pixel alone. */
       .ray_cover_depth = renderer->prepared_frame.sun_ray_shadows_active
@@ -2289,12 +2294,15 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .sun_noise_index = vkr_vk_sun_noise_index(packet),
       .sun_contact_texture = sun_contact,
       .sun_contact_extent =
-          {vkr_vk_sun_contact_extent(renderer->prepared_frame.viewport_width),
-           vkr_vk_sun_contact_extent(renderer->prepared_frame.viewport_height)},
+          {vkr_vk_half_extent(renderer->prepared_frame.viewport_width),
+           vkr_vk_half_extent(renderer->prepared_frame.viewport_height)},
       .local_shadow_overflow_tag =
           renderer->prepared_frame.local_shadow_mask_overflow && !sample_one
               ? vkr_vk_local_shadow_overflow_tag(packet)
               : 0u,
+      .local_shadow_mask_extent =
+          {vkr_vk_half_extent(renderer->prepared_frame.viewport_width),
+           vkr_vk_half_extent(renderer->prepared_frame.viewport_height)},
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLightingRoot),

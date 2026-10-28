@@ -1165,48 +1165,49 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
 // deferred path passes G-buffer diffuse albedo and zero. Both spell the same
 // product, so the paths shade identically. Without `diffuse_enabled` the base
 // contributes specular only, as for fully transmissive surfaces.
-// Visibility Shadow.LocalMask stored for one shadowed light at this pixel.
-// `slot` counts the pixel's shadowed, in-range lights in traversal order, as
-// the mask pass does. With Fallback, a slot past the mask or tagged for
-// another light falls back to inline filtering with `shadow_normal`. Without
-// it, which only a pixel the mask did not mark for overflow takes, the light
-// takes the slot that carries its tag: a range, cone or cutoff test that
-// differed at a boundary shifts the slots. A light no slot holds is one the
-// mask found to give the pixel no light, and shades unshadowed.
+// Visibility Shadow.LocalMask stored for one shadowed light at mask texel
+// `texel`. Its slots hold the block's shadowed lights in ascending row order
+// and end at a zero tag, and lights arrive here in ascending row order, so
+// `slot` is a cursor that only moves forward. A light the slots do not hold
+// lies past the last slot, or the mask found it gives the block no light.
+// With Fallback, which pixels whose texel overflowed or lies on another
+// surface take, it is filtered inline with `shadow_normal`; without it, it
+// shades unshadowed. A cursor at VKR_LOCAL_SHADOW_MASK_SLOT_COUNT reads no
+// slot.
 float3 packet_local_shadow_mask<let Fallback : bool>(
     VkrVulkanPacketFrameRoot *frame, VkrGpuPointLightRow light,
     uint light_index, uint kind, float3 world_position, float3 shadow_normal,
-    uint mask_texture, uint2 pixel, inout uint slot)
+    uint mask_texture, uint2 texel, inout uint slot)
 {
     if (uint(light.p3.w) == 0u)
         return 1.0f;
-    uint layer = slot;
-    ++slot;
-    if (layer < VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+    for (; slot < VKR_LOCAL_SHADOW_MASK_SLOT_COUNT; ++slot)
     {
-        float4 stored = g_storage_images[mask_texture][uint3(pixel, layer)];
+        float4 stored = g_storage_images[mask_texture][uint3(texel, slot)];
         if (vkr_local_shadow_mask_tag_matches(stored.a, light_index))
+        {
+            ++slot;
             return stored.rgb;
+        }
+        // The tag is the row plus one, zero past the last stored light.
+        uint tag = uint(stored.a * 255.0f + 0.5f);
+        if (tag == 0u || tag > light_index + 1u)
+            break;
     }
     if (Fallback)
     {
         return packet_local_shadow(frame, light, kind, world_position,
                                    shadow_normal);
     }
-    for (uint other = 0u; other < VKR_LOCAL_SHADOW_MASK_SLOT_COUNT; ++other)
-    {
-        float4 stored = g_storage_images[mask_texture][uint3(pixel, other)];
-        if (vkr_local_shadow_mask_tag_matches(stored.a, light_index))
-            return stored.rgb;
-    }
     return 1.0f;
 }
 
 // UseMask selects the base visibility source at compile time: forward and
 // transmission shading filter the shadow maps inline, while deferred lighting
-// reads the mask for `pixel` from `mask_texture`, with MaskFallback as
-// packet_local_shadow_mask's Fallback. Deferred lighting also adds each
-// light's visible contribution to `light_contribution` when it is not null
+// reads the mask at `mask_texel` from `mask_texture`, with MaskFallback as
+// packet_local_shadow_mask's Fallback and slots counted from
+// `mask_first_slot`. Deferred lighting also adds each light's visible
+// contribution to `light_contribution` when it is not null
 // (VkrLocalLightContributionSample).
 VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
                                               let MaskFallback : bool>(
@@ -1221,6 +1222,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
                                       float sheen_normalization,
                                       inout float3 coat_result, inout float3 sheen_result,
                                       uint mask_texture, uint2 pixel,
+                                      uint2 mask_texel, uint mask_first_slot,
                                       uint *light_contribution)
 {
     VkrVulkanDirectResult result;
@@ -1237,7 +1239,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
                 : vkr_vk_light_tile_words(clusters, world_position);
     uint light_words = clusters.light_words;
     uint point_count = frame.point_light_count;
-    uint mask_slot = 0u;
+    uint mask_slot = mask_first_slot;
     for (uint word = 0u; word < light_words; ++word)
     {
         // The word comes from the pixel's screen tile, which marks the light
@@ -1309,7 +1311,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
                 if (UseMask)
                     visibility = packet_local_shadow_mask<MaskFallback>(
                         frame, light, light_index, kind, world_position,
-                        shadow_normal, mask_texture, pixel, mask_slot);
+                        shadow_normal, mask_texture, mask_texel, mask_slot);
                 else
                     visibility = packet_local_shadow(
                         frame, light, kind, world_position, shadow_normal,
@@ -2207,7 +2209,8 @@ float4 packet_world_shade_surface(VkrVulkanPacketFrameRoot *frame,
         frame, input.world_position, normal, view, base.rgb, metallic,
         roughness, f0, energy, true, clearcoat_active, clearcoat,
         sheen_active, sheen, sheen_ltc.energy_normalization,
-        clearcoat_direct, sheen_direct, 0u, uint2(0u, 0u), nullptr);
+        clearcoat_direct, sheen_direct, 0u, uint2(0u, 0u), uint2(0u, 0u), 0u,
+        nullptr);
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
     VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(

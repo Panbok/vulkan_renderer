@@ -1499,7 +1499,8 @@
       "type": "image",
       "condition": "scene_rendering && local_shadow_mask_active",
       "extent": {
-        "mode": "viewport"
+        "mode": "viewport",
+        "divisor": 2
       },
       "layers": 9,
       "format": "R8G8B8A8_UNORM",

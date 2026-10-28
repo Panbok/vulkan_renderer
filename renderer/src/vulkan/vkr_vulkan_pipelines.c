@@ -1480,6 +1480,7 @@ vkr_global const VkrVulkanReflectedField s_vk_local_shadow_mask_fields[] = {
                                baked_lamps_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, overflow_tag),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, mask_lights),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, mask_extent),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
@@ -1538,6 +1539,7 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_contact_extent),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
                                local_shadow_overflow_tag),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, local_shadow_mask_extent),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_sun_ray_shadow_fields[] = {

@@ -1058,6 +1058,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
       whose overflow layer carries it go to the fallback or layered kernel.
       Zero when no mask light can overflow. */
   uint32_t local_shadow_overflow_tag;
+  /** Shadow.LocalMask's half-resolution extent: a pixel reads the texel of
+      its 2x2 block, or of a neighbouring block, whose recorded depth matches
+      its surface. */
+  uint32_t local_shadow_mask_extent[2];
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&
@@ -1245,6 +1249,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
    * take mask slots, so a pixel outside all of their grid cells returns
    * before its surface work. */
   VkrPointLightMask mask_lights;
+  /* The mask's half-resolution extent: one texel per 2x2 block of `extent`,
+     shaded at the block's first pixel with geometry. */
+  uint32_t mask_extent[2];
 } VkrVulkanLocalShadowMaskRoot;
 
 /* Shadow.SunContact: the sun's contact march, one per 2x2 block. */
@@ -1271,11 +1278,12 @@ _Static_assert(sizeof(VkrVulkanSunContactRoot) == 128u &&
                    offsetof(VkrVulkanSunContactRoot, ray_cover_depth) == 124u,
                "Sun contact root ABI drift");
 _Static_assert(
-    sizeof(VkrVulkanLocalShadowMaskRoot) == 160u &&
+    sizeof(VkrVulkanLocalShadowMaskRoot) == 176u &&
         offsetof(VkrVulkanLocalShadowMaskRoot, visible_rows) == 80u &&
         offsetof(VkrVulkanLocalShadowMaskRoot, contact_noise_index) == 112u &&
         offsetof(VkrVulkanLocalShadowMaskRoot, temporal_filter) == 116u &&
-        offsetof(VkrVulkanLocalShadowMaskRoot, mask_lights) == 144u,
+        offsetof(VkrVulkanLocalShadowMaskRoot, mask_lights) == 144u &&
+        offsetof(VkrVulkanLocalShadowMaskRoot, mask_extent) == 160u,
     "Local shadow mask root ABI drift");
 
 /** Builds one far cascade's EVSM moments layer from its depth layer: a 4x4
@@ -2337,6 +2345,7 @@ _Static_assert(
     sizeof(VkrVulkanLightingRoot) == 368u &&
         offsetof(VkrVulkanLightingRoot, view_rays) == 256u &&
         offsetof(VkrVulkanLightingRoot, local_shadow_overflow_tag) == 352u &&
+        offsetof(VkrVulkanLightingRoot, local_shadow_mask_extent) == 356u &&
         offsetof(VkrVulkanLightingRoot, sample1_pixels) == 320u &&
         offsetof(VkrVulkanLightingRoot, planar_reflection_texture) == 216u &&
         offsetof(VkrVulkanLightingRoot, planar_reflection_plane) == 224u,

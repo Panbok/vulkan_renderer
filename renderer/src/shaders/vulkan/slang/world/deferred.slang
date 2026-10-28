@@ -348,6 +348,9 @@ struct VkrVkLightingRoot
     // to the fallback or layered kernel. Zero when no mask light can
     // overflow.
     uint local_shadow_overflow_tag;
+    // Shadow.LocalMask's half-resolution extent: a pixel reads the mask's
+    // texel at half its coordinate.
+    uint2 local_shadow_mask_extent;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -430,6 +433,9 @@ struct VkrVkLocalShadowMaskRoot
     // Bit i: light i is shadowed and its range reaches the camera frustum.
     // No other light is in range of a visible pixel with a shadow view.
     uint4 mask_lights;
+    // The mask's half-resolution extent: one texel per 2x2 block of
+    // `extent`, shaded at the block's first pixel with geometry.
+    uint2 mask_extent;
 };
 
 // Shadow.SunContact: the sun's contact march at half resolution.
@@ -2995,154 +3001,23 @@ float vk_deferred_sun_contact(VkrVkLightingRoot root, uint2 pixel,
     return g_storage_2d[root.sun_contact_texture][own].x;
 }
 
-// Shadow.LocalMask stores every in-range shadowed light's visibility with the
-// receiver normal, range test and light traversal of deferred lighting, so the
-// lighting kernels read one texel per light instead of filtering shadow maps.
-// Under temporal reconstruction, fully filtered lights take rotated temporal
-// taps. In the contact variant, which the Ultra preset selects, a short
-// contact-shadow march multiplies the filtered visibility of each light that
-// takes the full filter; without it the march's registers do not lower the
-// kernel's occupancy.
-void vk_local_shadow_mask_impl<let ContactShadows : bool,
-                               let BakedLamps : bool>(uint3 thread_id)
+// A selected baked lamp's lightmap holds its light past the static casters
+// only; Shadow.LocalMask's baked variants write, for one lightmapped pixel,
+// the share of that light its moving casters hide.
+void vk_local_shadow_mask_baked_pixel(VkrVkLocalShadowMaskRoot root,
+                                      uint2 pixel, float2 tap_rotation,
+                                      uint tap_count, uint blocker_count)
 {
-    VkrVkLocalShadowMaskRoot root = vkr_vk_uniform_root(*g_local_shadow_mask_push.root);
-    if (any(thread_id.xy >= root.extent))
-        return;
-    uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
-    if (encoded.x == 0u)
+    if (g_storage_uint2_2d[root.vbuffer_texture][pixel].x == 0u ||
+        g_storage_2d[root.baked_lamps_texture][pixel].a <= 0.0f)
         return;
     VkrVulkanPacketFrameRoot *frame = root.frame;
-    float depth =
-        g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
+    float depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     float2 ndc_xy =
-        (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
+        (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
     float3 world = vk_local_shadow_mask_world(root, ndc_xy, depth);
-    // Only the shadowed lights that reach the view can take a slot, all in
-    // the light head's four words (ADR-135). A pixel whose tile marks none of
-    // them stores nothing, so it skips the surface work unless the baked-lamp
-    // part below needs it.
-    uint *tile_words =
-        vkr_vk_light_tile_words_at_pixel(frame.light_clusters, thread_id.xy);
-    uint head_words = min(frame.light_clusters.light_words, 4u);
-    uint4 point_mask = 0u;
-    for (uint word = 0u; word < head_words; ++word)
-        point_mask[word] = tile_words[word];
-    point_mask &= root.mask_lights;
-    bool point_lights = any(point_mask != 0u);
-    if (!BakedLamps && !point_lights)
-        return;
     float3 normal = vkr_vk_octahedral_decode(
-        g_storage_float2_2d[root.normal_texture][thread_id.xy]);
-    VkrVkDepthView depth_view;
-    depth_view.vbuffer_texture = root.vbuffer_texture;
-    depth_view.depth_texture = root.depth_texture;
-    depth_view.extent = root.extent;
-    depth_view.inverse_view_projection = root.inverse_view_projection;
-    depth_view.sample_position = 0.5f;
-    float camera_distance = distance(world, frame.view_position.xyz);
-    float contact_noise =
-        vkr_local_shadow_contact_noise(thread_id.xy, root.contact_noise_index);
-    // Without temporal reconstruction the full filter keeps its fixed taps.
-    float2 tap_rotation = float2(1.0f, 0.0f);
-    uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT;
-    uint blocker_count = VKR_LOCAL_SHADOW_PCSS_BLOCKER_COUNT;
-    if (root.temporal_filter != 0u)
-    {
-        tap_rotation = vkr_shadow_kernel_rotation(thread_id.xy,
-                                                  root.contact_noise_index);
-        tap_count = VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT;
-        blocker_count = VKR_LOCAL_SHADOW_PCSS_TEMPORAL_BLOCKER_COUNT;
-    }
-    float diffuse_transmission = 0.0f;
-    if (point_lights && !vkr_editor_neutral_lighting(frame.render_mode))
-    {
-        diffuse_transmission =
-            frame.materials[root.visible_rows[encoded.x - 1u].material_index]
-                .material_diffuse_transmission.w;
-    }
-    uint point_count = min(frame.point_light_count, 128u);
-    // Slot of the next shadowed light this pixel stores; lighting counts the
-    // same lights in the same order.
-    uint slot = 0u;
-    // A light past the last slot marks the pixel, whose tile the fallback
-    // or layered lighting kernel then shades.
-    bool overflow = false;
-    for (uint word = 0u; word < 4u; ++word)
-    {
-        uint remaining = WaveActiveBitOr(point_mask[word]);
-        while (remaining != 0u)
-        {
-            uint bit = uint(firstbitlow(remaining));
-            remaining &= remaining - 1u;
-            uint light_index = word * 32u + bit;
-            if (light_index >= point_count ||
-                (point_mask[word] & (1u << bit)) == 0u)
-                continue;
-            VkrGpuPointLightRow light = frame.point_light_data[light_index];
-            if (light.p3.w == 0.0f)
-                continue;
-            VkrPunctualLightTerm term = vkr_punctual_light_term(
-                light.p0, light.p1, light.p2, light.p3, world);
-            if (!term.in_range || term.cone <= 0.0f)
-                continue;
-            bool back_lit = diffuse_transmission > 0.0f &&
-                            dot(normal, term.direction) < 0.0f;
-            float3 shadow_normal = back_lit ? -normal : normal;
-            if (vkr_local_light_contribution(
-                    light.p1.rgb, light.p2.x, term.attenuation * term.cone,
-                    dot(shadow_normal, term.direction), frame.pre_exposure) <
-                VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
-                continue;
-            // A light that cannot light the pixel takes no slot, and the
-            // fallback and layered lighting kernels filter lights past the
-            // last slot inline.
-            if (!vkr_local_shadow_light_faces(shadow_normal, term.direction))
-                continue;
-            if (slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
-            {
-                overflow = true;
-                continue;
-            }
-            float3 visibility = packet_local_shadow(
-                frame, light, term.kind, world, shadow_normal, tap_rotation,
-                tap_count, blocker_count);
-            VkrLocalShadowView view =
-                frame.local_shadow_views[uint(light.p3.w) - 1u];
-            if (ContactShadows && view.shadow_params.z < 0.5f &&
-                any(visibility > 0.0f))
-            {
-                float3 origin =
-                    world + shadow_normal *
-                                vkr_local_shadow_contact_start_offset(
-                                    camera_distance);
-                float march_length =
-                    min(VKR_LOCAL_SHADOW_CONTACT_LENGTH,
-                        0.5f * distance(light.p0.xyz, world));
-                float contact = vk_contact_shadow(
-                    frame, depth_view, origin, term.direction, march_length,
-                    VKR_LOCAL_SHADOW_CONTACT_STEPS, contact_noise);
-                visibility *= vkr_local_shadow_apply_strength(
-                    float3(contact), view.shadow_params.x);
-            }
-            g_storage_images[root.mask_texture][uint3(thread_id.xy, slot)] =
-                float4(visibility, vkr_local_shadow_mask_tag(light_index));
-            ++slot;
-        }
-    }
-    if (overflow)
-    {
-        g_storage_images[root.mask_texture]
-                        [uint3(thread_id.xy,
-                               VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER)] =
-            float4(0.0f, 0.0f, 0.0f,
-                   vkr_local_shadow_mask_overflow_mark(root.overflow_tag));
-    }
-    // The baked-lamp variants alone carry this work, so the default kernels
-    // keep their registers.
-    if (!BakedLamps || root.baked_lamp_count == 0u ||
-        g_storage_2d[root.baked_lamps_texture][thread_id.xy].a <= 0.0f)
-        return;
+        g_storage_float2_2d[root.normal_texture][pixel]);
     // A selected baked lamp's lightmap holds its light past the static
     // casters only. The same taps through its static and composite squares
     // give v_static - v_composite, the share of that light its moving
@@ -3182,8 +3057,243 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
         hidden += light.p1.rgb * light.p2.x * term.attenuation * term.cone *
                   n_dot_l * max(static_visibility - composite_visibility, 0.0f);
     }
-    g_storage_2d[root.baked_lamp_shadow_texture][thread_id.xy] =
+    g_storage_2d[root.baked_lamp_shadow_texture][pixel] =
         float4(hidden, 0.0f);
+}
+
+// Relative depth difference within which a mask texel's source pixel counts
+// as on the lit pixel's surface. Under reversed depth it is the relative view
+// distance difference, which two pixels apart reaches 2% on a surface seen
+// about 3 degrees from edge-on at 1440p.
+#define VK_LOCAL_SHADOW_MASK_DEPTH_TOLERANCE 0.02f
+
+// The RGB of Shadow.LocalMask's overflow layer records the device depth of
+// the pixel its texel was shaded at: the top 24 bits of the float, sign
+// excluded, so the depth keeps 15 mantissa bits at every distance. Background
+// records zero.
+float3 vk_local_shadow_mask_depth_record(float depth)
+{
+    uint bits = asuint(depth) >> 7u;
+    return float3(uint3(bits >> 16u, bits >> 8u, bits) & 255u) / 255.0f;
+}
+
+float vk_local_shadow_mask_record_depth(float3 record)
+{
+    uint3 bytes = uint3(record * 255.0f + 0.5f);
+    return asfloat(((bytes.r << 16u) | (bytes.g << 8u) | bytes.b) << 7u);
+}
+
+// Shadow.LocalMask stores every in-range shadowed light's visibility with the
+// receiver normal, range test and light traversal of deferred lighting, so the
+// lighting kernels read one texel per light instead of filtering shadow maps.
+// Under temporal reconstruction, fully filtered lights take rotated temporal
+// taps. In the contact variant, which the Ultra preset selects, a short
+// contact-shadow march multiplies the filtered visibility of each light that
+// takes the full filter; without it the march's registers do not lower the
+// kernel's occupancy.
+void vk_local_shadow_mask_impl<let ContactShadows : bool,
+                               let BakedLamps : bool>(uint3 thread_id)
+{
+    VkrVkLocalShadowMaskRoot root = vkr_vk_uniform_root(*g_local_shadow_mask_push.root);
+    uint2 block = thread_id.xy;
+    if (any(block >= root.mask_extent))
+        return;
+    // The block's first pixel with geometry carries its texel, and the
+    // overflow layer records its depth every frame for the lit pixels that
+    // look for their surface's texel. A block of background pixels records
+    // zero, which no lit pixel's depth matches.
+    uint2 pixel = min(block * 2u, root.extent - 1u);
+    uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][pixel];
+    for (uint corner = 1u; corner < 4u && encoded.x == 0u; ++corner)
+    {
+        uint2 candidate = min(block * 2u + uint2(corner & 1u, corner >> 1u),
+                              root.extent - 1u);
+        encoded = g_storage_uint2_2d[root.vbuffer_texture][candidate];
+        pixel = candidate;
+    }
+    uint3 record_texel = uint3(block, VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER);
+    if (encoded.x == 0u)
+    {
+        g_storage_images[root.mask_texture][record_texel] = 0.0f;
+        return;
+    }
+    VkrVulkanPacketFrameRoot *frame = root.frame;
+    float depth =
+        g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
+    float4 record = float4(vk_local_shadow_mask_depth_record(depth), 0.0f);
+    float2 ndc_xy =
+        (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
+    float3 world = vk_local_shadow_mask_world(root, ndc_xy, depth);
+    // Only the shadowed lights that reach the view can take a slot, all in
+    // the light head's four words (ADR-135). A pixel whose tile marks none of
+    // them stores only its depth record, so it skips the surface work unless
+    // the baked-lamp part below needs it.
+    uint *tile_words =
+        vkr_vk_light_tile_words_at_pixel(frame.light_clusters, pixel);
+    uint head_words = min(frame.light_clusters.light_words, 4u);
+    uint4 point_mask = 0u;
+    for (uint word = 0u; word < head_words; ++word)
+        point_mask[word] = tile_words[word];
+    point_mask &= root.mask_lights;
+    bool point_lights = any(point_mask != 0u);
+    if (!BakedLamps && !point_lights)
+    {
+        g_storage_images[root.mask_texture][record_texel] = record;
+        return;
+    }
+    float3 normal = vkr_vk_octahedral_decode(
+        g_storage_float2_2d[root.normal_texture][pixel]);
+    // The block's geometry pixels on the source's surface share its texel.
+    // A light takes a slot when it faces any of their normals, so a pixel
+    // whose normal map turns it toward a light the source faces away from
+    // still finds that light's slot.
+    float3 block_normals[4];
+    bool block_normal_valid[4];
+    [unroll] for (uint corner = 0u; corner < 4u; ++corner)
+    {
+        uint2 corner_pixel = block * 2u + uint2(corner & 1u, corner >> 1u);
+        block_normal_valid[corner] =
+            all(corner_pixel < root.extent) &&
+            g_storage_uint2_2d[root.vbuffer_texture][corner_pixel].x != 0u &&
+            abs(g_depth_textures[root.depth_texture].Load(
+                    int3(corner_pixel, 0)) -
+                depth) <= VK_LOCAL_SHADOW_MASK_DEPTH_TOLERANCE * depth;
+        block_normals[corner] =
+            block_normal_valid[corner]
+                ? vkr_vk_octahedral_decode(
+                      g_storage_float2_2d[root.normal_texture][corner_pixel])
+                : normal;
+    }
+    VkrVkDepthView depth_view;
+    depth_view.vbuffer_texture = root.vbuffer_texture;
+    depth_view.depth_texture = root.depth_texture;
+    depth_view.extent = root.extent;
+    depth_view.inverse_view_projection = root.inverse_view_projection;
+    depth_view.sample_position = 0.5f;
+    float camera_distance = distance(world, frame.view_position.xyz);
+    float contact_noise =
+        vkr_local_shadow_contact_noise(pixel, root.contact_noise_index);
+    // Without temporal reconstruction the full filter keeps its fixed taps.
+    float2 tap_rotation = float2(1.0f, 0.0f);
+    uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT;
+    uint blocker_count = VKR_LOCAL_SHADOW_PCSS_BLOCKER_COUNT;
+    if (root.temporal_filter != 0u)
+    {
+        tap_rotation = vkr_shadow_kernel_rotation(pixel,
+                                                  root.contact_noise_index);
+        tap_count = VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT;
+        blocker_count = VKR_LOCAL_SHADOW_PCSS_TEMPORAL_BLOCKER_COUNT;
+    }
+    float diffuse_transmission = 0.0f;
+    if (point_lights && !vkr_editor_neutral_lighting(frame.render_mode))
+    {
+        diffuse_transmission =
+            frame.materials[root.visible_rows[encoded.x - 1u].material_index]
+                .material_diffuse_transmission.w;
+    }
+    uint point_count = min(frame.point_light_count, 128u);
+    // Slot of the next shadowed light the block stores. Slots hold lights in
+    // ascending row order and end at a zero tag, so lighting finds each
+    // light's slot with a cursor that only moves forward.
+    uint slot = 0u;
+    // A light past the last slot marks the pixel, whose tile the fallback
+    // or layered lighting kernel then shades.
+    bool overflow = false;
+    for (uint word = 0u; word < 4u; ++word)
+    {
+        uint remaining = WaveActiveBitOr(point_mask[word]);
+        while (remaining != 0u)
+        {
+            uint bit = uint(firstbitlow(remaining));
+            remaining &= remaining - 1u;
+            uint light_index = word * 32u + bit;
+            if (light_index >= point_count ||
+                (point_mask[word] & (1u << bit)) == 0u)
+                continue;
+            VkrGpuPointLightRow light = frame.point_light_data[light_index];
+            if (light.p3.w == 0.0f)
+                continue;
+            VkrPunctualLightTerm term = vkr_punctual_light_term(
+                light.p0, light.p1, light.p2, light.p3, world);
+            if (!term.in_range || term.cone <= 0.0f)
+                continue;
+            // The source's normal tests the light and offsets its shadow
+            // lookup when it faces the light, else the block normal that
+            // faces it most.
+            bool back_lit = diffuse_transmission > 0.0f &&
+                            dot(normal, term.direction) < 0.0f;
+            float3 shadow_normal = back_lit ? -normal : normal;
+            if (!vkr_local_shadow_light_faces(shadow_normal, term.direction))
+            {
+                [unroll] for (uint corner = 0u; corner < 4u; ++corner)
+                {
+                    float3 corner_normal = block_normals[corner];
+                    if (diffuse_transmission > 0.0f &&
+                        dot(corner_normal, term.direction) < 0.0f)
+                        corner_normal = -corner_normal;
+                    if (block_normal_valid[corner] &&
+                        dot(corner_normal, term.direction) >
+                            dot(shadow_normal, term.direction))
+                        shadow_normal = corner_normal;
+                }
+            }
+            if (vkr_local_light_contribution(
+                    light.p1.rgb, light.p2.x, term.attenuation * term.cone,
+                    dot(shadow_normal, term.direction), frame.pre_exposure) <
+                VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
+                continue;
+            // A light that cannot light the block takes no slot, and the
+            // fallback and layered lighting kernels filter lights past the
+            // last slot inline.
+            if (!vkr_local_shadow_light_faces(shadow_normal, term.direction))
+                continue;
+            if (slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+            {
+                overflow = true;
+                continue;
+            }
+            float3 visibility = packet_local_shadow(
+                frame, light, term.kind, world, shadow_normal, tap_rotation,
+                tap_count, blocker_count);
+            VkrLocalShadowView view =
+                frame.local_shadow_views[uint(light.p3.w) - 1u];
+            if (ContactShadows && view.shadow_params.z < 0.5f &&
+                any(visibility > 0.0f))
+            {
+                float3 origin =
+                    world + shadow_normal *
+                                vkr_local_shadow_contact_start_offset(
+                                    camera_distance);
+                float march_length =
+                    min(VKR_LOCAL_SHADOW_CONTACT_LENGTH,
+                        0.5f * distance(light.p0.xyz, world));
+                float contact = vk_contact_shadow(
+                    frame, depth_view, origin, term.direction, march_length,
+                    VKR_LOCAL_SHADOW_CONTACT_STEPS, contact_noise);
+                visibility *= vkr_local_shadow_apply_strength(
+                    float3(contact), view.shadow_params.x);
+            }
+            g_storage_images[root.mask_texture][uint3(block, slot)] =
+                float4(visibility, vkr_local_shadow_mask_tag(light_index));
+            ++slot;
+        }
+    }
+    if (slot < VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+        g_storage_images[root.mask_texture][uint3(block, slot)] = 0.0f;
+    if (overflow)
+        record.a = vkr_local_shadow_mask_overflow_mark(root.overflow_tag);
+    g_storage_images[root.mask_texture][record_texel] = record;
+    // The baked-lamp variants alone carry this work, so the default kernels
+    // keep their registers; it runs for each pixel of the block.
+    if (!BakedLamps || root.baked_lamp_count == 0u)
+        return;
+    for (uint corner = 0u; corner < 4u; ++corner)
+    {
+        uint2 corner_pixel = block * 2u + uint2(corner & 1u, corner >> 1u);
+        if (all(corner_pixel < root.extent))
+            vk_local_shadow_mask_baked_pixel(root, corner_pixel, tap_rotation,
+                                             tap_count, blocker_count);
+    }
 }
 
 [shader("compute")]
@@ -3456,10 +3566,53 @@ groupshared uint g_deferred_tile_class;
 #define VK_DEFERRED_TILE_LAYERS 1u
 #define VK_DEFERRED_TILE_MASK_OVERFLOW 2u
 
+// One mask texel serves a 2x2 block and was shaded at one of its pixels, on
+// whichever surface lies there. A lit pixel at device depth `depth` takes its
+// own block's texel when that depth record matches, else the best match of
+// the three blocks nearest it. With none, `matched` is false: the texel lies
+// on another surface, and the pixel filters its shadowed lights inline in the
+// fallback or layered kernel. `overflow_mark` is the taken texel's overflow
+// layer alpha.
+uint2 vk_local_shadow_mask_texel(VkrVkLightingRoot root, uint2 pixel,
+                                 float depth, out bool matched,
+                                 out float overflow_mark)
+{
+    int2 last = int2(root.local_shadow_mask_extent) - 1;
+    int2 own = min(int2(pixel / 2u), last);
+    int2 toward = int2((pixel & 1u) * 2u) - 1;
+    uint2 texel = uint2(own);
+    float best_error = VK_LOCAL_SHADOW_MASK_DEPTH_TOLERANCE;
+    matched = false;
+    overflow_mark = 0.0f;
+    for (uint candidate = 0u; candidate < 4u; ++candidate)
+    {
+        uint2 block = uint2(clamp(
+            own + int2(candidate & 1u, candidate >> 1u) * toward, int2(0),
+            last));
+        float4 record =
+            g_storage_images[root.local_shadow_mask_texture]
+                            [uint3(block, VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER)];
+        float error = abs(vk_local_shadow_mask_record_depth(record.rgb) -
+                          depth) /
+                      max(depth, 1.0e-30f);
+        if (error <= best_error)
+        {
+            texel = block;
+            best_error = error;
+            matched = true;
+            overflow_mark = record.a;
+        }
+        if (matched && candidate == 0u)
+            break;
+    }
+    return texel;
+}
+
 // A pixel with no clearcoat, sheen or anisotropy G-buffer data and no BRDF
 // extension shades identically without the layered kernel's layers and
-// extensions, and one with no more shadowed lights than mask slots without
-// the inline filtering of lights past the last slot.
+// extensions, and one with a mask texel on its surface and no more shadowed
+// lights than mask slots without the inline filtering of lights past the
+// last slot.
 uint vk_deferred_pixel_class(VkrVkLightingRoot root, uint2 pixel)
 {
     if (any(pixel >= root.extent))
@@ -3478,13 +3631,19 @@ uint vk_deferred_pixel_class(VkrVkLightingRoot root, uint2 pixel)
          any(g_storage_2d[root.sheen_texture][pixel] != 0.0f)) ||
         (root.anisotropy_texture != 0u &&
          any(g_storage_2d[root.anisotropy_texture][pixel] != 0.0f));
-    bool overflow =
-        root.local_shadow_overflow_tag != 0u &&
-        vkr_local_shadow_mask_overflowed(
-            g_storage_images[root.local_shadow_mask_texture]
-                            [uint3(pixel, VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER)]
-                                .a,
-            root.local_shadow_overflow_tag);
+    bool overflow = false;
+    if (root.local_shadow_overflow_tag != 0u)
+    {
+        bool matched;
+        float overflow_mark;
+        vk_local_shadow_mask_texel(
+            root, pixel,
+            g_depth_textures[root.depth_texture].Load(int3(pixel, 0)),
+            matched, overflow_mark);
+        overflow = !matched ||
+                   vkr_local_shadow_mask_overflowed(
+                       overflow_mark, root.local_shadow_overflow_tag);
+    }
     return (layers ? VK_DEFERRED_TILE_LAYERS : 0u) |
            (overflow ? VK_DEFERRED_TILE_MASK_OVERFLOW : 0u);
 }
@@ -3766,11 +3925,30 @@ void vk_deferred_shade<let Layered : bool, let MaskFallback : bool>(
                     frame.directional_color_intensity.w * directional_shadow,
                 sheen, sheen_ltc.energy_normalization);
     }
+    // A pixel without a mask texel on its surface starts past the last slot,
+    // so the fallback and layered kernels filter all its lights inline;
+    // classification gives the base kernel none.
+    uint2 mask_texel = 0u;
+    uint mask_first_slot = 0u;
+    if (root.local_shadow_mask_texture != 0u)
+    {
+        bool mask_matched;
+        float overflow_mark;
+        float side_depth =
+            all(side_pixel == thread_id.xy)
+                ? depth
+                : g_depth_textures[root.depth_texture].Load(int3(side_pixel, 0));
+        mask_texel = vk_local_shadow_mask_texel(root, side_pixel, side_depth,
+                                                mask_matched, overflow_mark);
+        if (!mask_matched)
+            mask_first_slot = VKR_LOCAL_SHADOW_MASK_SLOT_COUNT;
+    }
     VkrVulkanDirectResult punctual = packet_punctual_layered<true, MaskFallback>(
         frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy,
         true, clearcoat_active, clearcoat, sheen_active, sheen,
         sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
-        root.local_shadow_mask_texture, side_pixel, root.light_contribution);
+        root.local_shadow_mask_texture, side_pixel, mask_texel, mask_first_slot,
+        root.light_contribution);
     diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
@@ -4800,7 +4978,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             surface.metallic, surface.roughness, f0, energy, diffuse_enabled,
             clearcoat_active, clearcoat, sheen_active, sheen,
             sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
-            0u, uint2(0u, 0u), nullptr);
+            0u, uint2(0u, 0u), uint2(0u, 0u), 0u, nullptr);
         analytic_diffuse += punctual.diffuse;
         analytic_specular += punctual.specular;
         VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(
