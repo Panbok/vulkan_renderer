@@ -234,9 +234,10 @@ float vkr_local_light_contribution(float3 color, float intensity,
 }
 
 // A light whose vkr_local_light_contribution at a pixel, taken with the
-// shadow normal, falls below this takes no Shadow.LocalMask slot and no
-// deferred shading. Both kernels apply the same test with the same inputs, so
-// their slots stay in step; forward and transmission shading keep every light.
+// shadow normal, falls below this takes no deferred shading, and no
+// Shadow.LocalMask slot when it falls below it at every normal of the mask
+// texel's block; deferred lighting finds the other lights' slots by their
+// tags. Forward and transmission shading keep every light.
 // In the Bistro views at most 41 lit pixels changed by more than 2 of 255.
 #define VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF 0.001f
 

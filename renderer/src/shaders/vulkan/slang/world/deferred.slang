@@ -3199,6 +3199,10 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
     // A light past the last slot marks the pixel, whose tile the fallback
     // or layered lighting kernel then shades.
     bool overflow = false;
+    // The box of the wave's source positions: a ranged light that misses it
+    // reaches none of them, so the whole wave skips it.
+    float3 bounds_min = WaveActiveMin(world);
+    float3 bounds_max = WaveActiveMax(world);
     for (uint word = 0u; word < 4u; ++word)
     {
         uint remaining = WaveActiveBitOr(point_mask[word]);
@@ -3213,6 +3217,13 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
             VkrGpuPointLightRow light = frame.point_light_data[light_index];
             if (light.p3.w == 0.0f)
                 continue;
+            if (light.p2.w >= 0.5f && light.p2.z > 0.0f)
+            {
+                float3 gap =
+                    light.p0.xyz - clamp(light.p0.xyz, bounds_min, bounds_max);
+                if (dot(gap, gap) >= light.p2.z * light.p2.z)
+                    continue;
+            }
             VkrPunctualLightTerm term = vkr_punctual_light_term(
                 light.p0, light.p1, light.p2, light.p3, world);
             if (!term.in_range || term.cone <= 0.0f)
@@ -3948,7 +3959,7 @@ void vk_deferred_shade<let Layered : bool, let MaskFallback : bool>(
         true, clearcoat_active, clearcoat, sheen_active, sheen,
         sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
         root.local_shadow_mask_texture, side_pixel, mask_texel, mask_first_slot,
-        root.light_contribution);
+        WaveActiveMin(world), WaveActiveMax(world), root.light_contribution);
     diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
@@ -4978,7 +4989,8 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             surface.metallic, surface.roughness, f0, energy, diffuse_enabled,
             clearcoat_active, clearcoat, sheen_active, sheen,
             sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
-            0u, uint2(0u, 0u), uint2(0u, 0u), 0u, nullptr);
+            0u, uint2(0u, 0u), uint2(0u, 0u), 0u, float3(0.0f), float3(0.0f),
+            nullptr);
         analytic_diffuse += punctual.diffuse;
         analytic_specular += punctual.specular;
         VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(
