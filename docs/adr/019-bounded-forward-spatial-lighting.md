@@ -61,6 +61,10 @@ grid of the head's rows. CPU scene synchronization
 owns membership; shaders perform exact range and spot-cone rejection.
 Four-vector, 64-byte light rows share position/range, direction/cone,
 color/intensity and type semantics across Metal and Vulkan shading paths.
+Since 2026-10-28 the Vulkan rows carry intensity before exposure and its
+shaders multiply by the frame's pre-exposure where they read it; Metal rows
+stay pre-exposed until the Metal half of that step lands (clustered binning
+proposal, M6 step 2a).
 When more lights are offered than the table
 holds, it keeps the 1024 nearest the camera by the distance to their range,
 ties by the distance to their centre, and a light selected the frame before
@@ -352,7 +356,10 @@ cannot tell a lamp lighting the street from one enclosed in a building, so
 importance is instead each light's measured visible contribution once a sample
 exists: deferred lighting sums, over the pixels it shades, the light's
 unshadowed luminance at the surface after pre-exposure, x, compressed per pixel
-to x / (1 + x) by the shared `vkr_local_light_contribution`, with one atomic
+to x / (1 + x) by the shared `vkr_local_light_contribution`, which applies
+pre-exposure once (until 2026-10-28 the Vulkan rows it read were already
+pre-exposed, so it applied it twice and saturated where pre-exposure is
+large, as under the moonlit sky at 2^18), with one atomic
 per wave per light into a per-frame-slot buffer the frame reads back. The
 readback reaches the cache two to three frames later as a
 `VkrLocalLightContributionSample` keyed by render id. Deferred lighting
