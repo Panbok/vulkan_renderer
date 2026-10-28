@@ -474,11 +474,9 @@ vkr_global const VkrMetalPacketAbiField vkr_lightmap_fields[] = {
 
 vkr_global const VkrMetalPacketAbiField vkr_decals_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketDecals, rows, "rows", 0),
-    VKR_ABI_FIELD(VkrMetalPacketDecals, masks, "masks", 8),
-    VKR_ABI_FIELD(VkrMetalPacketDecals, grid_origin_cell_size,
-                  "grid_origin_cell_size", 16),
-    VKR_ABI_FIELD(VkrMetalPacketDecals, grid_dimensions_count,
-                  "grid_dimensions_count", 32),
+    VKR_ABI_FIELD(VkrMetalPacketDecals, spheres, "spheres", 8),
+    VKR_ABI_FIELD(VkrMetalPacketDecals, counts, "counts", 16),
+    VKR_ABI_FIELD(VkrMetalPacketDecals, reserved, "reserved", 32),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_decal_fields[] = {

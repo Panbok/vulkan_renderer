@@ -46,8 +46,8 @@ clustered culling. What decals write stays in
   start of `Tiled.Opaque` and `Tiled.Blend` lists each 32x16 tile's lights
   in threadgroup memory, and fragments walk their depth bin's part of it;
   the class draws the 64 dynamic lights nearest the camera, about 0.7 ms
-  per extra light reaching each pixel at 1280x720 on the M1 Pro. Decals
-  keep the CPU grid
+  per extra light reaching each pixel at 1280x720 on the M1 Pro. The same
+  kernel lists the 64 nearest decals per tile in table order
   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision 11).
 - **Measured on Vulkan** (orbit, `Lighting.Deferred` p50, shader-only
   A/Bs, 2026-10-26 and 2026-10-27): the old CPU grid 3.65 ms; an index

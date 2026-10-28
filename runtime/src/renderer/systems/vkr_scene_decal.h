@@ -50,8 +50,6 @@ typedef struct VkrSceneDecalFrame {
   /* Scratch of the compositing sort. */
   VkrSceneDecalOrder order[VKR_MAX_FRAME_DECALS];
   VkrDecal sorted[VKR_MAX_FRAME_DECALS];
-  /* Built by the tiled pipeline's caller with vkr_decal_grid_build. */
-  VkrDecalGrid grid;
 } VkrSceneDecalFrame;
 
 /** Begins a frame that keeps the `capacity` decals nearest the camera, at

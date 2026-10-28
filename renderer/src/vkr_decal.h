@@ -5,26 +5,18 @@
 #include "math/vec.h"
 #include "vkr_render_resources.h"
 
-/* Projected box decals (ADR-092): the frame's decals and their world-space
- * lookup. Only the tiled pipeline draws them; it lays each decal's base colour
- * over the opaque surfaces inside its box before lighting. */
+/* Projected box decals (ADR-092): the frame's decals. Both pipelines bin
+ * them on the GPU and lay each decal's base colour over the opaque surfaces
+ * inside its box before lighting. */
 
 /** Decals one frame carries: the runtime keeps those nearest the camera, at
- * most VKR_DECAL_GRID_DECAL_MAX for the tiled pipeline, whose CPU grid names
- * them all. The desktop pipeline's GPU clusters read the whole table. */
+ * most VKR_TILED_FRAME_DECALS for the tiled pipeline, the most one of its
+ * tiles lists. The desktop pipeline's GPU clusters read the whole table. */
 #define VKR_MAX_FRAME_DECALS 512u
-/** Frame table rows the CPU decal grid can name: it places only the rows
- * below min(count, VKR_DECAL_GRID_DECAL_MAX). The table may outgrow it; the
- * grid's mask width follows this limit, not the table. */
-#define VKR_DECAL_GRID_DECAL_MAX 64u
-#define VKR_DECAL_GRID_MASK_WORDS 2u
-#define VKR_DECAL_GRID_MAX_CELLS 256u
-#define VKR_DECAL_GRID_MIN_CELL_SIZE 2.0f
+#define VKR_TILED_FRAME_DECALS 64u
 
-_Static_assert(VKR_DECAL_GRID_DECAL_MAX == VKR_DECAL_GRID_MASK_WORDS * 32u,
-               "The decal-grid mask must represent every row the grid names");
-_Static_assert(VKR_DECAL_GRID_DECAL_MAX <= VKR_MAX_FRAME_DECALS,
-               "The rows the decal grid names lie within the frame table");
+_Static_assert(VKR_TILED_FRAME_DECALS <= VKR_MAX_FRAME_DECALS,
+               "The tiled pipeline's decals lie within the frame table");
 
 /**
  * One decal lowered for a frame. `world_to_box` maps a world position into
@@ -39,7 +31,7 @@ _Static_assert(VKR_DECAL_GRID_DECAL_MAX <= VKR_MAX_FRAME_DECALS,
  */
 typedef struct VkrDecal {
   Mat4 world_to_box;
-  /** World-space bounds of the box, which place it in the grid. */
+  /** World-space bounds of the box, which the GPU binning culls by. */
   Vec3 bounds_min;
   Vec3 bounds_max;
   VkrMaterialHandle material;
@@ -54,23 +46,6 @@ typedef struct VkrDecal {
   float32_t depth_fade;
 } VkrDecal;
 
-/** Raw 64-bit decal membership, one bit per frame table row. */
-typedef struct VkrDecalMask {
-  uint32_t words[VKR_DECAL_GRID_MASK_WORDS];
-} VkrDecalMask;
-
-/** Camera-independent, conservative world-space lookup: a cell holds every
- * decal whose bounds meet it. Positions outside the grid meet no decal. */
-typedef struct VkrDecalGrid {
-  Vec3 origin;
-  float32_t cell_size;
-  uint32_t dimensions[3];
-  uint32_t cell_count;
-  VkrDecalMask masks[VKR_DECAL_GRID_MAX_CELLS];
-  uint32_t reference_count;
-  uint32_t max_decals_per_cell;
-} VkrDecalGrid;
-
 /** Places `decal`'s box where the affine `box_to_world` maps [-0.5, 0.5] on
  * each axis: sets `world_to_box` and the bounds. False, leaving `decal`
  * unchanged, when the box has no volume or is not finite. */
@@ -79,12 +54,3 @@ bool8_t vkr_decal_set_box(VkrDecal *decal, Mat4 box_to_world);
 /** Whether a frame may carry `decal`: a finite, invertible box with ordered
  * fades and an opacity in [0, 1]. */
 bool8_t vkr_decal_valid(const VkrDecal *decal);
-
-/** Rebuilds `grid` over the bounds of the first min(`count`,
- * VKR_DECAL_GRID_DECAL_MAX) decals. */
-void vkr_decal_grid_build(const VkrDecal *decals, uint32_t count,
-                          VkrDecalGrid *grid);
-
-/** The decals whose cell holds `world_position`; none outside the grid. */
-VkrDecalMask vkr_decal_grid_mask_at(const VkrDecalGrid *grid,
-                                    Vec3 world_position);

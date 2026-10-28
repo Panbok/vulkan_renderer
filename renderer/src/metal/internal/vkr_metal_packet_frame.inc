@@ -2695,14 +2695,14 @@ vkr_metal_packet_tiled_decal_variant(const VkrPreparedFrame *packet) {
 }
 
 /* The root of a tiled pass's light tile kernel, which lists each tile's
-   lights before the pass's draws read them from threadgroup memory; zero in
-   `out_root` when the pass shades no local lights. */
+   lights and decals before the pass's draws read them from threadgroup
+   memory; zero in `out_root` when the pass shades neither. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_light_tile(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameUpload *upload,
-    VkrMetalTiledLighting lighting, uint32_t width, uint32_t height,
-    uint64_t *out_root) {
+    VkrMetalTiledLighting lighting, uint32_t decals, uint32_t width,
+    uint32_t height, uint64_t *out_root) {
   *out_root = 0u;
-  if (lighting == VKR_METAL_TILED_LIGHTING_NONE ||
+  if ((lighting == VKR_METAL_TILED_LIGHTING_NONE && decals == 0u) ||
       renderer->gpu_draw_roots_gpu == 0u || width == 0u || height == 0u)
     return true_v;
   VkrMetalTiledLightTileRoot *root =
@@ -2823,8 +2823,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
     }
   }
   uint64_t light_root = 0u;
-  if (!overdraw && !vkr_metal_packet_prepare_tiled_light_tile(
-                       renderer, upload, lighting, width, height, &light_root))
+  if (!overdraw &&
+      !vkr_metal_packet_prepare_tiled_light_tile(
+          renderer, upload, lighting, decals, width, height, &light_root))
     return false_v;
   /* The forward entries read their tile's lights from threadgroup memory
      (VkrMetalTiledLightTile), even the variants that shade none. */
@@ -3501,7 +3502,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
        first as the opaque pass does. */
     if (!overdraw) {
       if (!vkr_metal_packet_prepare_tiled_light_tile(
-              renderer, upload, lighting, (uint32_t)target.width,
+              renderer, upload, lighting, 0u, (uint32_t)target.width,
               (uint32_t)target.height, &prepared->tiled.light_root))
         return false_v;
       MTL4RenderPassDescriptor *descriptor =

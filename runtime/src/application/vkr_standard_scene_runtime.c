@@ -1640,13 +1640,12 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
   /* Both pipelines draw decals (ADR-092); their textures join this frame's
      residency demand. */
   if (!draw->scene_stopped) {
-    /* The tiled pipeline reads the decals through their CPU grid, which
-       names at most VKR_DECAL_GRID_DECAL_MAX; the desktop pipeline bins the
-       whole table on the GPU. */
+    /* Both pipelines bin decals on the GPU; the tiled pipeline keeps the
+       VKR_TILED_FRAME_DECALS nearest, the most a tile lists. */
     const bool8_t tiled =
         application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
     VkrSceneDecalFrame *decals = &application->decal_frame;
-    vkr_scene_decal_frame_begin(decals, tiled ? VKR_DECAL_GRID_DECAL_MAX
+    vkr_scene_decal_frame_begin(decals, tiled ? VKR_TILED_FRAME_DECALS
                                               : VKR_MAX_FRAME_DECALS);
     vkr_scene_decal_frame_append(
         decals, vkr_standard_scene_runtime_render_scene(application),
@@ -1666,10 +1665,6 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
     if (decals->count > 0u) {
       draw->world_payload.decals = decals->decals;
       draw->world_payload.decal_count = decals->count;
-      if (tiled) {
-        vkr_decal_grid_build(decals->decals, decals->count, &decals->grid);
-        draw->world_payload.decal_grid = &decals->grid;
-      }
     }
   }
   vkr_material_system_refresh_texture_stream_demand(
@@ -3089,14 +3084,6 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
         scratch, world->decals,
         (uint64_t)world->decal_count * sizeof(*world->decals));
     if (!world->decals) {
-      return false_v;
-    }
-  }
-  /* Only the tiled pipeline's frames carry a decal grid. */
-  if (world->decal_grid) {
-    world->decal_grid = vkr_standard_scene_runtime_scratch_copy(
-        scratch, world->decal_grid, sizeof(*world->decal_grid));
-    if (!world->decal_grid) {
       return false_v;
     }
   }

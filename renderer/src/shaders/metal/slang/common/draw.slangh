@@ -121,9 +121,9 @@ struct VkrMetalPacketLightmap {
 // reads the decal rows, so they stay an address here.
 struct VkrMetalPacketDecals {
     uint64_t rows;
-    uint64_t masks;
-    float4 grid_origin_cell_size;
-    uint4 grid_dimensions_count;
+    uint64_t spheres;
+    uint4 counts;
+    uint4 reserved;
 };
 
 struct VkrMetalPacketSheen {

@@ -3,9 +3,6 @@
 #include "math/mat.h"
 #include "math/vkr_math.h"
 #include "vkr_decal.h"
-#include "vkr_renderer_internal.h"
-
-#include <string.h>
 
 /* A box from its three edge vectors and centre: column i is the image of the
    box's unit edge along axis i. */
@@ -30,10 +27,6 @@ static VkrDecal decal_test_decal(Mat4 box_to_world) {
   return decal;
 }
 
-static bool8_t decal_test_mask_contains(VkrDecalMask mask, uint32_t index) {
-  return (mask.words[index / 32u] & (1u << (index % 32u))) != 0u;
-}
-
 static bool8_t decal_test_inside(Vec3 point, Vec3 minimum, Vec3 maximum) {
   const float32_t slack = 1e-4f;
   return point.x >= minimum.x - slack && point.x <= maximum.x + slack &&
@@ -42,8 +35,8 @@ static bool8_t decal_test_inside(Vec3 point, Vec3 minimum, Vec3 maximum) {
 }
 
 /* Points placed inside a rotated, scaled or sheared box by its forward map
-   must return to the same box coordinates, lie within its bounds and find
-   it in their grid cell, up to the box's corners. */
+   must return to the same box coordinates and lie within its bounds, which
+   the GPU binning culls by. */
 static bool32_t test_decal_box_maps_back_and_is_found(void) {
   printf("  Running test_decal_box_maps_back_and_is_found...\n");
   const Mat4 rotation = vkr_quat_to_mat4(vkr_quat_from_axis_angle(
@@ -60,10 +53,6 @@ static bool32_t test_decal_box_maps_back_and_is_found(void) {
   for (uint32_t i = 0u; i < ArrayCount(boxes); ++i) {
     decals[i] = decal_test_decal(boxes[i]);
   }
-  VkrDecalGrid grid;
-  vkr_decal_grid_build(decals, ArrayCount(decals), &grid);
-  assert(grid.cell_count > 0u && grid.cell_count <= VKR_DECAL_GRID_MAX_CELLS);
-
   const float32_t steps[] = {-0.5f, -0.3f, 0.0f, 0.3f, 0.5f};
   for (uint32_t i = 0u; i < ArrayCount(boxes); ++i) {
     for (uint32_t a = 0u; a < ArrayCount(steps); ++a) {
@@ -77,19 +66,10 @@ static bool32_t test_decal_box_maps_back_and_is_found(void) {
                  fabsf(back.z - local.z) < 1e-4f);
           assert(decal_test_inside(world, decals[i].bounds_min,
                                    decals[i].bounds_max));
-          /* The grid's far faces close each cell, so pull the box's
-             corners a hair inside before the lookup. */
-          const Vec3 probe = mat4_mul_vec3(boxes[i], vec3_scale(local, 0.999f));
-          assert(decal_test_mask_contains(vkr_decal_grid_mask_at(&grid, probe),
-                                          i));
         }
       }
     }
   }
-
-  const VkrDecalMask outside =
-      vkr_decal_grid_mask_at(&grid, vec3_new(100.0f, 100.0f, 100.0f));
-  assert(outside.words[0] == 0u && outside.words[1] == 0u);
 
   VkrDecal flat = decals[0];
   const VkrDecal before = flat;
@@ -99,74 +79,10 @@ static bool32_t test_decal_box_maps_back_and_is_found(void) {
   return true_v;
 }
 
-/* Small decals far apart keep cells of their own, and the grid represents
-   the last row it can name and ignores the rows past it. */
-static bool32_t test_decal_grid_separates_decals_and_holds_full_table(void) {
-  printf(
-      "  Running test_decal_grid_separates_decals_and_holds_full_table...\n");
-  VkrDecal decals[VKR_DECAL_GRID_DECAL_MAX + 1u];
-  for (uint32_t i = 0u; i < ArrayCount(decals); ++i) {
-    decals[i] = decal_test_decal(mat4_translate(vec3_new(
-        (float32_t)(i % 8u) * 40.0f, 0.0f, (float32_t)(i / 8u) * 40.0f)));
-  }
-  VkrDecalGrid grid;
-  vkr_decal_grid_build(decals, ArrayCount(decals), &grid);
-  assert(grid.cell_count > 0u && grid.cell_count <= VKR_DECAL_GRID_MAX_CELLS);
-  for (uint32_t i = 0u; i < VKR_DECAL_GRID_DECAL_MAX; ++i) {
-    const VkrDecalMask mask = vkr_decal_grid_mask_at(
-        &grid, mat4_position(mat4_inverse_affine(decals[i].world_to_box)));
-    assert(decal_test_mask_contains(mask, i));
-    const uint32_t neighbour = (i + 1u) % VKR_DECAL_GRID_DECAL_MAX;
-    assert(!decal_test_mask_contains(mask, neighbour));
-  }
-  /* The row past the grid's names lies outside its bounds. */
-  const VkrDecalMask past = vkr_decal_grid_mask_at(
-      &grid, mat4_position(mat4_inverse_affine(
-                 decals[VKR_DECAL_GRID_DECAL_MAX].world_to_box)));
-  assert(past.words[0] == 0u && past.words[1] == 0u);
-  assert(grid.max_decals_per_cell == 1u);
-  printf("  test_decal_grid_separates_decals_and_holds_full_table PASSED\n");
-  return true_v;
-}
-
-/* The desktop resolve and the tiled shader index decal rows by grid bit
-   without a bound, so a packet whose grid names a row beyond its table must
-   not pass validation. */
-static bool32_t test_decal_packet_rejects_grid_bits_beyond_table(void) {
-  printf("  Running test_decal_packet_rejects_grid_bits_beyond_table...\n");
-  static VkrDecalGrid grid;
-  const VkrDecal decals[2] = {
-      decal_test_decal(mat4_translate(vec3_new(0.0f, 0.0f, 0.0f))),
-      decal_test_decal(mat4_translate(vec3_new(5.0f, 0.0f, 0.0f))),
-  };
-  vkr_decal_grid_build(decals, ArrayCount(decals), &grid);
-  const VkrWorldPassPayload world = {
-      .decals = decals, .decal_count = 2u, .decal_grid = &grid};
-  const VkrFrameInput packet = {
-      .version = VKR_FRAME_INPUT_VERSION,
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
-                  .color_contrast = 1.0f,
-                  .color_saturation = 1.0f},
-      .world = &world,
-  };
-  VkrValidationError validation = {0};
-  assert(vkr_frame_input_validate(&packet, &validation) ==
-         VKR_RENDERER_ERROR_NONE);
-
-  grid.masks[grid.cell_count - 1u].words[1] |= 1u;
-  assert(vkr_frame_input_validate(&packet, &validation) ==
-         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
-  assert(strcmp(validation.field_path, "packet.world.decal_grid") == 0);
-  printf("  test_decal_packet_rejects_grid_bits_beyond_table PASSED\n");
-  return true_v;
-}
-
 bool32_t run_decal_tests(void) {
   printf("--- Running Decal tests... ---\n");
   bool32_t passed = true_v;
   passed &= test_decal_box_maps_back_and_is_found();
-  passed &= test_decal_grid_separates_decals_and_holds_full_table();
-  passed &= test_decal_packet_rejects_grid_bits_beyond_table();
   printf("--- Decal tests completed. ---\n");
   return passed;
 }

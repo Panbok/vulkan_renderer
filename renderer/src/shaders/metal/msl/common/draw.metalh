@@ -236,13 +236,14 @@ struct alignas(16) VkrMetalPacketDecal {
   uint reserved[3];
 };
 
-// Mirrors VkrMetalPacketDecals in vkr_metal_packet_abi.h (ADR-092): one
-// uint2 of decal rows per grid cell; the last dimension lane is the count.
+// Mirrors VkrMetalPacketDecals in vkr_metal_packet_abi.h (ADR-092): each
+// row's bounding sphere (centre, radius) for the tile kernel; counts.x is the
+// decal count.
 struct alignas(16) VkrMetalPacketDecals {
   device const VkrMetalPacketDecal *rows;
-  device const uint2 *masks;
-  float4 grid_origin_cell_size;
-  uint4 grid_dimensions_count;
+  device const float4 *spheres;
+  uint4 counts;
+  uint4 reserved;
 };
 
 struct alignas(16) VkrMetalPacketSheen {

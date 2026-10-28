@@ -410,11 +410,10 @@ typedef struct VkrWorldPassPayload {
   uint32_t instance_count;
   const VkrPreparedTextDraw *text_draws;
   uint32_t text_draw_count;
-  /** Projected decals in compositing order, the last on top, and their
-   * world-space lookup; only the tiled pipeline draws them (ADR-092). */
+  /** Projected decals in compositing order, the last on top; both pipelines
+   * bin them on the GPU (ADR-092). */
   const VkrDecal *decals;
   uint32_t decal_count;
-  const VkrDecalGrid *decal_grid;
 
   /**
    * Shadow-caster mobility partition and the generations that describe it.

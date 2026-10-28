@@ -2464,8 +2464,8 @@ typedef struct VkrMetalPacketUploadPlan {
   uint32_t decal_count;
   uint64_t decals_offset;
   uint64_t decal_rows_offset;
-  uint64_t decal_masks_offset;
-  uint64_t decal_masks_bytes;
+  uint64_t decal_spheres_offset;
+  uint64_t decal_spheres_bytes;
   uint64_t cloud_sky_light_offset;
   uint64_t cloud_sky_light_bytes;
   /* GPU-driven draw setup. */
@@ -2814,7 +2814,7 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
              renderer->gpu_draw_icb_view_group_size - 1u) /
                 renderer->gpu_draw_icb_view_group_size
           : 0u;
-  /* The frame's decals and their grid (ADR-092). */
+  /* The frame's decals and their bounding spheres (ADR-092). */
   const VkrWorldPassPayload *world = packet->input.world;
   plan->decal_count = world ? world->decal_count : 0u;
   plan->decals_offset =
@@ -2826,15 +2826,12 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
                                              AlignOf(VkrMetalPacketDecal));
   const uint64_t decal_rows_bytes =
       (uint64_t)plan->decal_count * sizeof(VkrMetalPacketDecal);
-  plan->decal_masks_offset = vkr_align_up_u64(
-      plan->decal_rows_offset + decal_rows_bytes, AlignOf(VkrDecalMask));
-  plan->decal_masks_bytes =
-      plan->decal_count > 0u
-          ? (uint64_t)world->decal_grid->cell_count * sizeof(VkrDecalMask)
-          : 0u;
+  plan->decal_spheres_offset =
+      vkr_align_up_u64(plan->decal_rows_offset + decal_rows_bytes, 16u);
+  plan->decal_spheres_bytes = (uint64_t)plan->decal_count * sizeof(Vec4);
   /* The cloud-lit sky light's cloud chain, written and read on the GPU. */
-  plan->cloud_sky_light_offset =
-      vkr_align_up_u64(plan->decal_masks_offset + plan->decal_masks_bytes, 16u);
+  plan->cloud_sky_light_offset = vkr_align_up_u64(
+      plan->decal_spheres_offset + plan->decal_spheres_bytes, 16u);
   plan->cloud_sky_light_bytes =
       renderer->prepared_frame.clouds_enabled
           ? VKR_CLOUD_SKY_LIGHT_TEXELS * 4u * sizeof(float32_t)
@@ -3282,9 +3279,12 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
   return true_v;
 }
 
-/* Writes the frame's decal record, rows and grid cells (ADR-092). A decal
-   whose material has not published keeps its row with no opacity, so the
-   grid's row indices still hold. */
+_Static_assert(VKR_TILED_FRAME_DECALS <= VKR_METAL_TILED_TILE_DECAL_MAX,
+               "A tile lists every decal the tiled pipeline keeps");
+
+/* Writes the frame's decal record, rows and bounding spheres (ADR-092). A
+   decal whose material has not published keeps its row with no opacity, so
+   the tile lists' row indices still hold. */
 vkr_internal void vkr_metal_packet_write_upload_decals(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
     VkrMetalPacketFrameUpload *upload, const VkrMetalPacketUploadPlan *plan) {
@@ -3294,7 +3294,6 @@ vkr_internal void vkr_metal_packet_write_upload_decals(
   uint8_t *cpu = upload->addresses.cpu_address;
   uint64_t gpu = upload->addresses.gpu_address;
   const VkrWorldPassPayload *world = packet->input.world;
-  const VkrDecalGrid *grid = world->decal_grid;
   const uint64_t pending_submit = renderer->submit_value + 1u;
   VkrMetalPacketDecal *rows =
       (VkrMetalPacketDecal *)(cpu + plan->decal_rows_offset);
@@ -3322,16 +3321,21 @@ vkr_internal void vkr_metal_packet_write_upload_decals(
       material->last_use_submit_value = pending_submit;
     }
   }
-  MemCopy(cpu + plan->decal_masks_offset, grid->masks, plan->decal_masks_bytes);
+  Vec4 *spheres = (Vec4 *)(cpu + plan->decal_spheres_offset);
+  for (uint32_t i = 0u; i < plan->decal_count; ++i) {
+    const VkrDecal *decal = &world->decals[i];
+    const Vec3 centre =
+        vec3_scale(vec3_add(decal->bounds_min, decal->bounds_max), 0.5f);
+    spheres[i] = vec4_new(
+        centre.x, centre.y, centre.z,
+        0.5f * vec3_length(vec3_sub(decal->bounds_max, decal->bounds_min)));
+  }
   VkrMetalPacketDecals *record =
       (VkrMetalPacketDecals *)(cpu + plan->decals_offset);
   *record = (VkrMetalPacketDecals){
       .rows = gpu + plan->decal_rows_offset,
-      .masks = gpu + plan->decal_masks_offset,
-      .grid_origin_cell_size = {grid->origin.x, grid->origin.y, grid->origin.z,
-                                grid->cell_size},
-      .grid_dimensions_count = {grid->dimensions[0], grid->dimensions[1],
-                                grid->dimensions[2], plan->decal_count},
+      .spheres = gpu + plan->decal_spheres_offset,
+      .counts = {plan->decal_count, 0u, 0u, 0u},
   };
   upload->decals_gpu = gpu + plan->decals_offset;
 }

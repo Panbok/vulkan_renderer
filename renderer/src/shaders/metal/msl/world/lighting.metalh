@@ -423,15 +423,19 @@ float vkr_metal_packet_probe_influence(
 // vkr_metal_tiled_light_tile writes into threadgroup memory at the start of
 // the pass for its fragments. The first `unbounded` entries are lights
 // without a range. A tile reached by more than VKR_METAL_TILED_TILE_LIGHT_MAX
-// keeps the lowest ranks and counts the rest in `dropped`.
+// keeps the lowest ranks and counts the rest in `dropped`. `decals` lists the
+// decal rows whose bounds may reach the tile, ascending, which is their
+// compositing order (ADR-092).
 #define VKR_METAL_TILED_TILE_LIGHT_MAX 512u
+#define VKR_METAL_TILED_TILE_DECAL_MAX 64u
 
 struct VkrMetalTiledLightTile {
   uint count;
   uint dropped;
   uint unbounded;
-  uint reserved;
+  uint decal_count;
   uint entries[VKR_METAL_TILED_TILE_LIGHT_MAX];
+  ushort decals[VKR_METAL_TILED_TILE_DECAL_MAX];
 };
 
 // The window of depth ranks whose bounded lights may reach a fragment at

@@ -694,61 +694,52 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
 // material's base colour times its
 // tint covers the surface by the texture's alpha, the decal's opacity, the
 // fade by the angle between `normal` and the box's +Y and the fade toward
-// the box's near and far faces; later decals lie on top. The SIMD group
-// iterates the union of its lanes' cell masks, so each decal row loads once
-// for the group; a lane outside a decal's box skips it, and a lane inside it
-// has it in its own cell. The decal's UV gradients come from the world
+// the box's near and far faces; later decals lie on top. Every lane walks
+// its tile's decal list (VkrMetalTiledLightTile), so each decal row loads once
+// for the SIMD-group; a lane outside a decal's box skips it. The list holds
+// every decal whose bounds reach the tile, so a lane inside a decal's box
+// finds it. The decal's UV gradients come from the world
 // position's derivatives, taken before the loop, so its samples stay defined
 // in the lanes' divergent branches.
-static float3 vkr_metal_tiled_decals(constant VkrMetalPacketFrameRoot *frame,
-                                     float3 world_position, float3 normal,
-                                     float3 base) {
+static float3
+vkr_metal_tiled_decals(constant VkrMetalPacketFrameRoot *frame,
+                       threadgroup const VkrMetalTiledLightTile &tile,
+                       float3 world_position, float3 normal, float3 base) {
   constant VkrMetalPacketDecals &decals = *frame->decals;
   const float3 world_dx = dfdx(world_position);
   const float3 world_dy = dfdy(world_position);
-  const uint3 dimensions = decals.grid_dimensions_count.xyz;
-  const int3 cell =
-      int3(floor((world_position - decals.grid_origin_cell_size.xyz) /
-                 decals.grid_origin_cell_size.w));
-  uint2 mask = uint2(0u);
-  if (all(cell >= 0) && all(uint3(cell) < dimensions)) {
-    mask = decals.masks[uint(cell.x) +
-                        dimensions.x *
-                            (uint(cell.y) + dimensions.y * uint(cell.z))];
-  }
   const float4 position = float4(world_position, 1.0f);
-  for (uint word = 0u; word < 2u; ++word) {
-    uint remaining = simd_or(mask[word]);
-    while (remaining != 0u) {
-      const uint index = word * 32u + ctz(remaining);
-      remaining &= remaining - 1u;
-      const device VkrMetalPacketDecal &decal = decals.rows[index];
-      const float3 box = float3(dot(decal.world_to_box[0], position),
-                                dot(decal.world_to_box[1], position),
-                                dot(decal.world_to_box[2], position));
-      if (any(abs(box) > 0.5f))
-        continue;
-      const float weight =
-          decal.fade.w *
-          saturate(dot(normal, decal.world_to_box[1].xyz) * decal.fade.x +
-                   decal.fade.y) *
-          saturate((0.5f - abs(box.y)) * decal.fade.z);
-      if (weight <= 0.0f)
-        continue;
-      const float2 uv_dx = float2(dot(decal.world_to_box[0].xyz, world_dx),
-                                  -dot(decal.world_to_box[2].xyz, world_dx));
-      const float2 uv_dy = float2(dot(decal.world_to_box[0].xyz, world_dy),
-                                  -dot(decal.world_to_box[2].xyz, world_dy));
-      const device VkrMetalPacketMaterial &material =
-          frame->materials[decal.material_index];
-      const float4 colour =
-          material.base_color_texture.sample(material.base_color_sampler,
-                                             float2(box.x + 0.5f,
-                                                    0.5f - box.z),
-                                             gradient2d(uv_dx, uv_dy)) *
-          material.tint;
-      base = mix(base, colour.rgb, saturate(colour.a * weight));
-    }
+  // The tile's list is the same for every lane, so each decal row loads
+  // once for the SIMD-group, in table order.
+  const uint decal_count = tile.decal_count;
+  for (uint entry = 0u; entry < decal_count; ++entry) {
+    const uint index = tile.decals[entry];
+    const device VkrMetalPacketDecal &decal = decals.rows[index];
+    const float3 box = float3(dot(decal.world_to_box[0], position),
+                              dot(decal.world_to_box[1], position),
+                              dot(decal.world_to_box[2], position));
+    if (any(abs(box) > 0.5f))
+      continue;
+    const float weight =
+        decal.fade.w *
+        saturate(dot(normal, decal.world_to_box[1].xyz) * decal.fade.x +
+                 decal.fade.y) *
+        saturate((0.5f - abs(box.y)) * decal.fade.z);
+    if (weight <= 0.0f)
+      continue;
+    const float2 uv_dx = float2(dot(decal.world_to_box[0].xyz, world_dx),
+                                -dot(decal.world_to_box[2].xyz, world_dx));
+    const float2 uv_dy = float2(dot(decal.world_to_box[0].xyz, world_dy),
+                                -dot(decal.world_to_box[2].xyz, world_dy));
+    const device VkrMetalPacketMaterial &material =
+        frame->materials[decal.material_index];
+    const float4 colour =
+        material.base_color_texture.sample(material.base_color_sampler,
+                                           float2(box.x + 0.5f,
+                                                  0.5f - box.z),
+                                           gradient2d(uv_dx, uv_dy)) *
+        material.tint;
+    base = mix(base, colour.rgb, saturate(colour.a * weight));
   }
   return base;
 }
@@ -1649,7 +1640,7 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
       input, frame, material, visible.material_index, coverage);
   if (Decals) {
     surface.base.rgb = vkr_metal_tiled_decals(
-        frame, input.world_position,
+        frame, light_tile, input.world_position,
         normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f),
         surface.base.rgb);
   }
@@ -2151,6 +2142,33 @@ kernel void vkr_metal_tiled_light_tile(
     // Unbounded lights reach every tile and hold the first ranks.
     tile.unbounded = min(unbounded, tile.count);
   }
+  // The decals whose bounding sphere reaches the tile, in table order, which
+  // is their compositing order (ADR-092).
+  const uint decal_count =
+      frame->decals != nullptr ? frame->decals->counts.x : 0u;
+  uint decals_written = 0u;
+  for (uint base = 0u; base < decal_count; base += 32u) {
+    const uint row = base + lane;
+    bool reaches = false;
+    if (row < decal_count) {
+      const float4 sphere = frame->decals->spheres[row];
+      reaches = true;
+      for (uint i = 0u; i < 4u; ++i) {
+        if (dot(planes[i].xyz, sphere.xyz) + planes[i].w <
+            -sphere.w * length(planes[i].xyz))
+          reaches = false;
+      }
+    }
+    const ulong vote =
+        static_cast<ulong>(static_cast<simd_vote::vote_t>(simd_ballot(reaches)));
+    const uint slot =
+        decals_written + uint(popcount(vote & ((1ul << lane) - 1ul)));
+    if (reaches && slot < VKR_METAL_TILED_TILE_DECAL_MAX)
+      tile.decals[slot] = ushort(row);
+    decals_written += uint(popcount(vote));
+  }
+  if (lane == 0u)
+    tile.decal_count = min(decals_written, VKR_METAL_TILED_TILE_DECAL_MAX);
 }
 
 // The MetalFX upscaler's camera motion (VkrMetalTiledMotionRoot): the

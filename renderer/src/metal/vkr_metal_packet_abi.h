@@ -129,14 +129,16 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDecal {
 } VkrMetalPacketDecal;
 _Static_assert(sizeof(VkrMetalPacketDecal) == 80u, "Metal decal row ABI drift");
 
-/** The frame's decals and their grid (ADR-092); mirrors VkrMetalPacketDecals
-    in common/draw.metalh and draw.slangh. `masks` holds one uint2 of decal
-    rows per grid cell; the last dimension lane is the decal count. */
+/** The frame's decals (ADR-092); mirrors VkrMetalPacketDecals in
+    common/draw.metalh and draw.slangh. `spheres` holds one Vec4 per row, the
+    centre and radius of the decal's bounds, which the tiled pass's tile
+    kernel lists per tile (VkrMetalTiledLightTile). `counts[0]` is the decal
+    count. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDecals {
   uint64_t rows;
-  uint64_t masks;
-  Vec4 grid_origin_cell_size;
-  uint32_t grid_dimensions_count[4];
+  uint64_t spheres;
+  uint32_t counts[4];
+  uint32_t reserved[4];
 } VkrMetalPacketDecals;
 _Static_assert(sizeof(VkrMetalPacketDecals) == 48u,
                "Metal decal record ABI drift");
@@ -915,16 +917,20 @@ _Static_assert(sizeof(VkrMetalTiledLightTileRoot) == 16u,
 /** Linear view-depth bins over the bounded lights' depth (point_light_bins). */
 #define VKR_METAL_TILED_LIGHT_BIN_COUNT 1024u
 
+/** The decals one tile lists, in table order (compositing order). */
+#define VKR_METAL_TILED_TILE_DECAL_MAX 64u
+
 typedef struct VkrMetalTiledLightTile {
   uint32_t count;
   uint32_t dropped;
   /** Entries whose light is unbounded: the first ones. */
   uint32_t unbounded;
-  uint32_t reserved;
+  uint32_t decal_count;
   uint32_t entries[VKR_METAL_TILED_TILE_LIGHT_MAX];
+  uint16_t decals[VKR_METAL_TILED_TILE_DECAL_MAX];
 } VkrMetalTiledLightTile;
 
-_Static_assert(sizeof(VkrMetalTiledLightTile) == 2064u,
+_Static_assert(sizeof(VkrMetalTiledLightTile) == 2192u,
                "Metal tiled light tile ABI drift");
 
 /* Threadgroup memory lengths are multiples of 16 bytes. */

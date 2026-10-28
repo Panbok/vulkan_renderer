@@ -15,11 +15,8 @@ reach it, with one bit per row of the table, so the desktop light loops
 shade every row; deferred lighting, transmission shading, forward blended
 draws and `Shadow.LocalMask` walk it. Each frustum cluster, a tile's depth
 slice, lists the decal rows that reach it for the decal resolve. Since
-54c10645 the runtime builds the CPU decal grid only for the tiled pipeline
-(a desktop packet carries `decal_grid` as NULL, and
-`vkr_renderer_render_submitted` rejects a tiled frame with decals but no
-grid), and since 2026-10-28 it builds no CPU light grid at all: the tiled
-pipeline lists its lights per screen tile on the GPU too
+2026-10-28 the runtime builds no CPU light or decal grid at all: the tiled
+pipeline lists its lights and decals per screen tile on the GPU too
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 11). Native
 evidence is Vulkan on an RX 6700 XT (Evidence). Since 2026-10-28 the light
 table holds 1024 rows (`VKR_MAX_SCENE_POINT_LIGHTS`); the tiled pipeline
@@ -108,12 +105,12 @@ than depth culling saves.
 
 - The desktop keeps the 512 decals nearest the camera
   (`VKR_MAX_FRAME_DECALS`) and the tiled pipeline the 64 nearest
-  (`VKR_DECAL_GRID_DECAL_MAX`), both in compositing order
+  (`VKR_TILED_FRAME_DECALS`), both in compositing order
   ([ADR-092](092-projected-decals.md)). Neither desktop limit is a mask
   width any longer; the build's 4096 items, the header buffer's tile words
   and the index pool bound them.
-- Vulkan no longer reads the CPU light and decal grids, and the runtime
-  builds them only for the tiled pipeline. The build costs about 0.014 ms
+- Vulkan no longer reads the CPU light and decal grids, and since
+  2026-10-28 the runtime builds neither. The build costs about 0.014 ms
   of GPU time on the Bistro orbit and runs every frame.
 - A tile's light loop walks every word of the table, so its cost grows
   with the light count even where no light reaches; depth bins that narrow

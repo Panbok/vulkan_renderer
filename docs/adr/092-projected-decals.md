@@ -19,7 +19,9 @@ place decals facing a surface ([ADR-101](101-decal-placement.md)).
 Since 2026-10-27 the desktop pipeline keeps up to 512 decals a frame and
 finds them in GPU-built frustum clusters
 ([ADR-135](135-desktop-light-and-decal-clusters.md)); the tiled pipeline
-keeps 64 and the CPU decal grid.
+keeps 64 and, since 2026-10-28, finds them in per-tile lists its tile kernel
+builds ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 11); the
+CPU decal grid is gone.
 
 ## Context
 
@@ -70,33 +72,33 @@ it lights them, so the surface's own material model shades the result.
    decals of the rendered and additive scenes with an invertible box, keeps
    the nearest the camera by the distance to their bounds, and orders them
    for compositing by ascending sort order, then the order their components
-   were added in. The tiled pipeline keeps 64 (`VKR_DECAL_GRID_DECAL_MAX`)
-   and the desktop pipeline 512 (`VKR_MAX_FRAME_DECALS`). It keeps the kept
-   decals' textures resident. For the tiled pipeline only, it builds a
-   camera-independent world grid of at most 256 cubic cells at least 2 m
-   wide over their bounds, with a 64-bit decal mask per cell (`VkrDecalGrid`,
-   [`vkr_decal.h`](../../renderer/src/vkr_decal.h)); the desktop pipeline
-   bins decals on the GPU ([ADR-135](135-desktop-light-and-decal-clusters.md)).
-   The point-light grid and the decal grid size their cells through the same
-   `vkr_world_grid_fit`. The world payload carries the table and, on the
-   tiled pipeline, the grid (`VkrWorldPassPayload`); frame validation rejects
-   a non-finite or singular box, unordered fades and a grid that cannot hold
-   the table, and the renderer rejects a tiled frame with decals and no
-   grid.
+   were added in. The tiled pipeline keeps 64 (`VKR_TILED_FRAME_DECALS`,
+   [`vkr_decal.h`](../../renderer/src/vkr_decal.h)) and the desktop pipeline
+   512 (`VKR_MAX_FRAME_DECALS`). It keeps the kept decals' textures
+   resident. Both pipelines bin the decals on the GPU, the desktop one in
+   frustum clusters ([ADR-135](135-desktop-light-and-decal-clusters.md)) and
+   the tiled one in per-tile lists (decision 4); until 2026-10-28 the tiled
+   pipeline took a CPU world grid of 64-bit cell masks. The world payload
+   carries the table (`VkrWorldPassPayload`); frame validation rejects a
+   non-finite or singular box and unordered fades.
 4. **Tiled shading.** The Metal frame root names a 48-byte
    `VkrMetalPacketDecals` record at byte 568, the root's former tail
-   padding, with 80-byte rows and the grid's masks. After the surface's
+   padding, with 80-byte rows and a bounding sphere per row. The opaque
+   pass's tile kernel (`vkr_metal_tiled_light_tile`) lists, per 32x16 tile
+   and in table order, the decals whose sphere reaches the tile's side
+   planes into threadgroup memory beside its lights. After the surface's
    base colour, including the terrain layer blend, `vkr_metal_tiled_decals`
    in [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)
-   looks up the pixel's cell, iterates the union of its SIMD group's masks
-   so each decal row loads once for the group, and lays each decal whose box
-   holds the pixel over the base colour: the material's base colour texture
+   walks its tile's list, so each decal row loads once for the SIMD-group,
+   and lays each decal whose box holds the pixel over the base colour: the material's base colour texture
    times its tint, weighted by the texture's alpha, the opacity and both
    fades. The angle fade uses the interpolated vertex normal facing the
    viewer. The decal's texture coordinates take explicit gradients from the
    world position's screen derivatives, so their samples stay defined in
    the lanes' divergent branches. Opaque, alpha-tested and terrain surfaces
-   take decals; glass, blended surfaces and world text do not.
+   take decals; glass, blended surfaces and world text do not. On
+   2026-10-28 the tile lists replaced the grid with the decal, clustered
+   and stress tiled captures byte-identical.
 5. **Variants.** Decal shading would cost the opaque pass registers on every
    pixel, as probe and light code does (ADR-087, decision 11), so the opaque
    and alpha-tested pipelines gain a decal variant axis

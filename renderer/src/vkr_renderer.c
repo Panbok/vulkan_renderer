@@ -3532,17 +3532,6 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
   if (error == VKR_RENDERER_ERROR_NONE) {
     error = vkr_frame_input_validate(packet, &result->validation);
   }
-  /* The tiled pipeline finds decals through their CPU grid; the desktop
-     pipeline bins them on the GPU and takes none. Both bin lights on the
-     GPU. */
-  const bool8_t tiled =
-      renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
-  if (error == VKR_RENDERER_ERROR_NONE && tiled && packet->world &&
-      packet->world->decal_count > 0u && !packet->world->decal_grid) {
-    error = vkr_renderer_validation_fail(
-        &result->validation, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-        "packet.world.decal_grid", "the tiled pipeline needs the decal grid");
-  }
   /* Only a backend with the presenter takes its frames (ADR-111), and a
      presentation-only frame needs a presentation-only acquisition. */
   const bool8_t presenter = packet->editor && packet->editor->presenter;
