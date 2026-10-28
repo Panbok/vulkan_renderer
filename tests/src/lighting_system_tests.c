@@ -28,141 +28,6 @@ static VkrPointLight make_gltf_point(uint32_t render_id, Vec3 position,
   };
 }
 
-static bool32_t test_point_light_grid_is_fragment_local(void) {
-  printf("  Running test_point_light_grid_is_fragment_local...\n");
-  VkrLightingSystem system = {0};
-  system.point_light_count = 2u;
-  system.point_lights[0] =
-      make_gltf_point(1u, vec3_new(-20.0f, 0.0f, 0.0f), 5.0f);
-  system.point_lights[1] =
-      make_gltf_point(2u, vec3_new(20.0f, 0.0f, 0.0f), 5.0f);
-
-  vkr_lighting_system_build_point_light_grid(&system);
-  const VkrPointLightMask left = vkr_lighting_system_point_light_mask_at(
-      &system, vec3_new(-20.0f, 0.0f, 0.0f));
-  const VkrPointLightMask right = vkr_lighting_system_point_light_mask_at(
-      &system, vec3_new(20.0f, 0.0f, 0.0f));
-
-  assert(vkr_lighting_system_point_light_mask_contains(&left, 0u));
-  assert(!vkr_lighting_system_point_light_mask_contains(&left, 1u));
-  assert(!vkr_lighting_system_point_light_mask_contains(&right, 0u));
-  assert(vkr_lighting_system_point_light_mask_contains(&right, 1u));
-  assert(system.point_light_grid.cell_count <= VKR_POINT_LIGHT_GRID_MAX_CELLS);
-  printf("  test_point_light_grid_is_fragment_local PASSED\n");
-  return true_v;
-}
-
-static bool32_t test_point_light_grid_range_coverage_is_conservative(void) {
-  printf("  Running test_point_light_grid_range_coverage_is_conservative...\n");
-  VkrLightingSystem system = {0};
-  system.point_light_count = 1u;
-  system.point_lights[0] = make_gltf_point(1u, vec3_zero(), 5.0f);
-  vkr_lighting_system_build_point_light_grid(&system);
-
-  const Vec3 samples[] = {
-      vec3_zero(),
-      vec3_new(4.99f, 0.0f, 0.0f),
-      vec3_new(-4.99f, 0.0f, 0.0f),
-      vec3_new(0.0f, 4.99f, 0.0f),
-      vec3_new(0.0f, 0.0f, -4.99f),
-  };
-  for (uint32_t i = 0u; i < ArrayCount(samples); ++i) {
-    const VkrPointLightMask mask =
-        vkr_lighting_system_point_light_mask_at(&system, samples[i]);
-    assert(vkr_lighting_system_point_light_mask_contains(&mask, 0u));
-  }
-  printf("  test_point_light_grid_range_coverage_is_conservative PASSED\n");
-  return true_v;
-}
-
-static bool32_t test_point_light_grid_rejects_disjoint_range_aabbs(void) {
-  printf("  Running test_point_light_grid_rejects_disjoint_range_aabbs...\n");
-  VkrLightingSystem system = {0};
-  system.point_light_count = 2u;
-  system.point_lights[0] = make_gltf_point(1u, vec3_zero(), 5.0f);
-  system.point_lights[1] =
-      make_gltf_point(2u, vec3_new(20.0f, 20.0f, 20.0f), 1.0f);
-  vkr_lighting_system_build_point_light_grid(&system);
-
-  const VkrPointLightMask diagonal = vkr_lighting_system_point_light_mask_at(
-      &system, vec3_new(4.9f, 4.9f, 4.9f));
-  assert(!vkr_lighting_system_point_light_mask_contains(&diagonal, 0u));
-  printf("  test_point_light_grid_rejects_disjoint_range_aabbs PASSED\n");
-  return true_v;
-}
-
-/* The grid names every head row and none past the head. */
-static bool32_t test_point_light_grid_represents_the_light_head(void) {
-  printf("  Running test_point_light_grid_represents_the_light_head...\n");
-  static VkrLightingSystem system;
-  MemZero(&system, sizeof(system));
-  /* One row past the head when the table has room for it. */
-  system.point_light_count =
-      Min(VKR_POINT_LIGHT_GRID_LIGHT_MAX + 1u, VKR_MAX_SCENE_POINT_LIGHTS);
-  for (uint32_t i = 0u; i < system.point_light_count; ++i) {
-    system.point_lights[i] = make_gltf_point(
-        i + 1u, vec3_new((float32_t)(i % 4u) * 0.1f, 0.0f, 0.0f), 10.0f);
-  }
-  vkr_lighting_system_build_point_light_grid(&system);
-
-  const VkrPointLightMask mask =
-      vkr_lighting_system_point_light_mask_at(&system, vec3_zero());
-  for (uint32_t i = 0u; i < VKR_POINT_LIGHT_GRID_LIGHT_MAX; ++i) {
-    assert(vkr_lighting_system_point_light_mask_contains(&mask, i));
-  }
-  assert(system.point_light_count == VKR_POINT_LIGHT_GRID_LIGHT_MAX ||
-         !vkr_lighting_system_point_light_mask_contains(
-             &mask, VKR_POINT_LIGHT_GRID_LIGHT_MAX));
-  assert(system.point_light_grid.max_lights_per_cell ==
-         VKR_POINT_LIGHT_GRID_LIGHT_MAX);
-  printf("  test_point_light_grid_represents_the_light_head PASSED\n");
-  return true_v;
-}
-
-static bool32_t test_unbounded_point_lights_are_global(void) {
-  printf("  Running test_unbounded_point_lights_are_global...\n");
-  VkrLightingSystem system = {0};
-  system.point_light_count = 2u;
-  system.point_lights[0] = (VkrPointLight){
-      .position = vec3_zero(),
-      .color = vec3_one(),
-      .intensity = 1.0f,
-      .constant = 1.0f,
-      .quadratic = 1.0f,
-      .kind = VKR_POINT_LIGHT_KIND_POLYNOMIAL,
-      .render_id = 1u,
-  };
-  system.point_lights[1] =
-      make_gltf_point(2u, vec3_new(20.0f, 0.0f, 0.0f), 5.0f);
-  vkr_lighting_system_build_point_light_grid(&system);
-
-  const VkrPointLightMask far_mask = vkr_lighting_system_point_light_mask_at(
-      &system, vec3_new(-1000.0f, 1000.0f, -1000.0f));
-  assert(vkr_lighting_system_point_light_mask_contains(&far_mask, 0u));
-  assert(!vkr_lighting_system_point_light_mask_contains(&far_mask, 1u));
-  printf("  test_unbounded_point_lights_are_global PASSED\n");
-  return true_v;
-}
-
-static bool32_t test_point_light_grid_build_is_deterministic(void) {
-  printf("  Running test_point_light_grid_build_is_deterministic...\n");
-  VkrLightingSystem system = {0};
-  system.point_light_count = 3u;
-  system.point_lights[0] =
-      make_gltf_point(1u, vec3_new(-10.0f, 2.0f, 1.0f), 7.5f);
-  system.point_lights[1] =
-      make_gltf_point(2u, vec3_new(3.0f, 5.0f, -4.0f), 15.0f);
-  system.point_lights[2] =
-      make_gltf_point(3u, vec3_new(25.0f, -1.0f, 8.0f), 5.0f);
-  vkr_lighting_system_build_point_light_grid(&system);
-  const VkrPointLightGrid first = system.point_light_grid;
-
-  vkr_lighting_system_build_point_light_grid(&system);
-  assert(MemCompare(&first, &system.point_light_grid, sizeof(first)) == 0);
-  printf("  test_point_light_grid_build_is_deterministic PASSED\n");
-  return true_v;
-}
-
 /* The tiled pipeline keeps the lights nearest the camera by the distance to
  * their range, in table order, and shadows the nearest casters among them
  * (ADR-087). The first call snaps every kept light to full intensity. */
@@ -179,7 +44,6 @@ static bool32_t test_point_light_limit_keeps_nearest(void) {
     system.point_lights[slot].casts_shadow = i != 1u;
   }
   system.point_light_count = count;
-  vkr_lighting_system_build_point_light_grid(&system);
 
   vkr_lighting_system_limit_point_lights(&system, vec3_zero(), 1.0f / 60.0f, 4u,
                                          2u);
@@ -194,12 +58,6 @@ static bool32_t test_point_light_limit_keeps_nearest(void) {
     assert(system.point_lights[i].casts_shadow == shadowed[i]);
     assert(system.point_lights[i].intensity == 10.0f);
   }
-  /* The grid the caller rebuilds follows the kept table, where the light
-     at the origin moved from index 5 to index 3. */
-  vkr_lighting_system_build_point_light_grid(&system);
-  const VkrPointLightMask origin =
-      vkr_lighting_system_point_light_mask_at(&system, vec3_zero());
-  assert(vkr_lighting_system_point_light_mask_contains(&origin, 3u));
   printf("  test_point_light_limit_keeps_nearest PASSED\n");
   return true_v;
 }
@@ -215,7 +73,6 @@ static void limit_test_frame(VkrLightingSystem *system, float32_t camera_x) {
       make_gltf_point(2u, vec3_new(-10.0f, 0.0f, 0.0f), 100.0f);
   system->point_lights[0].casts_shadow = true_v;
   system->point_lights[1].casts_shadow = true_v;
-  vkr_lighting_system_build_point_light_grid(system);
   vkr_lighting_system_limit_point_lights(system, vec3_new(camera_x, 0.0f, 0.0f),
                                          1.0f / 60.0f, 1u, 1u);
 }
@@ -342,12 +199,6 @@ static bool32_t test_point_light_table_keeps_nearest_past_capacity(void) {
     assert(system.point_lights[i].intensity == 10.0f);
     assert(system.point_lights[i].casts_shadow == (i < head));
   }
-  /* The grid names the head: the nearest light, at x = 5, is its last
-     row. */
-  vkr_lighting_system_build_point_light_grid(&system);
-  const VkrPointLightMask mask = vkr_lighting_system_point_light_mask_at(
-      &system, vec3_new(5.0f, 0.0f, 0.0f));
-  assert(vkr_lighting_system_point_light_mask_contains(&mask, head - 1u));
   printf("  test_point_light_table_keeps_nearest_past_capacity PASSED\n");
   return true_v;
 }
@@ -1488,11 +1339,6 @@ static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
 bool32_t run_lighting_system_tests(void) {
   printf("--- Running Lighting System tests... ---\n");
   bool32_t passed = true_v;
-  passed &= test_point_light_grid_is_fragment_local();
-  passed &= test_point_light_grid_range_coverage_is_conservative();
-  passed &= test_point_light_grid_rejects_disjoint_range_aabbs();
-  passed &= test_point_light_grid_represents_the_light_head();
-  passed &= test_unbounded_point_lights_are_global();
   passed &= test_atmosphere_replaces_direct_sun_light();
   passed &= test_sun_light_drives_atmosphere_sun();
   passed &= test_world_sun_light_is_fallback();
@@ -1500,7 +1346,6 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_dark_sun_requests_no_revision();
   passed &= test_moon_light_lights_the_night();
   passed &= test_invisible_key_light_is_disabled();
-  passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_limit_keeps_nearest();
   passed &= test_point_light_limit_holds_and_fades();
   passed &= test_point_light_table_keeps_nearest_past_capacity();

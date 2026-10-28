@@ -937,12 +937,9 @@ vkr_internal VkrRendererError local_shadow_validate(
     const VkrLocalShadowPassPayload *local, const VkrWorldPassPayload *world,
     const VkrPointLight *lights, uint32_t light_count,
     VkrValidationError *out_validation) {
-  /* Large, so static; an empty grid satisfies the lighting contract. */
-  static const VkrPointLightGrid grid = {0};
   const VkrFrameLighting lighting = {
       .point_lights = lights,
       .point_light_count = light_count,
-      .point_light_grid = &grid,
   };
   const VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,

@@ -1527,34 +1527,6 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.lighting.point_lights",
                         "must contain every declared light");
-    /* Only the tiled pipeline's frames carry the CPU grid
-       (vkr_renderer_render_submitted checks it is there). */
-    const VkrPointLightGrid *light_grid = lighting->point_light_grid;
-    if (light_grid && light_grid->cell_count > VKR_POINT_LIGHT_GRID_MAX_CELLS)
-      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.lighting.point_light_grid.cell_count",
-                        "exceeds the fixed light-grid capacity");
-    /* Shaders index the light rows by grid bit without a bound. */
-    for (uint32_t cell = 0u; light_grid && cell <= light_grid->cell_count;
-         ++cell) {
-      const VkrPointLightMask *mask = cell < light_grid->cell_count
-                                          ? &light_grid->masks[cell]
-                                          : &light_grid->global_mask;
-      for (uint32_t word = 0u; word < VKR_POINT_LIGHT_GRID_MASK_WORDS; ++word) {
-        /* The bits of this word that name table rows. */
-        const uint32_t first = word * 32u;
-        uint32_t named = 0u;
-        if (lighting->point_light_count >= first + 32u) {
-          named = UINT32_MAX;
-        } else if (lighting->point_light_count > first) {
-          named = (1u << (lighting->point_light_count - first)) - 1u;
-        }
-        if (mask->words[word] & ~named)
-          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                            "packet.lighting.point_light_grid",
-                            "names a light beyond the table");
-      }
-    }
     if (lighting->ibl_probe_count > VKR_FRAME_IBL_PROBE_MAX)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.lighting.ibl_probe_count",

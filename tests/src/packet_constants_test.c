@@ -9,13 +9,6 @@
 
 vkr_internal void test_packet_frame_constants(void) {
   printf("  Running test_packet_frame_constants...\n");
-  VkrPointLightGrid grid = {
-      .origin = {1.0f, 2.0f, 3.0f},
-      .cell_size = 4.0f,
-      .dimensions = {5u, 6u, 7u},
-      .cell_count = 8u,
-      .global_mask = {.words = {9u, 10u, 11u, 12u}},
-  };
   const VkrFrameLighting lighting = {
       .directional_enabled = true_v,
       .directional_direction = {0.25f, 0.5f, 0.75f},
@@ -25,7 +18,6 @@ vkr_internal void test_packet_frame_constants(void) {
       .ibl_diffuse_intensity = 1.25f,
       .ibl_specular_intensity = 0.75f,
       .point_light_count = 3u,
-      .point_light_grid = &grid,
   };
   const VkrShadowPassPayload shadow = {
       .cascade_count = 4u,
@@ -75,14 +67,6 @@ vkr_internal void test_packet_frame_constants(void) {
   assert(constants.directional_color_intensity.w == 2.0f);
   assert(constants.ambient_color.x == 0.4f &&
          constants.ambient_color.w == 1.0f / 400.0f);
-  assert(constants.point_light_grid_origin_cell_size.x == 1.0f &&
-         constants.point_light_grid_origin_cell_size.w == 4.0f);
-  assert(constants.point_light_grid_dimensions_count[0] == 5u &&
-         constants.point_light_grid_dimensions_count[1] == 6u &&
-         constants.point_light_grid_dimensions_count[2] == 7u &&
-         constants.point_light_grid_dimensions_count[3] == 8u);
-  assert(constants.point_light_global_mask.words[0] == 9u &&
-         constants.point_light_global_mask.words[3] == 12u);
   assert(constants.point_light_count == 3u && constants.render_mode == 17u &&
          constants.shadow_debug_mode == 3u &&
          constants.prefilter_mip_count == VKR_IBL_PREFILTER_MIP_COUNT &&

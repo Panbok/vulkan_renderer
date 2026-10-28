@@ -21,9 +21,6 @@ typedef struct VkrPacketFrameConstants {
   Vec4 directional_color_intensity;
   /** xyz ambient; w is the reciprocal of the resolved target height. */
   Vec4 ambient_color;
-  Vec4 point_light_grid_origin_cell_size;
-  uint32_t point_light_grid_dimensions_count[4];
-  VkrPointLightMask point_light_global_mask;
   uint32_t point_light_count;
   uint32_t render_mode;
   uint32_t shadow_debug_mode;

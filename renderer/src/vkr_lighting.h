@@ -21,24 +21,20 @@ typedef enum VkrPointLightKind {
 
 /* Point and spot lights one frame's table holds (ADR-019). The desktop
  * pipeline shades every row from its light tiles (ADR-135); the tiled
- * pipeline's CPU grid names only the head's rows, so it draws no row past
- * them. */
+ * pipeline draws its 64 nearest from tile lists (ADR-087, decision 11). */
 #define VKR_MAX_SCENE_POINT_LIGHTS 1024u
 /* The light head: the table's first min(count,
  * VKR_POINT_LIGHT_GRID_LIGHT_MAX) rows hold its highest-ranked lights. Only
- * head rows enter the CPU light grid, cast local shadows and take
- * contribution counters; the grid's mask width follows the head, not the
- * table. */
+ * head rows cast local shadows and take contribution counters, and a
+ * VkrPointLightMask names the head's rows. */
 #define VKR_POINT_LIGHT_GRID_LIGHT_MAX 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
-#define VKR_POINT_LIGHT_GRID_MAX_CELLS 384u
-#define VKR_POINT_LIGHT_GRID_MIN_CELL_SIZE 4.0f
 
 _Static_assert(VKR_POINT_LIGHT_GRID_LIGHT_MAX ==
                    VKR_POINT_LIGHT_GRID_MASK_WORDS * 32u,
-               "The light-grid mask must represent every row the grid names");
+               "A light mask must represent every row of the light head");
 _Static_assert(VKR_POINT_LIGHT_GRID_LIGHT_MAX <= VKR_MAX_SCENE_POINT_LIGHTS,
-               "The rows the light grid names lie within the scene table");
+               "The light head lies within the scene table");
 
 /* Fixed-point units per fully lit pixel in a light-contribution sample. A
  * 4K frame of fully lit pixels stays below 2^31. */
@@ -123,22 +119,7 @@ typedef struct VkrPointLightMask {
 } VkrPointLightMask;
 
 _Static_assert(sizeof(VkrPointLightMask) == sizeof(Vec4),
-               "One light-grid mask must occupy one std140 float4 slot");
-
-/** Camera-independent, conservative world-space lookup for fragment-local
- * punctual-light evaluation. Finite lights populate cells; unbounded legacy
- * polynomial lights populate global_mask and are evaluated in every cell. */
-typedef struct VkrPointLightGrid {
-  Vec3 origin;
-  float32_t cell_size;
-  uint32_t dimensions[3];
-  uint32_t cell_count;
-  VkrPointLightMask global_mask;
-  VkrPointLightMask masks[VKR_POINT_LIGHT_GRID_MAX_CELLS];
-  uint32_t reference_count;
-  uint32_t max_lights_per_cell;
-  uint32_t global_light_count;
-} VkrPointLightGrid;
+               "One light mask must occupy one std140 float4 slot");
 
 /** Sizes a uniform world-space grid of cubic cells over a box of `extent`:
  * the densest one whose cells are at least `min_cell_size` wide and number at

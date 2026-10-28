@@ -49,10 +49,6 @@
   "assertions": [
     { "metric": "lighting.point.selected", "stat": "min", "min": 72 },
     { "metric": "lighting.point.selected", "stat": "max", "max": 72 },
-    { "metric": "lighting.point.dropped", "stat": "max", "max": 0 },
-    { "metric": "lighting.point.grid.cells", "stat": "min", "min": 1 },
-    { "metric": "lighting.point.grid.cells", "stat": "max", "max": 384 },
-    { "metric": "lighting.point.grid.max_lights_per_cell", "stat": "min", "min": 1 },
-    { "metric": "lighting.point.grid.max_lights_per_cell", "stat": "max", "max": 128 }
+    { "metric": "lighting.point.dropped", "stat": "max", "max": 0 }
   ]
 }

@@ -416,17 +416,6 @@ vkr_internal bool8_t vkr_renderer_metrics_register_workload(
   VKR_REGISTER_F64(lighting_local_shadow_fading_ratio,
                    "lighting.local_shadow.fading_ratio", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_RATIO);
-  VKR_REGISTER_U64(lighting_point_grid_cells, "lighting.point.grid.cells",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(lighting_point_grid_references,
-                   "lighting.point.grid.references", VKR_METRIC_DOMAIN_DRAW,
-                   VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(lighting_point_grid_max_lights_per_cell,
-                   "lighting.point.grid.max_lights_per_cell",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(lighting_point_grid_global_lights,
-                   "lighting.point.grid.global_lights", VKR_METRIC_DOMAIN_DRAW,
-                   VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(decal_kept, "decal.kept", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(decal_dropped, "decal.dropped", VKR_METRIC_DOMAIN_DRAW,
@@ -2590,14 +2579,6 @@ void vkr_renderer_metrics_collect(
               context->application.lighting_local_shadow_unshadowed_ratio);
   VKR_SET_F64(lighting_local_shadow_fading_ratio,
               context->application.lighting_local_shadow_fading_ratio);
-  VKR_SET_U64(lighting_point_grid_cells,
-              context->application.lighting_point_grid_cells);
-  VKR_SET_U64(lighting_point_grid_references,
-              context->application.lighting_point_grid_references);
-  VKR_SET_U64(lighting_point_grid_max_lights_per_cell,
-              context->application.lighting_point_grid_max_lights_per_cell);
-  VKR_SET_U64(lighting_point_grid_global_lights,
-              context->application.lighting_point_grid_global_lights);
   VKR_SET_U64(decal_kept, context->application.decal_kept);
   VKR_SET_U64(decal_dropped, context->application.decal_dropped);
 

@@ -142,9 +142,6 @@ typedef struct VkrLightingSystem {
   VkrPointLight baked_lamps[VKR_POINT_LIGHT_GRID_LIGHT_MAX];
   VkrPointLightRankKey baked_lamp_keys[VKR_POINT_LIGHT_GRID_LIGHT_MAX];
   uint32_t baked_lamp_count;
-  /* Built only for the tiled pipeline, which reads it
-     (vkr_lighting_system_build_point_light_grid); zero otherwise. */
-  VkrPointLightGrid point_light_grid;
 
   VkrRectangleLight rectangle_lights[VKR_MAX_SCENE_RECTANGLE_LIGHTS];
   uint32_t rectangle_light_count;
@@ -244,7 +241,7 @@ void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
  * in the previous frame's head with the incumbent bonus, form the head;
  * lights past it lose their shadow. Head and rest each keep render id order.
  * Calling it again in the same frame selects again from the same previous
- * state. Leaves the grid alone. */
+ * state. */
 void vkr_lighting_system_select_point_lights(VkrLightingSystem *system);
 
 /** A white Lambertian surface lit head-on by a directional light of
@@ -276,27 +273,12 @@ void vkr_lighting_system_apply_atmosphere_light(
  * newly selected light takes a slot once one is free, so at most
  * `light_max` lights draw. The first call, a camera cut and an invalid
  * `delta_seconds` snap every selected light to full intensity. Keeps the
- * table order of the drawn lights; the caller rebuilds the grid. */
+ * table order of the drawn lights. */
 void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
                                             Vec3 camera_position,
                                             float32_t delta_seconds,
                                             uint32_t light_max,
                                             uint32_t shadow_max);
-
-/** Rebuilds the conservative world-space lookup from the point_lights rows
- * below VKR_POINT_LIGHT_GRID_LIGHT_MAX. Only the tiled pipeline reads it;
- * call it after the table's last change of the frame. */
-void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system);
-
-/** Returns the global-plus-cell mask used for a world-space fragment. */
-VkrPointLightMask
-vkr_lighting_system_point_light_mask_at(const VkrLightingSystem *system,
-                                        Vec3 world_position);
-
-/** Tests whether one scene-table index is present in a mask. */
-bool8_t
-vkr_lighting_system_point_light_mask_contains(const VkrPointLightMask *mask,
-                                              uint32_t light_index);
 
 /**
  * @brief Applies the lighting system to the shader uniforms.

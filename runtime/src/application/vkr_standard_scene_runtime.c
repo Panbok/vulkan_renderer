@@ -3125,14 +3125,6 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
       return false_v;
     }
   }
-  if (lighting->point_light_grid) {
-    lighting->point_light_grid = vkr_standard_scene_runtime_scratch_copy(
-        scratch, lighting->point_light_grid,
-        sizeof(*lighting->point_light_grid));
-    if (!lighting->point_light_grid) {
-      return false_v;
-    }
-  }
   if (lighting->rectangle_light_count) {
     lighting->rectangle_lights = vkr_standard_scene_runtime_scratch_copy(
         scratch, lighting->rectangle_lights,

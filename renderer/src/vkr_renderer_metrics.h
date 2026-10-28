@@ -162,10 +162,6 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId lighting_local_shadow_fading;
   VkrMetricId lighting_local_shadow_unshadowed_ratio;
   VkrMetricId lighting_local_shadow_fading_ratio;
-  VkrMetricId lighting_point_grid_cells;
-  VkrMetricId lighting_point_grid_references;
-  VkrMetricId lighting_point_grid_max_lights_per_cell;
-  VkrMetricId lighting_point_grid_global_lights;
   VkrMetricId decal_kept;
   VkrMetricId decal_dropped;
 
@@ -563,10 +559,6 @@ typedef struct VkrApplicationMetricsSnapshot {
    * crossfading; zero without a measurement. */
   float64_t lighting_local_shadow_unshadowed_ratio;
   float64_t lighting_local_shadow_fading_ratio;
-  uint64_t lighting_point_grid_cells;
-  uint64_t lighting_point_grid_references;
-  uint64_t lighting_point_grid_max_lights_per_cell;
-  uint64_t lighting_point_grid_global_lights;
   /** Decals the frame table kept, and those offered past its capacity. */
   uint64_t decal_kept;
   uint64_t decal_dropped;

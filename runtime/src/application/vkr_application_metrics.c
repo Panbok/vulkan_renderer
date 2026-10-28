@@ -55,13 +55,6 @@ VkrApplicationMetricsSnapshot vkr_application_metrics_snapshot(
       .lighting_local_shadow_unshadowed_ratio =
           total > 0.0 ? unshadowed / total : 0.0,
       .lighting_local_shadow_fading_ratio = total > 0.0 ? fading / total : 0.0,
-      .lighting_point_grid_cells = lighting->point_light_grid.cell_count,
-      .lighting_point_grid_references =
-          lighting->point_light_grid.reference_count,
-      .lighting_point_grid_max_lights_per_cell =
-          lighting->point_light_grid.max_lights_per_cell,
-      .lighting_point_grid_global_lights =
-          lighting->point_light_grid.global_light_count,
       .decal_kept = decals->count,
       .decal_dropped = decals->dropped_count,
       .material_texture_stream_pending = texture_streams.pending_count,

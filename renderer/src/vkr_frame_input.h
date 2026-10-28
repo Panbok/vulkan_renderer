@@ -199,10 +199,10 @@ typedef struct VkrFrameLighting {
   float32_t ibl_intensity;
   float32_t ibl_diffuse_intensity;
   float32_t ibl_specular_intensity;
-  /** Borrowed, frame-local scene light table and its conservative lookup. */
+  /** Borrowed, frame-local scene light table; both pipelines bin it on the
+      GPU (ADR-135, ADR-087 decision 11). */
   const VkrPointLight *point_lights;
   uint32_t point_light_count;
-  const VkrPointLightGrid *point_light_grid;
   const VkrFrameIblProbe *ibl_probes;
   uint32_t ibl_probe_count;
   VkrDiffuseVolumeBinding diffuse_volume;
