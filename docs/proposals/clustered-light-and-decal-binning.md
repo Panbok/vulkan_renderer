@@ -25,14 +25,14 @@ clustered culling. What decals write stays in
   light row shades; only the 128-row head is shadowed. The build costs
   about 0.014 ms on the Bistro orbit (RX 6700 XT, 1440p). One build marks
   at most 4,096 lights and decals.
-- **Limits.** The light table holds at most 128 rows
-  (`VKR_MAX_SCENE_POINT_LIGHTS`,
+- **Limits.** The light table holds at most 1024 rows since 2026-10-28 (M4;
+  `VKR_MAX_SCENE_POINT_LIGHTS`,
   [`vkr_lighting.h`](../../renderer/src/vkr_lighting.h)), ranked on the CPU
   by camera distance with hysteresis and fades and uploaded every frame
   ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)); the first
   128 rows (the head) can be shadowed. The desktop shades every row, so
-  raising the constant is a CPU-side change; with it at 1024 in a local
-  build, the scoped case shades all 392 of its lights, about 4 us of
+  raising the constant was the whole change; at 1024 the scoped case
+  shades all 392 of its lights, about 4 us of
   `Lighting.Deferred` per extra light at 1440p. The desktop keeps the 512
   nearest decals ([ADR-092](../adr/092-projected-decals.md)).
 - **Ray-traced consumers.** The diffuse volume's dynamic layer traces

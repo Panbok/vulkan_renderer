@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-27
+updated: 2026-10-28
 authority: adr
 ---
 
@@ -19,10 +19,11 @@ slice, lists the decal rows that reach it for the decal resolve. Since
 tiled pipeline: a desktop packet carries `point_light_grid` and
 `decal_grid` as NULL, frame validation accepts a frame without them, and
 `vkr_renderer_render_submitted` rejects a tiled frame with lights or decals
-but no grids. Native evidence is Vulkan on an RX 6700 XT (Evidence). The
-light table stays at 128 rows (`VKR_MAX_SCENE_POINT_LIGHTS`) until the CPU
-side raises it; depth bins for the light tiles, decal bitfields and the
-cluster counters in metrics are open
+but no grids. Native evidence is Vulkan on an RX 6700 XT (Evidence). Since
+2026-10-28 the light table holds 1024 rows (`VKR_MAX_SCENE_POINT_LIGHTS`);
+the tiled pipeline's grid still names only the head's 128, and Metal has
+not run the raised table. Depth bins for the light tiles, per-tile lists
+past the bitfields and the cluster counters in metrics are open
 ([Clustered light and decal binning](../proposals/clustered-light-and-decal-binning.md)).
 
 ## Context
@@ -151,6 +152,17 @@ than depth culling saves.
 
 Vulkan Release, RX 6700 XT, 2560x1440 High, validation unset.
 
+- **1024-row table (2026-10-28).** With `VKR_MAX_SCENE_POINT_LIGHTS` at
+  1024, `bistro_clustered_1440` selects all 392 lights and drops none
+  (`lighting.point.selected` 392); with the half-resolution local shadow
+  mask (ADR-019), `Lighting.Deferred.Fullscreen` reads 6.395 ms against
+  5.469 ms at 128 rows, about 3.5 us per extra light, and the Lighting
+  group 10.357 against 9.321 ms (`local-offscreen-gpu-repeated`, run
+  `20261028T113448.448Z-001779`, main checkout, non-authoritative). The
+  `bistro_clustered_capture` frame shows the extra lamps lit with no tile
+  or seam faults (`20261028T114442.196Z-002855`). The Debug CPU suite passes
+  on Windows, including the head trade test that compiles only when the
+  table is wider than the head; Metal has not run it.
 - **Image parity.** The first clusters against the grid build: the decal
   G-buffer capture and the lamp HDR captures are byte-identical; two lamp
   runs differed only in foliage local-shadow state, which also varies

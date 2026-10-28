@@ -861,7 +861,7 @@ floor within
 cannot reach, overlapping solid brushes, brushes that did not build,
 z-fighting (`z_fight`), movers that break a vehicle's stay
 (`mover_timing`) and a scene with more enabled point lights than the
-renderer's 128-light table, which keeps those nearest the camera
+renderer's light table (1024 rows since 2026-10-28), which keeps those nearest the camera
 (`light_overflow`, with the count and the lights' centroid; 2026-10-11,
 [ADR-019](019-bounded-forward-spatial-lighting.md)). Each
 issue names its position, the entity at fault and the step height, slope,

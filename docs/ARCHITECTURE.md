@@ -1020,9 +1020,11 @@ extents, UV0 and sampler constraints, approximation limits and cache ownership
 are recorded in [ADR-012](adr/012-texture-compression-pipeline.md).
 See [ADR-012](adr/012-texture-compression-pipeline.md).
 
-Punctual lighting uses a 128-light table, ranked by camera distance with
-hysteresis and 0.25 s fades when more lights compete, and a 384-cell
-fragment-local bitmask grid with exact range/cone rejection. Up to 16 ready
+Punctual lighting uses a 1024-light table, ranked by camera distance with
+hysteresis and 0.25 s fades when more lights compete, whose first 128 rows
+alone cast shadows. The desktop pipeline bins every row into GPU-built
+screen tiles (ADR-135); the tiled pipeline reads a 384-cell fragment-local
+bitmask grid of those 128 rows. Both apply exact range/cone rejection. Up to 16 ready
 probes, listed smaller box first, take priority shares inside their boxes
 before the global environment on the desktop pipeline; the tiled pipeline
 gives a surface the first probe whose influence reaches one half. Directional lighting samples

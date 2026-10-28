@@ -54,13 +54,15 @@ per draw causes large meshes to inherit the wrong local environment.
 
 ## Decision
 
-Use a table of up to 128 punctual lights, its rows in render-id order, and a
-conservative 384-cell fragment-local bitmask grid. CPU scene synchronization
+Use a table of up to 1024 punctual lights (128 until 2026-10-28), its rows
+in render-id order, whose first 128 rows, the head, alone can cast shadows,
+and, on the tiled pipeline, a conservative 384-cell fragment-local bitmask
+grid of the head's rows. CPU scene synchronization
 owns membership; shaders perform exact range and spot-cone rejection.
 Four-vector, 64-byte light rows share position/range, direction/cone,
 color/intensity and type semantics across Metal and Vulkan shading paths.
 When more lights are offered than the table
-holds, it keeps the 128 nearest the camera by the distance to their range,
+holds, it keeps the 1024 nearest the camera by the distance to their range,
 ties by the distance to their centre, and a light selected the frame before
 ranks as if the camera were 1.15 times closer. While lights compete for the
 table, a newly selected light fades in over 0.25 s once a slot is free and
