@@ -96,11 +96,14 @@ afford is set by how many lights reach each pixel, not by the table size.
    hysteresis and fades, and the rows past the head need no CPU order. The
    packet carries the table and its updates in place of a per-frame row
    array; ADR-019 and the packet contract change with it.
-2. **Tiled pipeline: tile-shader culling (Mac).** After the depth prepass
-   a tile shader reads each tile's minimum and maximum depth from tile
-   memory, tests the candidate lights against the tile's depth-bounded
+2. **Tiled pipeline: tile-shader culling (Mac).** The tiled class has no
+   depth prepass (ADR-087 decision 5), and the owner kept it that way on
+   2026-10-28: a second raster of Bistro would cost about as much vertex
+   work again (1.6 ms on the M1 Pro). A tile shader at the start of
+   `Tiled.Opaque` tests the candidate lights against each tile's screen
    frustum and writes their 16-bit indices to threadgroup memory; the
-   tile's fragment shading then walks only that list. A coarse GPU pass
+   tile's fragment shading walks only that list, with each light's depth
+   range tested per pixel (depth bins), since no tile depth bounds exist. A coarse GPU pass
    first bins the lights into large screen cells (for example 128 px), so
    a tile tests a few hundred candidates, not the whole table. Decals take
    the same path in table order. This replaces the CPU light and decal
@@ -160,14 +163,21 @@ the GPU between frames.
 1. **Rows.** Every enabled, visible point or spot light owns one row of a
    dense table `[0, count)`, with `count` at most 65,535 and `0xFFFF` as the
    empty 16-bit index. The row stays the 64-byte `VkrGpuPointLightRow`
-   (4 MB at capacity). A light keeps its row while it lives. Removing a
-   light moves the last row into its hole, so the table stays dense and
-   the desktop bitfields walk `count` rows, not the capacity. The lighting
-   system maps `render_id` to row.
+   (4 MB at capacity). A light keeps its row while it stays in or out of
+   the shadow head (item 5). Removing a light moves the last row into its
+   hole, so the table stays dense and the desktop bitfields walk `count`
+   rows, not the capacity. The lighting system maps `render_id` to row.
 2. **Exposure leaves the rows.** Shaders multiply a row's intensity by the
-   frame's pre-exposure where they read it (desktop deferred, transmission
-   and forward blend; tiled forward). This changes shaders on both
+   frame's pre-exposure where they read it. This changes shaders on both
    backends and lands first and alone, with image parity on both classes.
+   The audit covers every reader of a row's colour and intensity (`p1.rgb`,
+   `p2.x`): desktop deferred, transmission, forward blend, the
+   `Shadow.LocalMask` cutoff and the contribution counters, the tiled
+   forward and blend passes, and the diffuse volume's dynamic layer, which
+   packs its own rows. `vkr_local_light_contribution`
+   ([`local_shadow.slangh`](../../renderer/src/shaders/shared/local_shadow.slangh))
+   multiplies by pre-exposure itself, so the cutoff and counters may apply
+   it twice today; 2a checks that.
 3. **Updates.** The runtime sends a frame's row updates as pairs of row
    index and row: new and edited lights, moved lights, the row a removal
    moves, and shadow-view changes (item 5). The packet carries the
@@ -191,10 +201,14 @@ the GPU between frames.
    change fixes that, which changes spot lights under rotated parents.
 5. **Shadow head.** The CPU ranks only the lights that cast shadows, by
    camera distance with today's incumbent bonus and fades, and keeps at
-   most 128. The packet carries the head as 16-bit row indices with
-   `light_first_view` per head entry. A row's shadow view stays in
-   `p3.w`: a light that enters or leaves the head, or changes view, sends
-   one row update. Lights that cast no shadow need no ranking and no order.
+   most 128. The head stays rows `[0, 128)`: on the desktop,
+   `Shadow.LocalMask` reads only a tile's first four bitfield words, the
+   mask's slot tags store row + 1 in 8 bits, the deferred slot lookup walks
+   the tags in row order, and the contribution counters index rows below
+   128. A light that enters the head swaps rows with the one that leaves
+   (two row updates), and `light_first_view` stays per head row. A row's
+   shadow view stays in `p3.w`, so a changed view sends one row update.
+   Lights that cast no shadow need no ranking and no order.
 6. **Capacity.** Past 65,535 lights the lights with the highest
    `render_id` are not resident, and the editor's `light_overflow` warns.
    A residency by camera distance would rank every light again whenever
@@ -209,7 +223,10 @@ the GPU between frames.
    current per-slot retirement (Metal 2 slots, Vulkan 3). Only that pass
    writes the table, on the frame's queue; the graph declares the table as
    a persistent imported buffer, so it orders the write after the last
-   frame's reads (write after read) and every read after the write.
+   frame's reads (write after read) and every read after the write. That
+   order holds because one queue runs the frames; if light shading moves
+   to async compute, the table needs two copies or a timeline wait. The
+   table starts at a 16-byte aligned address (Vulkan device addresses).
 8. **CPU rows.** The lighting system keeps the rows in a CPU array, the
    source of updates and of the CPU readers: the froxel fog's two-light
    pick, local-shadow candidates, metrics, and the tiled class's 16-light
