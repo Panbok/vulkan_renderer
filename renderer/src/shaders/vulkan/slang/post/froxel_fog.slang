@@ -70,7 +70,9 @@ float3 vkr_vk_froxel_local_radiance(VkrVulkanPacketFrameRoot* frame,
     float attenuation = term.attenuation * term.cone;
     float3 visibility = packet_local_shadow_one_tap(frame, light, term.kind,
                                                     world_position);
-    return max(light.p1.rgb * light.p2.x * attenuation * visibility,
+    // Rows carry intensity before exposure (ADR-019).
+    float intensity = light.p2.x * frame.pre_exposure;
+    return max(light.p1.rgb * intensity * attenuation * visibility,
                float3(0.0f)) *
            vkr_froxel_phase(params, ray_direction, term.direction);
 }

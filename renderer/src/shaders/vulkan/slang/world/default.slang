@@ -1283,6 +1283,9 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
             uint kind = term.kind;
             float3 light_direction = term.direction;
             float attenuation = term.attenuation * term.cone;
+            // Rows carry intensity before exposure (ADR-019); the product
+            // matches the one the host formed when rows were pre-exposed.
+            float intensity = p2.x * frame.pre_exposure;
             // `light_index` is wave-uniform, so the wave adds its pixels'
             // unshadowed contribution with one atomic. Shadowing never
             // changes the measure, so selection cannot feed back on itself.
@@ -1332,7 +1335,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
             {
                 VkrVulkanDirectResult direct = packet_direct(
                     normal, view, light_direction,
-                    p1.rgb * p2.x * attenuation * visibility,
+                    p1.rgb * intensity * attenuation * visibility,
                     albedo, metallic, roughness, f0, energy);
                 result.irradiance += direct.irradiance;
                 result.diffuse += direct.diffuse;
@@ -1342,7 +1345,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
             {
                 result.specular += packet_direct_specular(
                     normal, view, light_direction,
-                    p1.rgb * p2.x * attenuation * visibility,
+                    p1.rgb * intensity * attenuation * visibility,
                     roughness, f0, energy);
             }
             // Sheen shares the front base normal. Backlit sheet visibility is
@@ -1357,14 +1360,14 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
                 }
                 coat_sum += packet_direct_specular(
                     coat.normal, view, light_direction,
-                    p1.rgb * p2.x * attenuation * coat_visibility,
+                    p1.rgb * intensity * attenuation * coat_visibility,
                     coat.roughness, float3(VKR_CLEARCOAT_F0), coat.energy);
             }
             if (sheen_active)
             {
                 sheen_sum += packet_sheen_direct(
                     normal, view, light_direction,
-                    p1.rgb * p2.x * attenuation * visibility,
+                    p1.rgb * intensity * attenuation * visibility,
                     sheen, sheen_normalization);
             }
         }

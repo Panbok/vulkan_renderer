@@ -560,8 +560,9 @@ vkr_internal bool8_t vkr_vk_upload_point_lights(
     return false_v;
   }
   for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
-    vkr_point_light_pack(&lighting->point_lights[i],
-                         packet->exposure.pre_exposure, &packed[i]);
+    /* Rows carry intensity before exposure; the shaders apply the frame's
+       pre-exposure where they read it (ADR-019). */
+    vkr_point_light_pack(&lighting->point_lights[i], 1.0f, &packed[i]);
     /* Only the light head can be shadowed (ADR-135). */
     packed[i].p3.w =
         packet->input.local_shadow && i < VKR_POINT_LIGHT_GRID_LIGHT_MAX
