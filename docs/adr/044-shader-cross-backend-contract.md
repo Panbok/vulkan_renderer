@@ -293,6 +293,19 @@ Vulkan resolve modules pass `spirv-val`; on Metal, a 128 m terrain painted with
 four layers in the headless editor shows the expected layer regions on the
 tiled pipeline (ADR-087).
 
+## Detail map evidence state
+
+Detail maps ([ADR-136](136-standard-detail-maps.md)) are shared: the Metal
+tiled detail kinds and the Vulkan G-buffer resolve's detail variant call
+`vkr_detail_normal_blend` and `vkr_detail_albedo` from
+`normal_map_kernel.slangh`, each sampling its own material row. The common
+material rows grow to 432 bytes on Metal and 352 on Vulkan with the detail
+row and two maps. On 2026-10-28 a Bistro capture without detail maps was
+byte-identical to the build before the change on the tiled pipeline, and
+captures with detail maps showed the detail normal and overlay with Metal API
+validation clean. The Vulkan detail resolve modules pass `spirv-val`;
+Vulkan native execution and a desktop detail capture wait for a Windows host.
+
 ## Geometry LOD evidence state
 
 Level selection, level encoding and terrain geomorphing
@@ -1012,6 +1025,7 @@ domain under the [evidence rules](#evidence-rules).
 | Culling, draw encoding and geometry decode | Shared | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang` |
 | Geometry LOD and terrain geomorph | Shared | `shared/lod_kernel.slangh`, `terrain_kernel.slangh`, `gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal`, `metal/msl/world/tiled.metal`, `metal/slang/world/default.slang` | `vulkan/slang/world/deferred.slang`, `common/vertex.slangh` |
 | Terrain and layered material blend | Shared | `shared/terrain_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
+| Detail maps ([ADR-136](136-standard-detail-maps.md)) | Shared | `shared/normal_map_kernel.slangh` (`vkr_detail_normal_blend`, `vkr_detail_albedo`) | `metal/msl/world/tiled.metal` (`vkr_metal_tiled_detail`, function constant 6), `metal/msl/world/gpu_draws.metal` (`vkr_metal_packet_standard_kind`) | `vulkan/slang/world/deferred.slang` (`VKR_VULKAN_GBUFFER_DETAIL`); Metal native: identity capture byte-identical, detail captures and API validation clean; Vulkan native pending |
 | Custom material graphs | Tiled | — | `metal/msl/world/tiled.metal`, `metal/msl/world/gpu_draws.metal`, generated `project_materials.metal` | — (draws the Standard fallback) |
 | Tiled forward, atmosphere and blend | Tiled | shared material, light, fog, atmosphere and transmission kernels below | `metal/msl/world/tiled.metal`, `lighting.metalh`, `metal/msl/shadow/sampling.metalh` | — |
 | Projected decals | Shared semantics, one implementation per backend | — | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |

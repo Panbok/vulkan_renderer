@@ -86,6 +86,23 @@ material, not a second texture multiplied in:
   `world_size`. Bakes see layer 0 only.
 - `lowering.layers` counts them; each layer adds three samples.
 
+## Detail maps
+
+Close-up surface detail on large props and unique-baked assets is a detail
+map (ADR-136), not a second texture multiplied in:
+
+- Connect a `normal_map` (a tileable normal texture and a strength) to
+  `output.detail_normal`, and a scalar to `output.detail_uv_scale`: repeats
+  per UV0 unit, 8 by default.
+- For albedo variation, connect a grey texture's `rgb` (linear, about 0.5)
+  to `output.detail_albedo` and a scalar from 0 to 1 to
+  `output.detail_albedo_strength`.
+- `settings {detail_mask: "base_alpha"}` lets the base colour's alpha weigh
+  the detail, on an `opaque` surface only.
+- Detail maps need an opaque or alpha-tested surface without layers or
+  transmission. They stay Standard and add two samples; bakes leave them
+  out.
+
 ## Custom graphs
 
 Make a Custom graph only for what the Standard tier cannot express:

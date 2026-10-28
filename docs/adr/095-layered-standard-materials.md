@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-09
+updated: 2026-10-28
 authority: adr
 ---
 
@@ -82,8 +82,9 @@ a cost on draws without layers.
   measurable on Bistro (Evidence).
 - Every material row's layer segment grows by 48 bytes on Metal and 32 on
   Vulkan, whether or not the material is layered.
-- Layers share layer 0's UVs. Per-layer tiling, height blending by layer
-  heights and detail normals remain proposal work.
+- Layers share layer 0's UVs. Per-layer tiling and height blending by layer
+  heights remain proposal work. Detail maps shipped in
+  [ADR-136](136-standard-detail-maps.md), on materials without layers.
 - A layered material's lightmap shows layer 0's albedo.
 
 ## Evidence

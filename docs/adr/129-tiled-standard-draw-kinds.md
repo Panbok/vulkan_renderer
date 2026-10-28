@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-20
+updated: 2026-10-28
 authority: adr
 ---
 
@@ -12,6 +12,8 @@ Accepted. Since 2026-10-20 the tiled pipeline shades Standard camera draws
 that cannot be lightmapped with pipelines that compile out the lightmap path,
 and those on non-terrain materials also the terrain layers. Other draws keep
 the general pipelines. The desktop pipeline does not change.
+[ADR-136](136-standard-detail-maps.md) adds kinds 2 and 3 for the draws of
+materials with detail maps, in compaction slots 35 and 36.
 
 ## Context
 
@@ -63,7 +65,8 @@ already made light code a per-frame variant).
    in their plane's ready mask and ready kinds. The table starts zeroed, so
    other ranges stay empty.
 6. **Diagnostic.** `VKR_STANDARD_KINDS_DISABLED=1` keeps every draw on the
-   general pipelines.
+   general pipelines, except detail draws, whose maps only their kinds
+   draw (ADR-136).
 
 ## Consequences
 

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-22
+updated: 2026-10-28
 authority: proposal
 ---
 # Artist toolkit
@@ -374,7 +374,8 @@ from row data:
   slope or world height (implemented in ADR-095 for vertex colour, mask
   texture, slope and world height; height blending by layer heights and
   per-layer UV transforms remain);
-- one detail normal map;
+- one detail normal map (implemented in ADR-136, with a grey albedo overlay,
+  on materials without layers);
 - the material model outputs that exist today.
 
 The compiler pattern-matches the graph to that shape and writes the row

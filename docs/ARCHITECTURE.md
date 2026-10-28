@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-23
+updated: 2026-10-28
 authority: architecture
 ---
 
@@ -202,7 +202,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Collaborative editing | Scene edits and typed values on the wire; the editor's `collab` service, edit ordering, replay and presence ([ADR-106](adr/106-collaborative-editing-session.md)) | `runtime/src/net/`, `editor/src/editor_session.c` |
 | View streaming | Hardware video coding over shared GPU surfaces, the renderer's Scene export (a Metal compute resample, or on Vulkan an NV12 resample encoded by Vulkan Video H.264, reported exactly once) and remote-image import (Metal), the runtime's export and import, and the editor's `view` service with the `remote_view.*` operations ([ADR-131](adr/131-view-streaming.md)) | `lib/src/platform/vkr_video.h`, `renderer/src/metal/internal/vkr_metal_packet_view.inc`, `renderer/src/vulkan/vkr_vulkan_view.c`, `runtime/src/application/vkr_standard_scene_runtime.c`, `editor/src/editor_remote_view.c`, `editor/src/editor_remote_order.c` |
 | Surface tags | Brush faces' surface tags and marks, their fixed greybox looks per face orientation, the greybox view and the migration of retired dev materials; surface themes that bind tags to materials per container over the World's, and faces sized by a material's `world_size` ([ADR-094](adr/094-surface-themes-and-art-pass.md)) | `runtime/src/level/vkr_surface.c`, `runtime/src/renderer/systems/vkr_scene_brush.c` |
-| Material graphs | `.mtg` graphs, Standard lowering to `.mt` definitions, layered Standard materials blended by vertex colour, mask texture, slope or height ([ADR-095](adr/095-layered-standard-materials.md)), graph instances expanded by the material loader and the lightmap baker; the editor's material documents, their journal, the node canvas, the Graph view and `material.*` operations ([ADR-093](adr/093-material-graphs-and-art-workbench.md)); Custom graphs generated to MSL, the project library `vkr_bakery materials` compiles, per-graph tiled pipelines and GPU buckets with a Standard fallback on Metal ([ADR-096](adr/096-custom-material-graphs.md)) | `runtime/src/assets/vkr_material_graph.c`, `runtime/src/assets/vkr_material_codegen.c`, `runtime/src/renderer/resources/loaders/material_loader.c`, `renderer/src/metal/internal/vkr_metal_packet_custom.inc`, `tools/bakery/vkr_bakery_materials.c`, `editor/src/editor_material.c`, `editor/src/editor_graph.c` |
+| Material graphs | `.mtg` graphs, Standard lowering to `.mt` definitions, layered Standard materials blended by vertex colour, mask texture, slope or height ([ADR-095](adr/095-layered-standard-materials.md)), detail normal and albedo maps on Standard materials ([ADR-136](adr/136-standard-detail-maps.md)), graph instances expanded by the material loader and the lightmap baker; the editor's material documents, their journal, the node canvas, the Graph view and `material.*` operations ([ADR-093](adr/093-material-graphs-and-art-workbench.md)); Custom graphs generated to MSL, the project library `vkr_bakery materials` compiles, per-graph tiled pipelines and GPU buckets with a Standard fallback on Metal ([ADR-096](adr/096-custom-material-graphs.md)) | `runtime/src/assets/vkr_material_graph.c`, `runtime/src/assets/vkr_material_codegen.c`, `runtime/src/renderer/resources/loaders/material_loader.c`, `renderer/src/metal/internal/vkr_metal_packet_custom.inc`, `tools/bakery/vkr_bakery_materials.c`, `editor/src/editor_material.c`, `editor/src/editor_graph.c` |
 | Look volumes | `look_volume` components gathered at world resolution and blended at the camera each frame into the post-process globals, height fog, sky light and the metering range ([ADR-097](adr/097-look-volumes.md)) | `runtime/src/renderer/systems/vkr_scene_look.c`, `runtime/src/application/vkr_standard_scene_runtime.c` |
 | Environment panel | The environment parts of a container with their sources, the Environment window, `.environment` presets and the `env.*` operations ([ADR-098](adr/098-environment-panel-and-presets.md)) | `editor/src/editor_environment.c`, `editor/src/editor_ops.c` |
 | Artist views | The tiled inspection variant's data views and the tonemap's exposure false colour, `view.capture` modes and `query.luminance` over the HDR capture ([ADR-099](adr/099-artist-views-and-luminance-queries.md)); the LOD, light count and overdraw views ([ADR-127](adr/127-crash-reports-gpu-capture-and-graph-description.md)) | `renderer/src/shaders/metal/msl/world/tiled.metal`, `renderer/src/shaders/metal/msl/post/tonemap.metal`, `renderer/src/shaders/shared/editor_view.slangh`, `editor/src/editor_ops.c` |
@@ -832,7 +832,11 @@ frames without a decal in view do not take
 resolve applies the same decals. Standard camera draws that cannot be
 lightmapped shade with pipelines that compile out the lightmap path, and on
 non-terrain materials the terrain layers, created in the background per
-shading variant ([ADR-129](adr/129-tiled-standard-draw-kinds.md)). It
+shading variant ([ADR-129](adr/129-tiled-standard-draw-kinds.md)). Draws of
+materials with detail maps shade with two more kinds, the only pipelines
+that sample them, which frames request while their scene has such a
+material; the desktop pipeline's G-buffer resolve takes a detail variant in
+those frames ([ADR-136](adr/136-standard-detail-maps.md)). It
 draws the 64 dynamic lights nearest the camera, each tile walking the ones
 its tile kernel lists within the fragment's depth bin, 4 of them shadowed
 with a four-comparison tent each, holding the set with an incumbent bonus and fading

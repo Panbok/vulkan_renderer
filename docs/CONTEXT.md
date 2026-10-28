@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-22
+updated: 2026-10-28
 authority: context
 ---
 # Project vocabulary
@@ -208,6 +208,7 @@ Editor workflow terms:
 | Material graph / instance | A `.mtg` document of typed nodes whose surface output gives the material model's inputs / a `.mt` that names a graph (`graph=`) and overrides its exposed parameters (`param.<name>=`). | [ADR-093](adr/093-material-graphs-and-art-workbench.md) |
 | Standard tier | Graphs that lower to `.mt` factors, textures and state, which the fixed shaders read: no shader and no pipeline of their own. | [ADR-093](adr/093-material-graphs-and-art-workbench.md) |
 | Layered material | An opaque Standard material that blends up to three layer materials (`layer1=` to `layer3=`) over its own surface, weighed by the vertex colour, a mask texture, slope or height; a terrain is one weighed by vertex colour. | [ADR-095](adr/095-layered-standard-materials.md) |
+| Detail map | A small tileable texture a Standard material repeats `detail_uv_scale` times per UV0 unit over its own maps: a detail normal reoriented onto the material's normal, and an optional grey albedo overlay about 0.5; the tiled pipeline draws them only in its detail draw kinds. | [ADR-136](adr/136-standard-detail-maps.md) |
 | Custom tier / Custom graph | Graphs the Standard tier cannot lower: each becomes a generated surface function (`vkr_custom_<hash>`) with its own tiled pipelines, shared by every instance; Metal only, Vulkan draws the fallback. | [ADR-096](adr/096-custom-material-graphs.md) |
 | Project material library | `project_materials.metallib` in the shader catalog: every Custom graph's function and entries, which `vkr_bakery materials` compiles and the renderer reloads after an edit. | [ADR-096](adr/096-custom-material-graphs.md) |
 | Look volume | A `look_volume` box that overrides exposure, grading, bloom, height fog and sky light near the camera, blended by priority and blend distance once a frame on the CPU. | [ADR-097](adr/097-look-volumes.md) |
