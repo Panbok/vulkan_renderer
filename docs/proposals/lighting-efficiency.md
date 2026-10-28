@@ -20,9 +20,10 @@ frame has material planes; then a layered kernel shades the tiles that use them
 ([ADR-062](../adr/062-layered-clearcoat.md)). Point lights come from
 the per-tile light bitfields that `Lighting.Clusters` builds each frame
 ([ADR-135](../adr/135-desktop-light-and-decal-clusters.md)); the cost split
-below predates them. Deferred lighting reads
-local-shadow visibility from the full-resolution `Shadow.LocalMask` array,
-which filters each shadowed light once per pixel with a contact-shadow march
+below predates them, and the half-resolution `Shadow.LocalMask` of 2026-10-28
+(ADR-019, Evidence). Deferred lighting reads
+local-shadow visibility from the `Shadow.LocalMask` array,
+which filters each shadowed light once per 2x2 pixel block with a contact-shadow march
 and, under temporal reconstruction, four rotated taps; transmission prefix
 lookups apply when refractive casters exist (ADR-019).
 

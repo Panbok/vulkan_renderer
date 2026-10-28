@@ -987,10 +987,11 @@ the layer paths; when a plane exists, a layered kernel shades the 8x8 tiles
 that contain layer data and the base kernel skips them. Both read local shadow
 visibility from the `Shadow.LocalMask` pass, which runs only while a
 shadowed light's range reaches the camera frustum or baked lamps' moving
-casters show, and filters each such light's maps once per pixel into the
-pixel's next overlap slot, in light
+casters show, and filters each such light's maps once per 2x2 pixel block
+into the block's next slot, in light
 order, and multiplies in a short screen-space contact-shadow march; lights
-past the eight slots are filtered inline. Valid baked-volume cells skip environment
+past the eight slots, and every light of a pixel whose nearby blocks lie on
+other surfaces, are filtered inline. Valid baked-volume cells skip environment
 diffuse evaluation and keep environment specular only in the share their
 baked sky light supports, reflecting their baked light in the rest
 ([ADR-054](adr/054-baked-diffuse-volumes.md)); the tiled pipeline does the

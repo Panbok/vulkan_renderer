@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-23
+updated: 2026-10-28
 authority: adr
 ---
 
@@ -795,34 +795,48 @@ orientation and shared face-ray reconstruction use the same canonical negative
 projection-Y convention.
 
 Vulkan runs the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
-with its own 160-byte root: frame, G-buffer inputs, visible rows, inverse
+with its own 176-byte root: frame, G-buffer inputs, visible rows, inverse
 view-projection, extent, the contact-shadow noise index at byte 112, the
 temporal filter flag at byte 116 (nonzero under temporal reconstruction),
 the baked-lamp shadow fields from byte 120 (ADR-104), the frame's overflow
 tag at byte 140 and, at byte 144, `mask_lights`: bit i set for table light i
 when it is shadowed and its range reaches the camera frustum (2026-10-11,
-ADR-019). The kernel ands it with the first four words of its pixel's light tile (ADR-135),
-so only those lights, all in the 128-row light head, take slots, and a pixel with none returns before its surface
-loads unless the baked-lamp variant needs them. The 368-byte deferred-lighting
+ADR-019), and at byte 160 the mask's half-resolution extent. Since
+2026-10-28 the mask holds one texel per 2x2 pixel block, shaded at the
+block's first pixel with geometry (the source). The kernel ands `mask_lights`
+with the first four words of the source's light tile (ADR-135),
+so only those lights, all in the 128-row light head, take slots, and a block with none returns before its surface
+loads unless the baked-lamp variant needs them; the baked-lamp part still
+runs for each pixel of the block. The 368-byte deferred-lighting
 root reads the mask array at byte 160, the per-light contribution counters at
 byte 184 (null when not measured), into which the deferred punctual loop adds,
 per wave and light, the pixels' unshadowed contribution from the shared
 `vkr_local_light_contribution` for local-shadow priority (ADR-019), and the
-overflow tag at byte 352. Mask layers are per-pixel slots: the k-th shadowed
-light in range of a pixel, in light traversal order, writes layer k with alpha
-tagging its light index through the shared `vkr_local_shadow_mask_tag`. A
-pixel with more such lights than the `VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` slots
-writes the frame's tag, 1 to 255 by frame, to the overflow layer past them
-(`vkr_local_shadow_mask_overflow_mark`). The deferred-lighting kernels skip the
-lights below the shared `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` that the mask
-gives no slot, and classify each 8×8 tile (2026-10-22): a tile with layer data
-takes the layered kernel, one with an overflow mark but no layer data the
-fallback kernel, both of which filter inline a light whose slot is past the
-last or names another light, and every other tile the base kernel. The base
+overflow tag at byte 352 and the mask extent at byte 356. Mask layers are
+per-texel slots: the block's shadowed lights in range of its source, in
+ascending row order, write layers 0 to k with alpha tagging their light index
+through the shared `vkr_local_shadow_mask_tag`, and a zero tag follows the
+last. A light takes a slot when it passes the shared
+`VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` and faces any normal of the block's
+pixels at the source's depth; the source's normal offsets its lookup when it
+faces the light, else the block normal that faces it most. The overflow layer
+past the `VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` slots records, every frame, the
+top 24 bits of the source's device depth in RGB (zero for a background
+block) and, for a block with more such lights than slots, the frame's tag,
+1 to 255 by frame, in alpha (`vkr_local_shadow_mask_overflow_mark`).
+
+A lit pixel takes its own block's texel when the recorded depth lies within
+2% of its own, else the best match among the three blocks nearest it. The
+deferred-lighting kernels skip the lights below the cutoff at the pixel's own
+normal, find each other light's slot with a cursor that only moves forward
+over the sorted tags, and classify each 8×8 tile (2026-10-22): a tile with
+layer data takes the layered kernel, one with an overflow mark or a pixel
+whose texels all lie on other surfaces, but no layer data, the fallback
+kernel, both of which filter inline a light the slots do not hold (every
+light of such a pixel), and every other tile the base kernel. The base
 kernel compiles that inline filter out, since its registers alone cost 1.2 ms
-of the 4.9 ms Bistro frame's lighting; it takes the slot that carries the
-light's tag and shades a light no slot holds unshadowed, which only a range,
-cone or cutoff test that differed at a boundary leaves. SMAA S2x's second
+of the 4.9 ms Bistro frame's lighting, and shades a light the slots do not
+hold unshadowed. SMAA S2x's second
 sample lights its listed pixels with the fallback filter in its own kernel.
 Vulkan builds the mask kernel with and without
 contact shadows and selects the variant from the payload's `contact_shadows`

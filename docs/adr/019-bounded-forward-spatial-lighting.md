@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-22
+updated: 2026-10-28
 authority: adr
 ---
 
@@ -41,7 +41,11 @@ edit moved off it is marked for recapture. B4 and B5 are host-side; B7 adds
 a field to both pipelines' probe record. The Metal side was not run. Since
 2026-10-14 the desktop pipeline with ray queries also scales a probe by the
 diffuse volume's dynamic layer at its capture origin
-([ADR-119](119-dynamic-diffuse-volume-layer.md)).
+([ADR-119](119-dynamic-diffuse-volume-layer.md)). Since 2026-10-28
+`Shadow.LocalMask` stores one texel per 2x2 pixel block, and deferred
+lighting reads the texel of a block whose recorded depth matches the pixel's
+surface or filters that pixel's lights inline (Evidence;
+[ADR-044](044-shader-cross-backend-contract.md) holds the layout).
 
 ## Context
 
@@ -371,9 +375,10 @@ ranking for diagnosis.
 A light whose unshadowed contribution at a pixel, the shared
 `vkr_local_light_contribution` taken with the shadow normal, is below
 `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` (0.001 of pre-exposed luminance) takes no
-mask slot and no deferred shading; `Shadow.LocalMask` and deferred lighting
-apply the same test, so their slots stay in step, while forward and
-transmission shading keep every light. Because the threshold follows
+deferred shading, and no mask slot when it is below the cutoff at every
+normal of the mask texel's 2x2 block; deferred lighting finds the slots of
+the others by their tags, while forward and transmission shading keep every
+light. Because the threshold follows
 pre-exposure, it means the same display contribution by day and night. In
 matched runs on the Metal desktop implementation, removed on 2026-10-06 (M1
 host), it lowered `Lighting.Deferred` by 0.33 ms in the Bistro street view,
@@ -937,6 +942,34 @@ defines the capture record, its KTX2 lookup and the time-of-day ratio;
 applies it and marks moved probes.
 
 ## Evidence
+
+Half-resolution `Shadow.LocalMask`, Vulkan Release, RX 6700 XT, Windows,
+2026-10-28, local and non-authoritative (main checkout, not a clean tree):
+- `bistro_clustered_1440` under `local-offscreen-gpu-repeated` (TAA off,
+  392 lights): `Shadow.LocalMask` 2.026 ms against 5.006 ms at full
+  resolution, `Lighting.Deferred.Fullscreen` 5.469 against 5.82 ms, the
+  layered and fallback pass 1.811 ms, and the Lighting group 9.321 against
+  11.92 ms (run `20261028T101030.760Z-001449`). Deferred lighting got
+  cheaper because a light's slot is found with a forward cursor over sorted
+  tags instead of a search.
+- `bistro_vulkan_high_orbit_1440`, where no mask runs: `Lighting.Deferred`
+  3.677 ms against 3.714 ms before.
+- The night lamp view in the `direct_diffuse` mode, TAA off, against full
+  resolution: two half-resolution runs give identical HDR; 3,076 pixels are
+  brighter and 3,592 darker by more than 0.05 (two full-resolution runs
+  differ in none). The differences are 2x2 steps along shadow edges and
+  lines along some silhouettes. Two earlier versions were rejected on this
+  view: a texel taken from the block's first pixel alone lit 11,282 pixels
+  along geometry edges, and a depth-matched texel still lit 9,342 along
+  normal-mapped grooves, which the slot test over the block's normals
+  removed.
+- One GPU-assisted validation run of `bistro_clustered_1080` under
+  `local-offscreen`, instrumenting the mask, deferred lighting, transmission
+  and world shaders (`VKR_VULKAN_GPU_VALIDATION=1`): 0 errors and 0 warnings
+  (run `20261028T105121.127Z-002af6`).
+
+Unverified: the steps under temporal reconstruction, authoritative
+clean-tree timing, and the editor's lighting paths.
 
 Audits B4, B5 and B7, Vulkan, RX 6700 XT, Windows, 2026-10-12, local and
 non-authoritative:
