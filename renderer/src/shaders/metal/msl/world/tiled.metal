@@ -1014,6 +1014,23 @@ static float2 vkr_metal_tiled_sun_visibility(
              : float2(0.0f);
 }
 
+// The sun's visibility at a fragment before its material is read: the
+// cascades' 16 filter taps and the PCSS search hold many values at once, and
+// sampled first they no longer add to the material and lighting state that
+// is live later, which set the opaque pass's register count. The geometric
+// normal gates the lookup in place of the normal-mapped one; a receiver
+// whose geometric surface faces away lies in its own shadow in the cascades.
+static float2 vkr_metal_tiled_early_sun_visibility(
+    thread const VkrMetalTiledVertexOutput &input,
+    constant VkrMetalPacketFrameRoot *frame, bool front_facing) {
+  if (frame->directional_direction_enabled.w <= 0.5f)
+    return float2(0.0f);
+  const float3 geometric_normal =
+      normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f);
+  return vkr_metal_tiled_sun_visibility(input, frame, geometric_normal,
+                                        geometric_normal);
+}
+
 // The sun's light and its cascades' visibility in one register, which frames
 // that correct the sun's light carry from the start of shading to the
 // return: as three or four values they cost the opaque pass about 1.0 to
@@ -1080,7 +1097,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                       const device VkrMetalPacketMaterial &material,
                       thread const VkrMetalTiledSurface &surface,
                       bool front_facing, uint probe, uint instance_index,
-                      threadgroup const VkrMetalTiledLightTile &light_tile) {
+                      threadgroup const VkrMetalTiledLightTile &light_tile,
+                      float2 sun_visibility) {
   // Detail lighting and lighting only shade a neutral grey dielectric
   // without emission; lighting only also leaves out normal maps.
   const bool neutral = Lighting == VKR_METAL_TILED_LIGHTING_INSPECT &&
@@ -1140,14 +1158,13 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   light.reflectance = energy.reflectance;
   light.metallic = metallic;
 
-  // The sun, shadowed by its cascades and the cloud layer, first: lit later,
+  // The sun, shadowed by its cascades and the cloud layer as sampled before
+  // the material (vkr_metal_tiled_early_sun_visibility), first: lit later,
   // its inputs stay live through the other lights' code. Frames that correct
   // the sun's light also keep it, packed, to return beside the colour.
   if (frame->directional_direction_enabled.w > 0.5f)
-    vkr_metal_tiled_light_sun(
-        frame,
-        vkr_metal_tiled_sun_visibility(input, frame, normal, geometric_normal),
-        normal, view, base, metallic, roughness, f0, energy, light);
+    vkr_metal_tiled_light_sun(frame, sun_visibility, normal, view, base,
+                              metallic, roughness, f0, energy, light);
 
   // The dynamic local lights, the bounded set the runtime keeps, through the
   // world-space light grid with their shadows sampled inline. Static lights
@@ -1684,6 +1701,8 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
       Coverage && vkr_tiled_demand_output
           ? vkr_metal_tiled_demand_word(input, frame, visible)
           : 0u;
+  const float2 sun_visibility =
+      vkr_metal_tiled_early_sun_visibility(input, frame, front_facing);
   float coverage = 1.0f;
   VkrMetalTiledSurface surface = Surface::template shade<Coverage>(
       input, frame, material, visible.material_index, coverage);
@@ -1713,7 +1732,7 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
     probe = vkr_metal_tiled_pixel_probe(frame, input.world_position);
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, surface, front_facing, probe,
-      visible.instance_index, light_tile);
+      visible.instance_index, light_tile, sun_visibility);
   return {float4(light.diffuse + light.specular + light.emissive, coverage),
           vkr_metal_tiled_unpack_sun(light.sun),
           Coverage || !vkr_tiled_demand_output
@@ -2495,6 +2514,8 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
       root->visible_rows[input.visible_row_index];
   const device VkrMetalPacketMaterial &material =
       frame->materials[visible.material_index];
+  const float2 sun_visibility =
+      vkr_metal_tiled_early_sun_visibility(input, frame, front_facing);
   VkrMetalTiledSurface surface =
       vkr_metal_tiled_surface(input, frame, material, visible.material_index,
                               vkr_metal_tiled_base(input, frame, material));
@@ -2538,7 +2559,7 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
                               frame, visible.instance_index,
                               input.world_position))
              : 0u,
-      visible.instance_index, light_tile);
+      visible.instance_index, light_tile, sun_visibility);
   // The light behind a volume or rough glass, when this frame has the copy.
   bool refracted = false;
   float3 refracted_light = float3(0.0f);

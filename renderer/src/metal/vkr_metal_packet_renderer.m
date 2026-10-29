@@ -684,6 +684,11 @@ typedef struct VkrMetalPacketCommandSlot {
      generates, VKR_METAL_SDF_SCRATCH_VOXELS; created the first time one
      does. */
   VkrMetalBufferResource sdf_scratch;
+  /* The cube of this slot's frame's cloud chain (ADR-074), its levels as
+     mips, which global reflections sample; created the first time a frame
+     runs the cloud-lit sky light. The slot is reused only after its frame
+     completes, so no frame in flight reads what the next one writes. */
+  VkrMetalTextureResource cloud_chain;
   id<MTL4CommandAllocator> allocator;
   id<MTL4CommandBuffer> buffer;
   id<MTL4CounterHeap> timestamp_heap;

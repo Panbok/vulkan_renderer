@@ -451,6 +451,13 @@ bool8_t vkr_metal_packet_renderer_drain(
               VKR_METAL_MEMORY_STATUS_OK)
         return false_v;
       *scratch = (VkrMetalBufferResource){0};
+      VkrMetalTextureResource *chain = &renderer->command_slots[i].cloud_chain;
+      if (chain->metal_texture &&
+          vkr_metal_memory_device_retire(renderer->memory, chain->handle,
+                                         renderer->submit_value) !=
+              VKR_METAL_MEMORY_STATUS_OK)
+        return false_v;
+      *chain = (VkrMetalTextureResource){0};
     }
     if (renderer->sdf_rows)
       vkr_allocator_free(renderer->allocator, renderer->sdf_rows,

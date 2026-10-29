@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-29
+updated: 2026-10-30
 authority: adr
 ---
 
@@ -1469,6 +1469,40 @@ not limit the forward pass on the M1 Pro. Reports, before then half:
 glass captures
 `sha256:eab44f68831ad8c89595942ae3d57d64841bae39ab44a0573a696f0e146e2a9f`,
 `sha256:d0331a66931e7a4c7a097db4bfeb1191da0859243d0290341ca5566949cb4564`.
+
+### Opaque pass registers
+
+The opaque pass is latency-bound at low occupancy (ADR-129), so its forward
+fragment's register count sets most of its cost. The Metal Toolchain
+compiles a pipelines script (`.mtlp-json`) to M1 Pro binaries offline
+(`applegpu-nt -arch applegpu_g13s`); the fragment metadata's first table
+holds the 32-bit registers per thread, calibrated with shaders whose live
+values are known (8, 16, 24, 40, 76 and 108 registers for 4 to 96). On the
+lightmapped Bistro street view (2560×1440, MetalFX at 0.6), shaders with
+fewer registers ran at proportionally higher fragment occupancy down to
+about 80: 104 registers 19.5%, 88 22.8%, 80 25.0%, 44 35.0% (features
+compiled out for the test, so their times also lost work).
+
+Before 2026-10-30 every forward variant used 104 to 108 registers, the same
+with or without dynamic lights: three parts of the shader each reached about
+88 to 104 with the rest live, the sun's cascade filter (its 16 taps and the
+PCSS search issued together), the shadowed light loop, and the diffuse
+volume and environment tail. Three changes lowered the variants to 92 to 96
+registers and the opaque pass's fragment work, measured over 2 s Metal
+System Traces (M1 Pro, Release, local and not authoritative):
+
+| Change | Lightmapped Bistro | Bistro, dynamic lamps |
+|---|---|---|
+| Before | 3.84 ms, 19.5% occupancy | 7.42 / 7.57 ms, 19.0% |
+| The sun's cascades sampled before the material is read (`vkr_metal_tiled_early_sun_visibility`); each diffuse-volume probe's SH evaluated at the normal as read | 3.52 ms, 21.7% | 7.28 ms, 19.8% |
+| The cloud chain sampled from a cube (ADR-074) | 2.29 ms, 20.9% | 5.90 ms, 19.9% |
+
+The early lookup gates on the geometric normal facing the sun in place of
+the normal-mapped one; a surface whose geometric normal faces away lies in
+its own shadow in the cascades. Moving the diffuse and environment light
+ahead of the direct light raised the counts by 4, and a SIMD-uniform light
+index did not change them. Captures against the build before these
+changes are in ADR-074's tiled chain evidence.
 
 ### Sun contact shadow measurement
 

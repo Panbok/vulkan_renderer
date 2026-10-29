@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-30
 authority: adr
 ---
 
@@ -180,7 +180,11 @@ roughness level and composites the same way. A bilinear tap past a face's
 edge reads the texel of the neighbouring face that holds the same direction
 (`vkr_cloud_sky_light_footprint`), so the read is continuous across cube
 seams, as hardware cube filtering is; at a corner the diagonal tap takes one
-of the two faces beside it. The pass reads and writes no
+of the two faces beside it. The tiled pipeline (Metal) keeps only the
+first level in the frame upload, for the projection, and writes every level
+into the command slot's cube texture as its mips; global specular there
+takes one trilinear sample of that cube at the matching level, and the
+hardware's seamless cube filtering does the seam-crossing read. The pass reads and writes no
 graph resource, enters the graph's first ready wave and ends with the barrier
 the revision bake uses for its SH writes. Without a published source it
 dispatches nothing, the clear slot stays global and the sky record names no
@@ -221,10 +225,13 @@ pixel, absorbs. Coupling clouds into the revision bake would freeze a
 snapshot that the wind and camera make stale, and each rebake creates four
 textures; the per-frame 16-texel composite follows both for about 0.09 ms.
 Scaling the clear SH by coverage was declined: it has neither the clouds'
-direction nor their colour. Reflections read the chain from a buffer rather
-than a prefiltered cloud cube: a cube texture would need per-slot images and
-a prefilter pass, while the chain shares the frame-upload lifetime and its
-box-filtered levels stand in for the GGX lobe at the cloud's resolution.
+direction nor their colour. The desktop pipeline reads the chain from a buffer
+rather than a prefiltered cloud cube: the chain shares the frame-upload
+lifetime and its box-filtered levels stand in for the GGX lobe at the cloud's
+resolution. The tiled pipeline moved the levels into a per-command-slot cube
+of the same box-filtered levels, with no prefilter pass, on 2026-10-30: in its
+forward shader the buffer read, eight texels with the seam arithmetic, cost
+`Tiled.Opaque` 1.23 to 1.38 ms (see the tiled evidence below).
 
 ## Revisit when
 
@@ -300,3 +307,14 @@ half-float step. Vulkan SPIR-V validation and layout reflection pass for the
 five cloud modules and every sky-record consumer
 ([clouds-spirv.txt](../../assets/verification/renderer-features/clouds-spirv.txt)).
 Native Vulkan evidence is limited to the cloud-lit sky light runs above.
+
+Tiled chain cube, 2026-10-30 (M1 Pro, Release, local and not authoritative):
+on the Bistro street view at 2560×1440 with MetalFX at 0.6, a 2 s Metal
+System Trace of `Tiled.Opaque` measured its fragment work at 3.52 → 2.29 ms
+on the lightmapped Bistro (`bistro_tiled_local`) and 7.28 → 5.90 ms on
+Bistro with its lamps dynamic. `tiled_bistro_capture` and
+`tiled_bistro_baked_capture` (`local-offscreen`, 4× MSAA, render scale 1)
+against the build before the change, which also predates the opaque pass's
+register work in ADR-087: final colour 71.9 dB PSNR on both, at most 3 and
+8 of 255 in 4 and 113 of 921,600 pixels, depth identical. Vulkan does not
+run this path.

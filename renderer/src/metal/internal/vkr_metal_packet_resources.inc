@@ -2866,13 +2866,16 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
   plan->decal_spheres_offset =
       vkr_align_up_u64(plan->decal_rows_offset + decal_rows_bytes, 16u);
   plan->decal_spheres_bytes = (uint64_t)plan->decal_count * sizeof(Vec4);
-  /* The cloud-lit sky light's cloud chain, written and read on the GPU. */
+  /* The cloud-lit sky light's march, the chain's first level, which its SH
+     projection reads on the GPU; the chain's mips live in the command
+     slot's cube. */
   plan->cloud_sky_light_offset = vkr_align_up_u64(
       plan->decal_spheres_offset + plan->decal_spheres_bytes, 16u);
-  plan->cloud_sky_light_bytes =
-      renderer->prepared_frame.clouds_enabled
-          ? VKR_CLOUD_SKY_LIGHT_TEXELS * 4u * sizeof(float32_t)
-          : 0u;
+  plan->cloud_sky_light_bytes = renderer->prepared_frame.clouds_enabled
+                                    ? 6u * VKR_CLOUD_SKY_LIGHT_FACE_SIZE *
+                                          VKR_CLOUD_SKY_LIGHT_FACE_SIZE * 4u *
+                                          sizeof(float32_t)
+                                    : 0u;
   plan->gpu_draw_views_offset = vkr_align_up_u64(
       plan->cloud_sky_light_offset + plan->cloud_sky_light_bytes,
       AlignOf(VkrMetalPacketGpuDrawView));

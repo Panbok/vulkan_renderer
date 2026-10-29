@@ -337,7 +337,10 @@ struct alignas(16) VkrMetalPacketCloudSkyLightRoot {
   float window_band_0;
   float window_band_1;
   float window_band_2;
-  uint2 reserved;
+  // The cube global reflections sample the chain from (draw.metalh's
+  // VkrMetalPacketSky): the march writes its first mip, the chain kernel
+  // the others.
+  texturecube<float, access::write> chain;
 };
 
 static_assert(sizeof(VkrMetalPacketCloudSkyLightRoot) == 80u,
@@ -357,8 +360,9 @@ kernel void vkr_metal_packet_cloud_sky_light(
   float4 cloud = vkr_metal_cloud_march(
       root.sky, root.frame, direction, VKR_CLOUD_SKY_LIGHT_PRIMARY_STEPS,
       VKR_CLOUD_SKY_LIGHT_MARCH_OFFSET, false);
-  root.radiance[vkr_cloud_sky_light_index(extent, 0u, id.z, id.xy)] =
-      float4(cloud.rgb * root.cloud_to_source_scale, cloud.a);
+  const float4 value = float4(cloud.rgb * root.cloud_to_source_scale, cloud.a);
+  root.radiance[vkr_cloud_sky_light_index(extent, 0u, id.z, id.xy)] = value;
+  root.chain.write(value, id.xy, id.z, 0u);
 }
 
 // Projects the clear texels seen through the layer into this frame slot's
@@ -376,7 +380,8 @@ kernel void vkr_metal_packet_cloud_sky_light_sh(
 }
 
 // One threadgroup per face averages the chain's first level down to one
-// texel, so global reflections read the layer at their roughness.
+// texel in the chain cube's mips, so global reflections read the layer at
+// their roughness.
 kernel void vkr_metal_packet_cloud_sky_light_mips(
     constant VkrMetalPacketCloudSkyLightRoot &root [[buffer(0)]],
     uint3 position [[thread_position_in_threadgroup]],
@@ -404,8 +409,7 @@ kernel void vkr_metal_packet_cloud_sky_light_mips(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (writes) {
       tile[cell] = value;
-      root.radiance[vkr_cloud_sky_light_index(face_size, level, face, texel)] =
-          value;
+      root.chain.write(value, texel, face, level);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }

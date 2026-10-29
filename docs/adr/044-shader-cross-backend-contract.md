@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-29
+updated: 2026-10-30
 authority: adr
 ---
 
@@ -1443,7 +1443,11 @@ Both backends project through one loop that also serves the revision bake
 slot, the chain's face size and its address: Vulkan grows to 496 bytes with
 the address at 480, and Metal to 512 with the address at 504. Global
 prefiltered specular composites the chain in `world/default.slang` and in
-`world/lighting.metalh`. Vulkan Release execution and Debug synchronization
+`world/lighting.metalh`. Since 2026-10-30 Metal's address names the command
+slot's cube of the chain, whose mips the march and chain kernels write
+through the root's last 8 bytes (`chain`), and its specular takes one
+trilinear sample of it in place of the footprint taps; the buffer keeps the
+first level for the projection (ADR-074). Vulkan Release execution and Debug synchronization
 validation pass on the Windows host; native Metal execution of these kernels
 is not recorded.
 

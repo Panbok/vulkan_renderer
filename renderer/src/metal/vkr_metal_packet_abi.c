@@ -298,7 +298,8 @@ vkr_global const VkrMetalPacketAbiField vkr_sky_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketSky, clear_sh_slot, "clear_sh_slot", 496),
     VKR_ABI_FIELD(VkrMetalPacketSky, cloud_sky_light_face_size,
                   "cloud_sky_light_face_size", 500),
-    VKR_ABI_FIELD(VkrMetalPacketSky, cloud_sky_light, "cloud_sky_light", 504),
+    VKR_ABI_FIELD(VkrMetalPacketSky, cloud_sky_light_texture_id,
+                  "cloud_sky_light", 504),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sky_params_fields[] = {
@@ -388,7 +389,8 @@ vkr_global const VkrMetalPacketAbiField vkr_cloud_sky_light_root_fields[] = {
                   "window_band_1", 56),
     VKR_ABI_FIELD(VkrMetalPacketCloudSkyLightRoot, window_band_2,
                   "window_band_2", 60),
-    VKR_ABI_FIELD(VkrMetalPacketCloudSkyLightRoot, reserved, "reserved", 64),
+    VKR_ABI_FIELD(VkrMetalPacketCloudSkyLightRoot, chain_texture_id, "chain",
+                  64),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sky_build_root_fields[] = {

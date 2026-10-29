@@ -298,10 +298,11 @@ struct alignas(16) VkrMetalPacketSky {
   // never with the cloud-lit slot they feed (ADR-074).
   uint clear_sh_slot;
   // This frame's cloud chain of in-scatter and transmittance for global
-  // reflections, from a `cloud_sky_light_face_size` face; zero when the
-  // cloud-lit sky light did not run.
+  // reflections, a cube whose mips are the chain's levels, from a
+  // `cloud_sky_light_face_size` face; zero when the cloud-lit sky light did
+  // not run.
   uint cloud_sky_light_face_size;
-  device const float4 *cloud_sky_light;
+  texturecube<float, access::sample> cloud_sky_light;
 };
 
 struct alignas(16) VkrMetalPacketLocalShadowTransmissionDraw {

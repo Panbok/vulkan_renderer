@@ -410,10 +410,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSky {
   /** The published sky source's SH slot; the cloud layer lights itself with
       it rather than the cloud-lit slot it feeds (ADR-074). */
   uint32_t clear_sh_slot;
-  /** This frame's cloud chain for global reflections and its first face
-      extent; zero when the cloud-lit sky light did not run. */
+  /** This frame's cloud chain for global reflections, a cube texture of
+      the chain's levels as mips, and its first face extent; zero when the
+      cloud-lit sky light did not run. */
   uint32_t cloud_sky_light_face_size;
-  uint64_t cloud_sky_light;
+  uint64_t cloud_sky_light_texture_id;
 } VkrMetalPacketSky;
 _Static_assert(sizeof(VkrMetalPacketSky) == 512u, "Metal sky record ABI drift");
 _Static_assert(offsetof(VkrMetalPacketSky, aerial_perspective_texture_id) ==
@@ -997,7 +998,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketCloudSkyLightRoot {
   float32_t window_band_0;
   float32_t window_band_1;
   float32_t window_band_2;
-  uint32_t reserved[2];
+  /** The command slot's cube of the cloud chain, which global reflections
+      sample: the march writes its first mip and the chain kernel the rest. */
+  uint64_t chain_texture_id;
 } VkrMetalPacketCloudSkyLightRoot;
 
 _Static_assert(sizeof(VkrMetalPacketCloudSkyLightRoot) == 80u,

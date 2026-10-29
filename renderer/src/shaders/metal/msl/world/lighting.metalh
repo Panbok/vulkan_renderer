@@ -604,10 +604,9 @@ static float4 vkr_metal_packet_diffuse_volume(
   constexpr sampler moment_sampler(coord::normalized, address::clamp_to_edge,
                                    filter::linear);
   const uint sky_row = volume.dimensions.w;
-  float4 red = float4(0.0f);
-  float4 green = float4(0.0f);
-  float4 blue = float4(0.0f);
-  float4 sky = float4(0.0f);
+  const float4 basis = float4(normal, 1.0f);
+  float3 irradiance = float3(0.0f);
+  float sky = 0.0f;
   float total = 0.0f;
   for (uint corner = 0u; corner < 8u; ++corner) {
     uint probe = vkr_diffuse_volume_corner_probe(cell, corner);
@@ -632,43 +631,33 @@ static float4 vkr_metal_packet_diffuse_volume(
     weight *= vkr_diffuse_volume_chebyshev(moments, distance);
     weight = vkr_diffuse_volume_crush(weight) *
              vkr_diffuse_volume_trilinear(corner, cell.fraction);
-    red += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 0u, 0u));
-    green += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 1u, 0u));
-    blue += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 2u, 0u));
+    // Each probe's L1 coefficients are evaluated at the normal as they are
+    // read: the weighted sum of the evaluations is the evaluation of the
+    // weighted sum, and four running values in place of sixteen keep the
+    // opaque pass's registers down.
+    irradiance += weight * float3(
+        dot(volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 0u, 0u)), basis),
+        dot(volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 1u, 0u)), basis),
+        dot(volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 2u, 0u)), basis));
     sky += weight *
-           volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 0u, sky_row));
+           dot(volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 0u, sky_row)),
+               basis);
     total += weight;
   }
   if (total < VKR_DIFFUSE_VOLUME_MIN_WEIGHT)
     return float4(0.0f);
   const float scale = volume.params.x * frame->pre_exposure / total;
-  sky_luminance = max(dot(sky, float4(normal, 1.0f)), 0.0f) * scale;
-  return float4(vkr_diffuse_volume_l1(red, green, blue, normal) * scale, 1.0f);
-}
-
-// One level of this frame's cloud chain at a face coordinate, bilinear
-// across face seams.
-static float4
-vkr_metal_packet_cloud_sky_light_level(constant VkrMetalPacketSky *sky,
-                                       VkrCloudSkyLightDirection at,
-                                       uint level) {
-  uint face_size = sky->cloud_sky_light_face_size;
-  VkrCloudSkyLightFootprint footprint =
-      vkr_cloud_sky_light_footprint(at, max(face_size >> level, 1u));
-  device const float4 *chain =
-      sky->cloud_sky_light + vkr_cloud_sky_light_level_offset(face_size, level);
-  float4 first_row = mix(chain[footprint.first_row_first_column],
-                         chain[footprint.first_row_second_column],
-                         footprint.blend.x);
-  float4 second_row = mix(chain[footprint.second_row_first_column],
-                          chain[footprint.second_row_second_column],
-                          footprint.blend.x);
-  return mix(first_row, second_row, footprint.blend.y);
+  sky_luminance = max(sky, 0.0f) * scale;
+  return float4(max(irradiance, float3(0.0f)) * scale, 1.0f);
 }
 
 // The global prefiltered sky along `reflection` at `lod`, seen through this
 // frame's cloud layer when its sky light ran (ADR-074). The cloud chain is
-// read at the level whose texels match the prefilter's.
+// read at the level whose texels match the prefilter's, one trilinear sample
+// of its cube: the hardware filters across face seams and between levels.
+// Reading the chain from a buffer, eight texels with the seam arithmetic,
+// cost the opaque pass about 1.3 ms on the lightmapped Bistro street at
+// 2560x1440 with MetalFX at 0.6 (M1 Pro).
 static float3 vkr_metal_packet_global_prefiltered(
     constant VkrMetalPacketFrameRoot *frame, sampler environment_sampler,
     float3 reflection, float lod) {
@@ -680,12 +669,8 @@ static float3 vkr_metal_packet_global_prefiltered(
   uint levels = vkr_cloud_sky_light_levels(sky->cloud_sky_light_face_size);
   float chain_level = vkr_cloud_sky_light_level(
       lod, max(frame->prefilter_mip_count, 1u), levels);
-  VkrCloudSkyLightDirection at = vkr_cloud_sky_light_direction(reflection);
-  uint fine = uint(chain_level);
-  uint coarse = min(fine + 1u, levels - 1u);
-  float4 cloud = mix(vkr_metal_packet_cloud_sky_light_level(sky, at, fine),
-                     vkr_metal_packet_cloud_sky_light_level(sky, at, coarse),
-                     chain_level - float(fine));
+  float4 cloud = sky->cloud_sky_light.sample(environment_sampler, reflection,
+                                             level(chain_level));
   return vkr_cloud_sky_light_radiance(clear, cloud);
 }
 

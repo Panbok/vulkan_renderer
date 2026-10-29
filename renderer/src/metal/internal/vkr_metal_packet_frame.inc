@@ -1862,6 +1862,45 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_trace(
   return true_v;
 }
 
+/* The active command slot's cube of the cloud chain (ADR-074): `extent`
+   texels a face and the chain's levels as mips, created the first time a
+   frame needs it and recreated when the extent changes. nil when it cannot be
+   created, which leaves global reflections without the layer. */
+vkr_internal id<MTLTexture>
+vkr_metal_packet_cloud_chain_texture(VkrMetalPacketRenderer *renderer,
+                                     uint32_t extent)
+    API_AVAILABLE(macos(26.0)) {
+  VkrMetalTextureResource *chain = &renderer->active_command_slot->cloud_chain;
+  id<MTLTexture> texture = (id<MTLTexture>)chain->metal_texture;
+  if (texture && texture.width == extent)
+    return texture;
+  if (texture) {
+    if (vkr_metal_memory_device_retire(renderer->memory, chain->handle,
+                                       renderer->submit_value) !=
+        VKR_METAL_MEMORY_STATUS_OK)
+      return nil;
+    *chain = (VkrMetalTextureResource){0};
+  }
+  uint32_t levels = 1u;
+  while ((extent >> levels) != 0u)
+    ++levels;
+  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+  descriptor.textureType = MTLTextureTypeCube;
+  descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
+  descriptor.width = extent;
+  descriptor.height = extent;
+  descriptor.mipmapLevelCount = levels;
+  descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+  const VkrMetalMemoryStatus status = vkr_metal_memory_device_create_texture(
+      renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_SHADER, chain);
+  [descriptor release];
+  if (status != VKR_METAL_MEMORY_STATUS_OK) {
+    *chain = (VkrMetalTextureResource){0};
+    return nil;
+  }
+  return (id<MTLTexture>)chain->metal_texture;
+}
+
 /* The cloud-lit sky light (ADR-074): every texel of the clear sky source's
    16-texel mip is seen through this frame's cloud layer from the camera,
    projected into this command slot's SH slot with the source's own deringing,
@@ -1902,6 +1941,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_sky_light(
     ++mip;
   }
   if (extent > VKR_CLOUD_SKY_LIGHT_FACE_SIZE || extent == 0u)
+    return true_v;
+  id<MTLTexture> chain = vkr_metal_packet_cloud_chain_texture(renderer, extent);
+  if (!chain)
     return true_v;
 
   /* The march reads the clear slot through the sky record; this root is
@@ -1945,15 +1987,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_sky_light(
       .window_band_0 = vkr_ibl_sh_window_factor(0u, source->ibl_sh_deringing),
       .window_band_1 = vkr_ibl_sh_window_factor(1u, source->ibl_sh_deringing),
       .window_band_2 = vkr_ibl_sh_window_factor(2u, source->ibl_sh_deringing),
+      .chain_texture_id = chain.gpuResourceID._impl,
   };
   source->last_use_submit_value = renderer->submit_value + 1u;
   prepared->cloud_sky_light.root = root_gpu;
   prepared->cloud_sky_light.extent = extent;
   prepared->active = true_v;
   upload->cloud_sh_slot = cloud_slot;
-  /* Global reflections read the chain through the sky record. */
+  /* Global reflections sample the chain's cube through the sky record. */
   upload->sky_cpu->cloud_sky_light_face_size = extent;
-  upload->sky_cpu->cloud_sky_light = upload->cloud_sky_light_radiance_gpu;
+  upload->sky_cpu->cloud_sky_light_texture_id = chain.gpuResourceID._impl;
   return true_v;
 }
 
