@@ -782,9 +782,36 @@ static void test_parallel_steps_match(void) {
   assert(parallel == serial);
 }
 
+/* The editor rebuilds brushes, removing and adding their static bodies,
+   while nothing steps the world. Jolt adds each body at the root of its
+   broad phase tree and frees removed bodies' nodes only when the tree is
+   rebuilt; without that, these rounds ran out of nodes and Jolt aborted. */
+static void test_paused_rebuilds(void) {
+  enum { BODIES = 200, ROUNDS = 40 };
+  VkrPhysicsWorld *world = vkr_physics_world_create(256);
+  assert(world);
+  static VkrPhysicsBody bodies[BODIES];
+  for (uint32_t round = 0; round < ROUNDS; ++round) {
+    for (uint32_t i = 0; i < BODIES; ++i) {
+      const uint64_t id = (UINT64_C(0x5000) + round) << 32 | i;
+      VkrPhysicsColliderDesc collider = box(id);
+      VkrPhysicsBodyDesc desc = body_desc(id, &collider);
+      desc.motion = VKR_PHYSICS_STATIC;
+      desc.position[0] = (float32_t)(i % 20) * 2.0f;
+      desc.position[2] = (float32_t)(i / 20) * 2.0f;
+      assert(vkr_physics_body_create(world, &desc, &bodies[i]));
+    }
+    for (uint32_t i = 0; i < BODIES; ++i) {
+      assert(vkr_physics_body_destroy(world, bodies[i]));
+    }
+  }
+  vkr_physics_world_destroy(world);
+}
+
 bool32_t run_physics_tests(void) {
   printf("Running physics tests...\n");
   test_gravity_impulse_and_handles();
+  test_paused_rebuilds();
   test_compound_queries_and_capacity();
   test_stack_sleep_and_support_removal();
   test_sensor_sleep_and_disable();

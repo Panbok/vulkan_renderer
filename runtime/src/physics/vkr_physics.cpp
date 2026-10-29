@@ -315,6 +315,10 @@ struct s_VkrPhysicsWorld {
   uint32_t reserved_events = 0;
   uint32_t reserved_destructions = 0;
   uint32_t reserved_contact_events = 0;
+  /* Bodies added one at a time since the broad phase tree was last rebuilt
+     (by a step or OptimizeBroadPhase), and the count that forces a rebuild. */
+  uint32_t unmaintained_adds = 0;
+  uint32_t maintenance_adds = 0;
 };
 
 static bool8_t fail(VkrPhysicsWorld *world, const char *message) {
@@ -322,6 +326,21 @@ static bool8_t fail(VkrPhysicsWorld *world, const char *message) {
     world->error = message;
   }
   return false_v;
+}
+
+/* Jolt puts each single added body at the root of its broad phase tree, and
+   only PhysicsSystem::Update or OptimizeBroadPhase rebuilds the tree and
+   frees the nodes that removed bodies leave behind. A world nothing steps
+   (the editor rebuilding brushes while paused) ran out of nodes after a few
+   rebuilds, and Jolt aborts then: rebuild the tree first once a share of
+   the node budget went to single adds. */
+static void add_to_broad_phase(VkrPhysicsWorld *world, JPH::BodyID id,
+                               JPH::EActivation activation) {
+  if (++world->unmaintained_adds > world->maintenance_adds) {
+    world->system.OptimizeBroadPhase();
+    world->unmaintained_adds = 1;
+  }
+  world->system.GetBodyInterface().AddBody(id, activation);
 }
 
 static s_BodySlot *lookup(VkrPhysicsWorld *world, VkrPhysicsBody handle) {
@@ -396,6 +415,9 @@ extern "C" VkrPhysicsWorld *vkr_physics_world_create(uint32_t max_bodies) {
     world->system.SetContactListener(&world->contact_listener);
     world->system.Init(max_bodies, 0, max_bodies * 8, max_bodies * 8,
                        world->layers, world->broad_filter, world->pair_filter);
+    /* Jolt's node pool holds about 1.3 nodes per body; a quarter of the
+       bodies added singly stays well inside it. */
+    world->maintenance_adds = std::max<uint32_t>(64u, max_bodies / 4u);
     auto settings = world->system.GetPhysicsSettings();
     settings.mUseLargeIslandSplitter = false;
     settings.mMinVelocityForRestitution = VKR_PHYSICS_RESTITUTION_THRESHOLD;
@@ -1125,9 +1147,10 @@ extern "C" bool8_t vkr_physics_body_create(VkrPhysicsWorld *world,
     slot.disabled_linear = JPH::Vec3::sZero();
     slot.disabled_angular = JPH::Vec3::sZero();
     if (slot.enabled) {
-      bodies.AddBody(slot.id, desc->motion == VKR_PHYSICS_STATIC
-                                  ? JPH::EActivation::DontActivate
-                                  : JPH::EActivation::Activate);
+      add_to_broad_phase(world, slot.id,
+                         desc->motion == VKR_PHYSICS_STATIC
+                             ? JPH::EActivation::DontActivate
+                             : JPH::EActivation::Activate);
     }
     *out_body = handle_for(world, index);
     return true_v;
@@ -1218,9 +1241,10 @@ extern "C" bool8_t vkr_physics_body_set_enabled(VkrPhysicsWorld *world,
         return fail(world, "Duplicate enabled physics body entity ID");
       }
     }
-    bodies.AddBody(slot->id, slot->motion == VKR_PHYSICS_STATIC
-                                 ? JPH::EActivation::DontActivate
-                                 : JPH::EActivation::Activate);
+    add_to_broad_phase(world, slot->id,
+                       slot->motion == VKR_PHYSICS_STATIC
+                           ? JPH::EActivation::DontActivate
+                           : JPH::EActivation::Activate);
     if (slot->motion != VKR_PHYSICS_STATIC) {
       bodies.SetLinearAndAngularVelocity(slot->id, slot->disabled_linear,
                                          slot->disabled_angular);
@@ -1266,6 +1290,7 @@ extern "C" bool8_t vkr_physics_world_shift(VkrPhysicsWorld *world,
     }
   }
   world->system.OptimizeBroadPhase();
+  world->unmaintained_adds = 0;
   return true_v;
 }
 
@@ -1492,6 +1517,7 @@ extern "C" bool8_t vkr_physics_step(VkrPhysicsWorld *world, float32_t dt) {
       world->faulted = true_v;
       return fail(world, "Physics contact capacity exceeded; reset required");
     }
+    world->unmaintained_adds = 0;
     std::sort(world->next_contacts.begin(), world->next_contacts.end(),
               contact_before);
     return update_contacts(world) && update_sensors(world);

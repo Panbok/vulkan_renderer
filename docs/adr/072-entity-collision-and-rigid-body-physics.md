@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-08
+updated: 2026-10-29
 authority: adr
 ---
 
@@ -40,6 +40,16 @@ A scene lazily creates its physics world when physics is authored. All world
 operations are synchronous and serialized, including operations across different
 worlds. Process-wide Jolt registration survives until the final world is
 destroyed.
+
+Jolt adds each single body at the root of its broad phase tree and frees the
+nodes removed bodies leave only when a step or `OptimizeBroadPhase` rebuilds
+the tree. A world nothing steps, such as the editor's while it rebuilds
+brushes after material edits, ran out of nodes and Jolt aborted the process
+(2026-10-29, the Level Design Test after four rounds of surface material
+changes). The adapter therefore rebuilds the tree before a single add once
+a quarter of the world's body capacity (at least 64) went to single adds
+since the last step or rebuild; `test_paused_rebuilds` adds and removes 200
+static bodies 40 times without a step, which aborted before.
 
 A step runs Jolt's jobs on the stepping thread (Jolt's single-threaded job
 system) unless `vkr_physics_set_jobs` installed workers and the world moves at
