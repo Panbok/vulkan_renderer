@@ -85,6 +85,9 @@ typedef struct ContentAsset {
   /* A model's source file as a content path (the record's `origin`), which
      Reimport imports again; empty when the import did not record one. */
   char origin[CONTENT_PATH];
+  /* A model cooked with lightmap UVs (its recipe's texel density), which a
+     reimport keeps. */
+  bool8_t lightmap_uvs;
   char role[64];
   char fingerprint[96];
   char diagnostic[256];
@@ -845,6 +848,16 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
         string_format(entry.recipe, sizeof(entry.recipe), "%s %d", tool,
                       version);
       }
+      String8 recipe_settings = {0};
+      String8 texels = {0};
+      float32_t texels_per_unit = 0.0f;
+      entry.lightmap_uvs =
+          vkr_editor_project_json_member(recipe, "settings", &recipe_settings,
+                                         NULL) &&
+          recipe_settings.length &&
+          vkr_editor_project_json_member(
+              recipe_settings, "lightmap_texels_per_unit", &texels, NULL) &&
+          string8_to_f32(&texels, &texels_per_unit) && texels_per_unit > 0.0f;
     }
     String8 closure = {0};
     if (vkr_editor_project_json_member(record, "closure", &closure, &error) &&
@@ -3162,6 +3175,7 @@ static void content_action(VkrEditorContent *content,
       (void)content_origin_file(asset, content->action.origin,
                                 sizeof(content->action.origin));
     }
+    content->action.lightmap_uvs = asset->lightmap_uvs;
   }
 }
 
@@ -5539,6 +5553,16 @@ bool8_t vkr_editor_content_asset_origin(const VkrEditorContent *content,
   for (uint32_t i = 0; content && i < content->count; ++i) {
     if (string_equals(content->entries[i].id, id)) {
       return content_origin_file(&content->entries[i], out, capacity);
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_editor_content_asset_lightmap_uvs(const VkrEditorContent *content,
+                                              const char *id) {
+  for (uint32_t i = 0; content && i < content->count; ++i) {
+    if (string_equals(content->entries[i].id, id)) {
+      return content->entries[i].lightmap_uvs;
     }
   }
   return false_v;

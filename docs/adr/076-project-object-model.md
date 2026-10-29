@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-28
+updated: 2026-10-29
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -466,13 +466,24 @@ Reimport
 and a `model.reimport` without `source` import that file again without
 asking; the Content details show it as "Imported from". Both
 operations take `lightmap_uvs`, which cooks the files with lightmap UVs as
-the Bakery panel's setting does; a reimport without it or the setting
-rebuilds the mesh without them. The open
+the Bakery panel's setting does. Since 2026-10-29 a model whose recipe
+records a lightmap texel density keeps its lightmap UVs through Content's
+Reimport and through a `model.reimport` that omits `lightmap_uvs`
+(`vkr_editor_content_asset_lightmap_uvs`); only `lightmap_uvs` false,
+without the panel's setting, rebuilds it without them. Before, a reimport
+that did not repeat the flag dropped them, and the next bake drew the model
+unlit. The open
 scene swaps the rebuilt mesh in without a reload, so every placed copy keeps
 its pose and material overrides. `entity.get` answers a mesh entity's
 `mesh`: its artifact `path`, the `asset` reference the scene published for
-that path (else the Content asset whose artifact it is), and its submesh
-count. When a swap lands, the scene moves the source identity of every
+that path (else the Content asset whose artifact it is), the content path
+it was imported from (`origin`), and its submesh, triangle and vertex
+counts. `model.list` (2026-10-29) answers every imported model the open
+scene draws with its asset, origin, triangles, submeshes and the entities
+that draw it, optionally those whose origin contains a text, so a tool that
+rebuilt a file reimports every asset made from it
+([ADR-137](137-baked-asset-texture-sets-and-model-previews.md)). When a
+swap lands, the scene moves the source identity of every
 node drawing the swapped mesh, the deletion records and the undo
 snapshots to the value a fresh load computes
 (`vkr_scene_refresh_source_fingerprints`, `vkr_scene_edit_follow_sources`)

@@ -4398,10 +4398,109 @@ static VkrEntityId inspector_slots_mesh(VkrEditorScenePanels *p,
   return p->slots_mesh;
 }
 
+/* The last path component of `path`, for a compact slot label. */
+static const char *inspector_file_name(const char *path);
+
+/* The model file an imported mesh came from, which shows the asset in
+   Content when clicked, and Reimport, which imports that file again for
+   every copy, keeping lightmap UVs the model was cooked with (ADR-076). */
+static void inspector_mesh_source(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *f,
+                                  const SceneMeshInfo *info, float32_t w,
+                                  float32_t *y) {
+  /* The reference the scene published for the mesh file holds while
+     Content relists a rebuilt revision; Content's listing is the fallback. */
+  char ref[VKR_ASSET_REF_CAPACITY];
+  if (!vkr_render_assets_find_asset_ref(
+          f->assets,
+          string8_create_from_cstr((const uint8_t *)info->asset,
+                                   string_length(info->asset)),
+          ref, sizeof(ref)) &&
+      !vkr_editor_content_asset_for_path(editor->content, info->asset, ref,
+                                         sizeof(ref))) {
+    return;
+  }
+  /* asset:<scope>/<id> */
+  const uint32_t prefix = 6u;
+  uint32_t slash = prefix;
+  while (ref[slash] && ref[slash] != '/') {
+    slash++;
+  }
+  char scope[8];
+  if (!ref[slash] || slash == prefix || slash - prefix >= sizeof(scope)) {
+    return;
+  }
+  MemCopy(scope, ref + prefix, slash - prefix);
+  scope[slash - prefix] = '\0';
+  const char *id = ref + slash + 1u;
+  char origin[1024];
+  if (!vkr_editor_content_asset_origin_path(editor->content, id, origin,
+                                            sizeof(origin))) {
+    return;
+  }
+  char source[1024];
+  const bool8_t exists = vkr_editor_content_asset_origin(
+      editor->content, id, source, sizeof(source));
+  const bool8_t lightmap_uvs =
+      vkr_editor_content_asset_lightmap_uvs(editor->content, id);
+
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = f->ui;
+  const float32_t label_w = vkr_editor_details_label_width(w);
+  (void)vkr_ui_push_id_label(ui, string8_lit("mesh.source"));
+  VkrUiWidgetConfig label =
+      widget_at(INSPECTOR_PAD_PT, *y + 4.0f, label_w - 4.0f, 26.0f);
+  label.placement.align = VKR_UI_ALIGN_START;
+  label.style.font_size_pt = theme->font_body;
+  label.style.text_color = theme->text_secondary;
+  label.style.padding_pt = (VkrUiEdges){5, 2, 5, 2};
+  vkr_ui_label(ui, string8_lit("label"), string8_lit("Source"), &label);
+  const float32_t field_x = INSPECTOR_PAD_PT + label_w;
+  VkrUiWidgetConfig field =
+      widget_at(field_x, *y + 4.0f,
+                Max(40.0f, w - field_x - INSPECTOR_PAD_PT - 32.0f), 26.0f);
+  vkr_editor_field_style(&field);
+  field.placement.align = VKR_UI_ALIGN_START;
+  field.style.padding_pt = (VkrUiEdges){4, 8, 4, 8};
+  field.style.text_color = exists ? theme->text : theme->text_secondary;
+  field.icon = VKR_UI_ICON_MESH;
+  field.icon_size_pt = 13.0f;
+  field.icon_color = (Vec4){0.62f, 0.78f, 0.98f, 1.0f};
+  field.tooltip = string8_create_formatted(
+      ui->frame_allocator,
+      "Imported from %s%s%s. Click to show the model in "
+      "Content.",
+      origin, exists ? "" : " (missing)",
+      lightmap_uvs ? ", cooked with lightmap UVs" : "");
+  if (vkr_ui_button(ui, string8_lit("file"),
+                    string8_create_formatted(ui->frame_allocator, "%s",
+                                             inspector_file_name(origin)),
+                    &field)) {
+    (void)vkr_editor_content_reveal_path(editor->content, info->asset);
+  }
+  VkrUiWidgetConfig reimport = vkr_editor_icon_button_config(
+      0, 0, VKR_UI_ICON_REFRESH,
+      exists ? string8_lit("Reimport: import the source file again for every "
+                           "copy of this model; it keeps its lightmap UVs")
+             : string8_lit("The source file is missing; Reimport from "
+                           "Content to choose another"));
+  reimport.placement =
+      widget_at(w - INSPECTOR_PAD_PT - 26.0f, *y + 4.0f, 26.0f, 26.0f)
+          .placement;
+  reimport.disabled =
+      !exists || !vkr_editor_projects_switch_ready(editor->projects);
+  if (vkr_ui_button(ui, string8_lit("reimport"), (String8){0}, &reimport)) {
+    (void)vkr_editor_projects_reimport_asset(editor->projects, editor, f, scope,
+                                             id, source, lightmap_uvs);
+  }
+  (void)vkr_ui_pop_id(ui);
+  *y += 32.0f;
+}
+
 /* Read-only rows generated from the mesh info descriptor (ADR-076), for the
    mesh the selection draws: itself, or a placed model's mesh node, as the
-   Materials section finds it. */
-static void inspector_mesh_section(VkrEditorScenePanels *p,
+   Materials section finds it, then the model file it came from. */
+static void inspector_mesh_section(VkrEditorUi *editor, VkrEditorScenePanels *p,
                                    const VkrSampleUiFrame *f, float32_t w,
                                    float32_t *y, VkrFontHandle heading) {
   SceneMeshInfo info;
@@ -4418,6 +4517,7 @@ static void inspector_mesh_section(VkrEditorScenePanels *p,
   }
   (void)vkr_editor_details_type(&p->details, f->ui, f->input, w, y,
                                 &vkr_scene_mesh_info_type, &info, NULL, true_v);
+  inspector_mesh_source(editor, f, &info, w, y);
 }
 
 /* The last path component of `path`, for a compact slot label. */
@@ -5074,7 +5174,7 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
     field_focus |= inspector_light_section(
         p, f, frame->scene ? frame->scene : frame->world, w, &y, heading,
         &lights, &component_edit);
-  inspector_mesh_section(p, f, w, &y, heading);
+  inspector_mesh_section(editor, p, f, w, &y, heading);
   if (!part)
     inspector_materials_section(editor, p, f, w, &y, heading);
   /* Placed objects carry a script slot above the script's own section;

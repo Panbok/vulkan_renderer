@@ -86,6 +86,8 @@ typedef struct VkrEditorContentAction {
   /* A REIMPORT's model file: the absolute path of the asset's recorded
      origin when it still exists; empty to ask for a file. */
   char origin[1024];
+  /* The asset was cooked with lightmap UVs; a REIMPORT keeps them. */
+  bool8_t lightmap_uvs;
 } VkrEditorContentAction;
 
 /** UI/render-thread owner. Freeable allocator and assets must outlive it.
@@ -230,6 +232,10 @@ bool8_t vkr_editor_content_dragged_material(const VkrEditorContent *content,
 bool8_t vkr_editor_content_asset_origin(const VkrEditorContent *content,
                                         const char *id, char *out,
                                         uint32_t capacity);
+/** Whether a listed model, by id, was cooked with lightmap UVs, which its
+ * reimport keeps unless asked otherwise. */
+bool8_t vkr_editor_content_asset_lightmap_uvs(const VkrEditorContent *content,
+                                              const char *id);
 /** The content path (`assets/...`) a listed asset, by id, was imported from,
  * as its record's `origin` names it, whether or not the file still exists. */
 bool8_t vkr_editor_content_asset_origin_path(const VkrEditorContent *content,

@@ -15274,9 +15274,12 @@ static VkrEditorOpStatus ops_run_model_reimport(OpsContext *ctx) {
              ref);
     return VKR_EDITOR_OP_DONE;
   }
+  /* Without 'lightmap_uvs', a model cooked with them keeps them. */
   if (!vkr_editor_projects_reimport_asset(
           ctx->editor->projects, ctx->editor, ctx->frame, scope, id, path,
-          ops_arg_bool(args, "lightmap_uvs", false_v))) {
+          ops_arg_bool(args, "lightmap_uvs",
+                       vkr_editor_content_asset_lightmap_uvs(
+                           ctx->editor->content, id)))) {
     ops_fail(ctx, OPS_REJECTED, "%s",
              vkr_editor_projects_message(ctx->editor->projects));
     return VKR_EDITOR_OP_DONE;
@@ -20684,9 +20687,10 @@ static const OpsDef s_ops[] = {
      "an 'entity' that draws it, as entity.get's 'mesh' shows. Every entity "
      "that draws the asset keeps its pose and material overrides; the open "
      "scene swaps the rebuilt mesh in without a reload. 'lightmap_uvs' true "
-     "cooks it with lightmap UVs; without it or the Bakery panel's setting "
-     "the rebuilt mesh has none. Wait for the job (Cmd wait.scene) before "
-     "reading the result.",
+     "cooks it with lightmap UVs; false cooks it without them unless the "
+     "Bakery panel's setting adds them; omitted, a model cooked with them "
+     "keeps them. Wait for the job (Cmd wait.scene) before reading the "
+     "result.",
      "{\"type\":\"object\",\"properties\":{\"source\":{\"type\":"
      "\"string\"},\"asset\":{\"type\":\"string\"},\"entity\":" OPS_ENTITY_SCHEMA
      ",\"lightmap_uvs\":{\"type\":\"boolean\"}}}",

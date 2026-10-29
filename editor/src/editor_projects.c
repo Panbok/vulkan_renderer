@@ -4742,6 +4742,11 @@ static void project_content_action(VkrEditorProjects *projects,
   projects->action_source[0] = '\0';
   string_format(projects->action_name, sizeof(projects->action_name), "%s",
                 action->name);
+  /* A model cooked with lightmap UVs keeps them through its reimport,
+     whatever the Bakery panel's setting for new imports. */
+  projects->force_lightmap_uvs =
+      action->kind == VKR_EDITOR_CONTENT_ACTION_REIMPORT &&
+      action->lightmap_uvs;
   const bool8_t sourced = action->kind == VKR_EDITOR_CONTENT_ACTION_IMPORT ||
                           action->kind == VKR_EDITOR_CONTENT_ACTION_REIMPORT;
   /* A model whose record names the file it came from reimports it at once;
