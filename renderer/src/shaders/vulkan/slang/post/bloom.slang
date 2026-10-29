@@ -159,8 +159,10 @@ void vk_bloom_prefilter(uint3 thread_id : SV_DispatchThreadID)
     // first would let the knee reintroduce the outlier the weighting removed.
     float3 reduced = vkr_bloom_combine13_karis(root.params, taps);
     g_storage_2d[NonUniformResourceIndex(root.destination_texture)]
-        [thread_id.xy] =
-            float4(vkr_bloom_soft_threshold(root.params, reduced), 1.0f);
+        [thread_id.xy] = float4(
+            vkr_bloom_store(root.params,
+                            vkr_bloom_soft_threshold(root.params, reduced)),
+            1.0f);
 }
 
 [shader("compute")]
@@ -175,7 +177,7 @@ void vk_bloom_downsample_tent13(uint3 thread_id : SV_DispatchThreadID)
     float3 reduced = vkr_bloom_combine13(
         vkr_bloom_gather13(root, root.source_texture, uv, texel));
     g_storage_2d[NonUniformResourceIndex(root.destination_texture)]
-        [thread_id.xy] = float4(reduced, 1.0f);
+        [thread_id.xy] = float4(vkr_bloom_store(root.params, reduced), 1.0f);
 }
 
 [shader("compute")]
@@ -190,7 +192,7 @@ void vk_bloom_downsample_box4(uint3 thread_id : SV_DispatchThreadID)
     float3 reduced =
         vkr_bloom_combine_box4(root, root.source_texture, uv, texel);
     g_storage_2d[NonUniformResourceIndex(root.destination_texture)]
-        [thread_id.xy] = float4(reduced, 1.0f);
+        [thread_id.xy] = float4(vkr_bloom_store(root.params, reduced), 1.0f);
 }
 
 [shader("compute")]
@@ -210,7 +212,8 @@ void vk_bloom_upsample(uint3 thread_id : SV_DispatchThreadID)
     // resolved chain is the sum of the scales rather than a weighted average
     // that drops energy at every step.
     g_storage_2d[NonUniformResourceIndex(root.destination_texture)]
-        [thread_id.xy] = float4(fine + coarse, 1.0f);
+        [thread_id.xy] =
+            float4(vkr_bloom_store(root.params, fine + coarse), 1.0f);
 }
 
 [shader("compute")]

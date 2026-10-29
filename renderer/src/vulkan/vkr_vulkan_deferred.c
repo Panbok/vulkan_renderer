@@ -4043,6 +4043,9 @@ vkr_internal bool8_t vkr_vk_bloom_root(VkrVulkanRenderer *renderer,
       .params = vkr_bloom_gpu_params(&renderer->bloom_config, &packet->bloom,
                                      renderer->prepared_frame.bloom_mip_count),
   };
+  out_root->params.packed_store =
+      destination->image.format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ? 1.0f
+                                                                     : 0.0f;
   return true_v;
 }
 

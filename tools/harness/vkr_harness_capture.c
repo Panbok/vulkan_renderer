@@ -421,6 +421,8 @@ static const char *vkr_harness_capture_format_name(VkrTextureFormat format) {
     return "R8_UNORM";
   case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:
     return "R16G16B16A16_SFLOAT";
+  case VKR_TEXTURE_FORMAT_B10G11R11_UFLOAT:
+    return "B10G11R11_UFLOAT";
   case VKR_TEXTURE_FORMAT_R16G16_SFLOAT:
     return "R16G16_SFLOAT";
   case VKR_TEXTURE_FORMAT_R16_SFLOAT:
@@ -495,6 +497,33 @@ static void vkr_harness_capture_write_u32_le(uint8_t *bytes, uint32_t value) {
 static void vkr_harness_capture_write_u16_le(uint8_t *bytes, uint16_t value) {
   bytes[0] = (uint8_t)value;
   bytes[1] = (uint8_t)(value >> 8u);
+}
+
+/**
+ * Widens packed B10G11R11 rows into RGBA16F rows of `width * 8` bytes, in
+ * source row order. The packed channels share the half float's 5-bit
+ * exponent and bias, so each one becomes an exact half by shifting its
+ * mantissa into place; the alpha the format lacks reads as one.
+ */
+static void
+vkr_harness_capture_widen_b10g11r11(const VkrCaptureItemResult *item,
+                                    uint8_t *target) {
+  const uint16_t one = 0x3c00u;
+  for (uint32_t y = 0; y < item->height; ++y) {
+    const uint8_t *source = (const uint8_t *)item->data + y * item->row_pitch;
+    uint8_t *row = target + (uint64_t)y * item->width * 8u;
+    for (uint32_t x = 0; x < item->width; ++x) {
+      const uint32_t packed = vkr_harness_capture_read_u32(source + x * 4u);
+      uint8_t *texel = row + (uint64_t)x * 8u;
+      vkr_harness_capture_write_u16_le(texel + 0u,
+                                       (uint16_t)((packed & 0x7ffu) << 4u));
+      vkr_harness_capture_write_u16_le(
+          texel + 2u, (uint16_t)(((packed >> 11u) & 0x7ffu) << 4u));
+      vkr_harness_capture_write_u16_le(texel + 4u,
+                                       (uint16_t)((packed >> 22u) << 5u));
+      vkr_harness_capture_write_u16_le(texel + 6u, one);
+    }
+  }
 }
 
 bool8_t vkr_harness_capture_png_write(const char *path, const uint8_t *rgba,
@@ -1023,10 +1052,15 @@ bool8_t vkr_harness_capture_publish(
         vkr_harness_capture_encoding_is_rgba16f(channel->canonical_encoding);
     const bool8_t rg16f_canonical =
         vkr_harness_capture_encoding_is_rg16f(channel->canonical_encoding);
-    if (rgba16f_canonical &&
+    /* A packed B10G11R11 source widens exactly to the same payload. */
+    const bool8_t widen_b10g11r11 =
+        rgba16f_canonical &&
+        item->format == VKR_TEXTURE_FORMAT_B10G11R11_UFLOAT;
+    if (rgba16f_canonical && !widen_b10g11r11 &&
         item->format != VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT) {
       vkr_harness_error_set(error, "capture.encoding", logical_channel->name,
-                            "RGBA16_FLOAT_LE requires R16G16B16A16_SFLOAT");
+                            "RGBA16_FLOAT_LE requires R16G16B16A16_SFLOAT or "
+                            "B10G11R11_UFLOAT");
       return false_v;
     }
     if (rg16f_canonical && item->format != VKR_TEXTURE_FORMAT_R16G16_SFLOAT) {
@@ -1059,14 +1093,30 @@ bool8_t vkr_harness_capture_publish(
     float32_t preview_min = 0.0f;
     float32_t preview_max = 1.0f;
     bool8_t ok = rgba != NULL && tight != NULL;
+    /* The preview and payload read `pixels`; the sidecar keeps the source. */
+    const VkrCaptureItemResult *pixels = item;
+    VkrCaptureItemResult widened = {0};
+    if (ok && widen_b10g11r11) {
+      widened = *item;
+      widened.format = VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
+      widened.row_pitch = (uint64_t)item->width * 8u;
+      uint8_t *data = arena_alloc(arenas->transient, canonical_bytes,
+                                  ARENA_MEMORY_TAG_ARRAY);
+      ok = data != NULL;
+      if (ok) {
+        vkr_harness_capture_widen_b10g11r11(item, data);
+        widened.data = data;
+        pixels = &widened;
+      }
+    }
     if (ok) {
       if (rg16f_canonical) {
         /* Preview preserves channel values as linear R/G; raw payload remains
          * the comparison source and never receives a color transform. */
-        for (uint32_t y = 0; y < item->height; ++y) {
-          const uint8_t *source = vkr_harness_capture_row(item, y);
-          uint8_t *target = rgba + (uint64_t)y * item->width * 4u;
-          for (uint32_t x = 0; x < item->width; ++x) {
+        for (uint32_t y = 0; y < pixels->height; ++y) {
+          const uint8_t *source = vkr_harness_capture_row(pixels, y);
+          uint8_t *target = rgba + (uint64_t)y * pixels->width * 4u;
+          for (uint32_t x = 0; x < pixels->width; ++x) {
             const uint8_t *texel = source + (uint64_t)x * 4u;
             const float32_t r = vkr_harness_capture_half_to_float(
                 vkr_harness_capture_read_u16(texel));
@@ -1079,24 +1129,25 @@ bool8_t vkr_harness_capture_publish(
             target[x * 4u + 3u] = 255u;
           }
         }
-      } else if (item->value_kind == VKR_CAPTURE_VALUE_COLOR) {
-        vkr_harness_capture_color_rgba(item, rgba);
-      } else if (item->value_kind == VKR_CAPTURE_VALUE_DEPTH) {
-        vkr_harness_capture_depth_preview(item, rgba, &preview_min,
+      } else if (pixels->value_kind == VKR_CAPTURE_VALUE_COLOR) {
+        vkr_harness_capture_color_rgba(pixels, rgba);
+      } else if (pixels->value_kind == VKR_CAPTURE_VALUE_DEPTH) {
+        vkr_harness_capture_depth_preview(pixels, rgba, &preview_min,
                                           &preview_max);
       } else {
-        vkr_harness_capture_uint_preview(item, uint_component, uint_mask, rgba);
+        vkr_harness_capture_uint_preview(pixels, uint_component, uint_mask,
+                                         rgba);
       }
     }
 
     VkrHarnessCaptureResult *capture = &report->captures[report->capture_count];
     if (ok && !png_canonical) {
       if (rgba16f_canonical) {
-        vkr_harness_capture_canonical_rgba16f(item, tight);
+        vkr_harness_capture_canonical_rgba16f(pixels, tight);
       } else if (rg16f_canonical) {
-        vkr_harness_capture_canonical_rg16f(item, tight);
+        vkr_harness_capture_canonical_rg16f(pixels, tight);
       } else {
-        vkr_harness_capture_canonical_u32(item, uint_component, uint_mask,
+        vkr_harness_capture_canonical_u32(pixels, uint_component, uint_mask,
                                           tight);
       }
       ok = vkr_harness_atomic_write(data_path, tight, canonical_bytes, error);

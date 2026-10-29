@@ -17,6 +17,16 @@
 #define VKR_SHADER_BLOOM_KERNEL_SLANGH
 
 #define VKR_BLOOM_BRIGHTNESS_EPSILON 1e-4f
+// Largest finite values of the B10G11R11 chain's 11-bit red and green and
+// 10-bit blue unsigned floats.
+#define VKR_BLOOM_PACKED_RG_MAX 65024.0f
+#define VKR_BLOOM_PACKED_B_MAX 64512.0f
+// Smallest normal value of both packed floats, 2^-14. Below it the formats
+// store subnormals, whose step stays that of the lowest normal binade.
+#define VKR_BLOOM_PACKED_MIN_NORMAL 6.103515625e-05f
+// Steps per binade: 2^mantissa bits.
+#define VKR_BLOOM_PACKED_RG_STEPS 64.0f
+#define VKR_BLOOM_PACKED_B_STEPS 32.0f
 
 struct VkrBloomParams
 {
@@ -26,8 +36,10 @@ struct VkrBloomParams
     float firefly_clamp;
     float intensity;
     float karis_scale;
-    float reserved1;
-    float reserved2;
+    // 1 when the destination is the B10G11R11 chain, whose values each store
+    // rounds to the nearest representable value; 0 stores as computed.
+    float packed_store;
+    float reserved;
 };
 
 // `value > 0` is false for NaN and for -inf, and `min` bounds +inf, so one
@@ -68,6 +80,35 @@ float vkr_bloom_karis_weight(VkrBloomParams params, float3 color)
 {
     return 1.0f / (1.0f + vkr_exposure_luminance(color) *
                               params.karis_scale);
+}
+
+// The value whose store keeps the nearest value of a non-negative unsigned
+// float with `steps` mantissa steps per binade. Apple GPUs truncate on this
+// store, which darkened the chain by half a step at every level and blue,
+// with one bit fewer, the most; the format leaves the rounding to the
+// implementation. A quarter step above the nearest value truncates and rounds
+// to that value alike, also with the approximate `exp2` and `log2` of fast
+// math, whose step can fall just short of the exact power of two.
+float vkr_bloom_round_packed(float value, float steps, float max_value)
+{
+    float binade = exp2(floor(log2(max(value, VKR_BLOOM_PACKED_MIN_NORMAL))));
+    float step = binade / steps;
+    return min((floor(value / step + 0.5f) + 0.25f) * step, max_value);
+}
+
+// The value a bloom kernel writes to its destination level.
+float3 vkr_bloom_store(VkrBloomParams params, float3 color)
+{
+    if (params.packed_store == 0.0f)
+    {
+        return color;
+    }
+    return float3(vkr_bloom_round_packed(color.r, VKR_BLOOM_PACKED_RG_STEPS,
+                                         VKR_BLOOM_PACKED_RG_MAX),
+                  vkr_bloom_round_packed(color.g, VKR_BLOOM_PACKED_RG_STEPS,
+                                         VKR_BLOOM_PACKED_RG_MAX),
+                  vkr_bloom_round_packed(color.b, VKR_BLOOM_PACKED_B_STEPS,
+                                         VKR_BLOOM_PACKED_B_MAX));
 }
 
 #endif

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-28
+updated: 2026-10-29
 authority: adr
 ---
 
@@ -348,6 +348,43 @@ rescaling applies to the histories each class keeps.
   with finite HDR captures, and the night and moonlit-cloud cases run clean
   under Debug Vulkan validation with synchronization checks.
 - **Missing gates.** Forced-P and night captures on the tiled pipeline.
+
+## Bloom chain format evidence state
+
+Both pipeline classes store `bloom_chain` and `bloom_accum` as
+`B10G11R11_UFLOAT` (4 bytes a texel) instead of RGBA16F; no reader used the
+alpha. The chain is non-negative after the sanitizer, and the firefly clamp
+ends at 64512, the 10-bit blue channel's largest value.
+
+- **Changed contracts.**
+  - `VkrBloomParams` carries `packed_store` where `reserved1` was; the
+    encoder sets it from the destination's format, so the Metal refraction
+    copy, which reuses the box kernels on RGBA16F, stores as before.
+  - With `packed_store`, `vkr_bloom_store` writes a quarter step above the
+    nearest value of each channel's unsigned float. Apple GPUs truncate on
+    this store and the format leaves the rounding to the implementation; a
+    quarter step above the nearest value truncates and rounds to it alike.
+    A store of the nearest value itself fell one step short, because fast
+    math's `exp2` returns a step just under the power of two.
+  - Captures keep `RGBA16_FLOAT_LE`: the harness widens a packed source to
+    half floats exactly, and the sidecar names the source format.
+- **Root sizes.** Unchanged; `params` stays 32 bytes in both roots.
+- **Metal evidence.** M1 Pro, Release, `local-offscreen`, the tiled Bistro
+  street view with bloom on (a local copy of `tiled_bistro_capture` with the
+  `bloom_prefilter`, `bloom_result` and `final_color` channels), against the
+  same binary with the RGBA16F graph: every stored prefilter value equals
+  the nearest 11- or 10-bit value of the RGBA16F prefilter, the resolved
+  bloom's channel means differ by +0.2%, and `final_color` PSNR is 69.9 dB.
+  The unrounded store truncated every value and lowered the resolved bloom
+  by 3.1% in red and green and 6.2% in blue (56.3 dB). On the Bistro orbit
+  at 2560×1440 with MetalFX at 0.6 (`local-windowed-gpu`, two children per
+  run, alternating), the bloom passes' p50 sum is 0.725 to 0.758 ms with
+  RGBA16F and 0.643 to 0.657 ms packed; per-pass timestamps and a loaded
+  machine make this local guidance, not a timing claim.
+- **Vulkan evidence.** The modules compile on the Mac; Windows `spirv-val`,
+  native captures and timing have not run.
+- **Missing gates.** A Windows Vulkan bloom capture against RGBA16F, its
+  bloom timing, and authoritative Metal timing.
 
 ## Moon and star evidence state
 

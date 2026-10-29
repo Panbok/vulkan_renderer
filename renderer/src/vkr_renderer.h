@@ -632,6 +632,9 @@ typedef enum VkrTextureFormat {
   /** Unsigned half-float BC6H for the desktop pipeline's baked lamp
    * pages. */
   VKR_TEXTURE_FORMAT_BC6H_UFLOAT,
+  /** Packed unsigned 11/11/10-bit float RGB without alpha: the bloom chain,
+   * half the bytes of RGBA16F; non-negative values up to 65024 only. */
+  VKR_TEXTURE_FORMAT_B10G11R11_UFLOAT,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;

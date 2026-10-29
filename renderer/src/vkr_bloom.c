@@ -6,10 +6,10 @@
 #define VKR_BLOOM_KNEE_EPSILON 1e-4f
 /**
  * Ceiling on the authored firefly clamp. Beyond this a clamped tap is no longer
- * representable in the R16G16B16A16_SFLOAT chain, so the clamp would stop being
- * the thing that bounds the value.
+ * representable in the B10G11R11_UFLOAT chain, whose 10-bit blue channel ends
+ * at 64512, so the clamp would stop being the thing that bounds the value.
  */
-#define VKR_BLOOM_FIREFLY_CLAMP_MAX 65504.0f
+#define VKR_BLOOM_FIREFLY_CLAMP_MAX 64512.0f
 
 VkrBloomConfig vkr_bloom_config_default(void) {
   return (VkrBloomConfig){

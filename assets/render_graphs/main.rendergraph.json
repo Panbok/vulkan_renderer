@@ -1919,7 +1919,7 @@
         "mode": "viewport",
         "divisor": 2
       },
-      "format": "R16G16B16A16_SFLOAT",
+      "format": "B10G11R11_UFLOAT",
       "mip_levels": "full_chain",
       "usage": [
         "STORAGE",
@@ -1940,7 +1940,7 @@
         "mode": "viewport",
         "divisor": 2
       },
-      "format": "R16G16B16A16_SFLOAT",
+      "format": "B10G11R11_UFLOAT",
       "mip_levels": "full_chain",
       "usage": [
         "STORAGE",

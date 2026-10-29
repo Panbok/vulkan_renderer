@@ -134,7 +134,10 @@ kernel void vkr_metal_packet_bloom_prefilter(
   // would let the knee reintroduce the outlier the weighting removed.
   float3 reduced = vkr_bloom_combine13_karis(root.params, taps);
   root.destination.write(
-      float4(vkr_bloom_soft_threshold(root.params, reduced), 1.0), pixel);
+      float4(vkr_bloom_store(root.params,
+                             vkr_bloom_soft_threshold(root.params, reduced)),
+             1.0),
+      pixel);
 }
 
 kernel void vkr_metal_packet_bloom_downsample_tent13(
@@ -146,7 +149,8 @@ kernel void vkr_metal_packet_bloom_downsample_tent13(
   float2 texel = 1.0 / float2(root.filter_extent);
   float3 reduced =
       vkr_bloom_combine13(vkr_bloom_gather13(root, root.source, uv, texel));
-  root.destination.write(float4(reduced, 1.0), pixel);
+  root.destination.write(float4(vkr_bloom_store(root.params, reduced), 1.0),
+                         pixel);
 }
 
 kernel void vkr_metal_packet_bloom_downsample_box4(
@@ -156,8 +160,9 @@ kernel void vkr_metal_packet_bloom_downsample_box4(
     return;
   float2 uv = vkr_bloom_destination_uv(root, pixel);
   float2 texel = 1.0 / float2(root.filter_extent);
-  root.destination.write(
-      float4(vkr_bloom_combine_box4(root, root.source, uv, texel), 1.0), pixel);
+  float3 reduced = vkr_bloom_combine_box4(root, root.source, uv, texel);
+  root.destination.write(float4(vkr_bloom_store(root.params, reduced), 1.0),
+                         pixel);
 }
 
 // One bilinear tap at the centre of the four source texels a destination
@@ -169,11 +174,9 @@ kernel void vkr_metal_packet_bloom_downsample_box2(
     uint2 pixel [[thread_position_in_grid]]) {
   if (!all(pixel < root.destination_extent))
     return;
-  root.destination.write(
-      float4(vkr_bloom_tap(root, root.source,
-                           vkr_bloom_destination_uv(root, pixel)),
-             1.0),
-      pixel);
+  float3 tap =
+      vkr_bloom_tap(root, root.source, vkr_bloom_destination_uv(root, pixel));
+  root.destination.write(float4(vkr_bloom_store(root.params, tap), 1.0), pixel);
 }
 
 kernel void vkr_metal_packet_bloom_upsample(
@@ -190,7 +193,8 @@ kernel void vkr_metal_packet_bloom_upsample(
   // Sum rather than mix: each level contributes its own band once, so the
   // resolved chain is the sum of the scales rather than a weighted average that
   // drops energy at every step.
-  root.destination.write(float4(fine + coarse, 1.0), pixel);
+  root.destination.write(
+      float4(vkr_bloom_store(root.params, fine + coarse), 1.0), pixel);
 }
 
 static_assert(sizeof(VkrBloomParams) == 32,

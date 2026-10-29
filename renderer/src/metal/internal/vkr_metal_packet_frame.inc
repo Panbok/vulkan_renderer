@@ -2327,6 +2327,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
      drops non-finite and negative texels. */
   if (kind == VKR_RG_EXECUTOR_TRANSMISSION_DOWNSAMPLE)
     root->params.firefly_clamp = 65504.0f;
+  /* A packed destination truncates on the store; the kernel rounds first. */
+  root->params.packed_store =
+      destination.pixelFormat == MTLPixelFormatRG11B10Float ? 1.0f : 0.0f;
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = pipeline,
       .root = root_gpu,

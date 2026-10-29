@@ -102,7 +102,13 @@ typedef struct VkrBloomGpuParams {
   float32_t intensity;
   /** Takes pre-exposed luminance to exposed luminance for the Karis weight. */
   float32_t karis_scale;
-  float32_t reserved[2];
+  /**
+   * 1 when the dispatch writes the B10G11R11 chain: the kernel rounds each
+   * stored value to the nearest representable one. Set by the encoder from
+   * the destination's format; 0 from `vkr_bloom_gpu_params`.
+   */
+  float32_t packed_store;
+  float32_t reserved;
 } VkrBloomGpuParams;
 
 _Static_assert(sizeof(VkrBloomGpuParams) == 32,
