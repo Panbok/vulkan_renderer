@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-16
+updated: 2026-10-29
 authority: adr
 ---
 
@@ -393,6 +393,20 @@ the D16 layer, faces of 128 to 1024 texels need per-face blurs with gutters,
 hardware filtering across cube-face borders breaks the per-tap face remap, and
 one moments fetch cannot keep the per-tap combination of opaque depth and
 receiver-gated transmission (ADR-019).
+
+Receiver-bound caster culling, which clips each cascade's casters by the camera
+frustum's silhouette swept toward the light (60 to 70% less shadow time in
+PETAFAB, whose cascades redraw every frame), was declined on 2026-10-29. A
+retained static layer serves every camera inside its guard band, and the
+containment test is in light-space X and Y only. Its receivers therefore fill
+the guarded box except for corners rounded by the slice radius, at most 21.5%
+of its cross-section, and no depth along the light can be cut. The blend band
+and the miss fallback also sample the next cascade's map outside its slice.
+In the Bistro orbit at 1280×720 (tiled, Metal, M1 Pro, `local-windowed-gpu`),
+static layers redrew on 106, 4, 38 and 38 of 600 frames at 0.80, 1.35, 1.15
+and 0.46 ms, about 0.25 ms a frame, so the corners bound the saving near
+0.05 ms. Dynamic casters redraw every frame and could take the full test;
+Bistro has none.
 
 ## Contact-hardening evidence
 
