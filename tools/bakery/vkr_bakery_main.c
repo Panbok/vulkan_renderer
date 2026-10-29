@@ -79,8 +79,9 @@ vkr_internal const VkrBakeryCommand vkr_bakery_commands[] = {
     {"bake", NULL, "bake diffuse|probe|proxies [options]",
      "Bake a scene's diffuse volume, a reflection probe cubemap, or the "
      "world partition proxies of its cells."},
-    {"preview", NULL, "preview material|prune [options]",
-     "Render a material thumbnail, or prune the workspace thumbnail cache."},
+    {"preview", NULL, "preview material|model|prune [options]",
+     "Render a material or model thumbnail, or prune the workspace "
+     "thumbnail cache."},
     {"materials", vkr_bakery_cmd_materials,
      "materials --shaders <catalog> [--root <content root>] [--overlay "
      "<workspace>]",

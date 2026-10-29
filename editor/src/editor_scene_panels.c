@@ -4365,23 +4365,6 @@ static bool8_t inspector_light_section(VkrEditorScenePanels *p,
   return inspector_component_rows(p, f, w, y, type, NULL, edit);
 }
 
-/* Read-only rows generated from the mesh info descriptor (ADR-076). */
-static void inspector_mesh_section(VkrEditorScenePanels *p,
-                                   const VkrSampleUiFrame *f, float32_t w,
-                                   float32_t *y, VkrFontHandle heading) {
-  SceneMeshInfo info;
-  /* A World or added scene object reads its own container. */
-  const VkrScene *scene = vkr_editor_entity_scene(f, f->selected_entity);
-  if (!scene || !vkr_scene_mesh_info(scene, f->selected_entity, &info) ||
-      !inspector_section(p, f->ui, w, y, INSPECTOR_SECTION_MESH,
-                         VKR_UI_ICON_MESH, (Vec4){0.62f, 0.78f, 0.98f, 1.0f},
-                         "Mesh", heading)) {
-    return;
-  }
-  (void)vkr_editor_details_type(&p->details, f->ui, f->input, w, y,
-                                &vkr_scene_mesh_info_type, &info, NULL, true_v);
-}
-
 /* The entity whose mesh slots the selection shows: itself, or the first
    child that draws a mesh, as a placed model's root holds its mesh on a
    source node. */
@@ -4413,6 +4396,28 @@ static VkrEntityId inspector_slots_mesh(VkrEditorScenePanels *p,
     }
   }
   return p->slots_mesh;
+}
+
+/* Read-only rows generated from the mesh info descriptor (ADR-076), for the
+   mesh the selection draws: itself, or a placed model's mesh node, as the
+   Materials section finds it. */
+static void inspector_mesh_section(VkrEditorScenePanels *p,
+                                   const VkrSampleUiFrame *f, float32_t w,
+                                   float32_t *y, VkrFontHandle heading) {
+  SceneMeshInfo info;
+  /* A World or added scene object reads its own container. */
+  const VkrScene *scene = vkr_editor_entity_scene(f, f->selected_entity);
+  const VkrEntityId mesh =
+      scene ? inspector_slots_mesh(p, scene, f->selected_entity)
+            : VKR_ENTITY_ID_INVALID;
+  if (!scene || !mesh.u64 || !vkr_scene_mesh_info(scene, mesh, &info) ||
+      !inspector_section(p, f->ui, w, y, INSPECTOR_SECTION_MESH,
+                         VKR_UI_ICON_MESH, (Vec4){0.62f, 0.78f, 0.98f, 1.0f},
+                         "Mesh", heading)) {
+    return;
+  }
+  (void)vkr_editor_details_type(&p->details, f->ui, f->input, w, y,
+                                &vkr_scene_mesh_info_type, &info, NULL, true_v);
 }
 
 /* The last path component of `path`, for a compact slot label. */

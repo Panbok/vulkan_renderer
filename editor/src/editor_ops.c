@@ -6601,6 +6601,31 @@ static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* Splits asset:<scope>/<id> (a project, scene or editor scope) into
+   terminated parts; false when `asset` is not one or a part does not fit. */
+static bool8_t ops_asset_ref_split(String8 asset, char *scope,
+                                   uint64_t scope_capacity, char *id,
+                                   uint64_t id_capacity) {
+  const String8 prefix = string8_lit("asset:");
+  uint64_t slash = prefix.length;
+  while (slash < asset.length && asset.str[slash] != '/') {
+    slash++;
+  }
+  const uint64_t scope_length = slash - prefix.length;
+  const uint64_t id_length =
+      slash < asset.length ? asset.length - slash - 1u : 0u;
+  if (!vkr_asset_ref_is(asset) || scope_length == 0u ||
+      scope_length >= scope_capacity || id_length == 0u ||
+      id_length >= id_capacity) {
+    return false_v;
+  }
+  MemCopy(scope, asset.str + prefix.length, scope_length);
+  scope[scope_length] = '\0';
+  MemCopy(id, asset.str + slash + 1u, id_length);
+  id[id_length] = '\0';
+  return true_v;
+}
+
 /* The managed reference of the mesh file `path` an entity draws: the one
    the scene published for it, else the Content asset whose artifact it is,
    which follows a reimport's new revision once the swap lands. */
@@ -6692,9 +6717,25 @@ static VkrEditorOpStatus ops_run_get(OpsContext *ctx) {
     if (ops_mesh_asset_ref(ctx, mesh_info.asset, asset_ref,
                            sizeof(asset_ref))) {
       ops_set(ctx, mesh, "asset", vkr_bakery_json_cstr(arena, asset_ref));
+      /* The model file it came from, which model.reimport imports again. */
+      char scope[8];
+      char id[37];
+      char origin[1024];
+      if (ops_asset_ref_split(
+              string8_create_from_cstr((const uint8_t *)asset_ref,
+                                       string_length(asset_ref)),
+              scope, sizeof(scope), id, sizeof(id)) &&
+          vkr_editor_content_asset_origin_path(ctx->editor->content, id, origin,
+                                               sizeof(origin))) {
+        ops_set(ctx, mesh, "origin", vkr_bakery_json_cstr(arena, origin));
+      }
     }
     ops_set(ctx, mesh, "submeshes",
             vkr_bakery_json_int(arena, mesh_info.submeshes));
+    ops_set(ctx, mesh, "triangles",
+            vkr_bakery_json_int(arena, mesh_info.triangles));
+    ops_set(ctx, mesh, "vertices",
+            vkr_bakery_json_int(arena, mesh_info.vertices));
     ops_set(ctx, result, "mesh", mesh);
   }
   ops_set(ctx, result, "tags",
@@ -14798,31 +14839,6 @@ static VkrEditorOpStatus ops_run_lighting_bake(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
-/* Splits asset:<scope>/<id> (a project, scene or editor scope) into
-   terminated parts; false when `asset` is not one or a part does not fit. */
-static bool8_t ops_asset_ref_split(String8 asset, char *scope,
-                                   uint64_t scope_capacity, char *id,
-                                   uint64_t id_capacity) {
-  const String8 prefix = string8_lit("asset:");
-  uint64_t slash = prefix.length;
-  while (slash < asset.length && asset.str[slash] != '/') {
-    slash++;
-  }
-  const uint64_t scope_length = slash - prefix.length;
-  const uint64_t id_length =
-      slash < asset.length ? asset.length - slash - 1u : 0u;
-  if (!vkr_asset_ref_is(asset) || scope_length == 0u ||
-      scope_length >= scope_capacity || id_length == 0u ||
-      id_length >= id_capacity) {
-    return false_v;
-  }
-  MemCopy(scope, asset.str + prefix.length, scope_length);
-  scope[scope_length] = '\0';
-  MemCopy(id, asset.str + slash + 1u, id_length);
-  id[id_length] = '\0';
-  return true_v;
-}
-
 /* A glTF node's transform applied to `p`: its matrix (column-major), or
    translation, rotation and scale. */
 static Vec3 ops_gltf_node_point(const VkrBakeryJson *node, Vec3 p) {
@@ -15270,6 +15286,71 @@ static VkrEditorOpStatus ops_run_model_reimport(OpsContext *ctx) {
           vkr_bakery_json_bool(ops_arena(ctx), true_v));
   ops_set(ctx, ctx->call->result, "asset",
           vkr_bakery_json_cstr(ops_arena(ctx), ref));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* model.list: the imported models the open scene draws, each with its
+   asset reference, the content path it was imported from, its size and the
+   mesh entities that draw it; 'origin' keeps those whose path contains it. */
+static VkrEditorOpStatus ops_run_model_list(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  String8 filter = {0};
+  char needle[512] = "";
+  if (vkr_bakery_json_get_string(args, "origin", &filter) && filter.length) {
+    string_format(needle, sizeof(needle), "%.*s",
+                  (int)Min(filter.length, (uint64_t)sizeof(needle) - 1u),
+                  (const char *)filter.str);
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, 0u);
+  if (!scene) {
+    ops_fail(ctx, OPS_NOT_FOUND, "No scene is open");
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *models = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    SceneMeshInfo info;
+    char ref[VKR_ASSET_REF_CAPACITY];
+    char scope[8];
+    char id[37];
+    char origin[1024] = "";
+    if (!vkr_scene_entity_alive(scene, entity) ||
+        !vkr_scene_mesh_info(scene, entity, &info) || !info.asset[0] ||
+        !ops_mesh_asset_ref(ctx, info.asset, ref, sizeof(ref)) ||
+        !ops_asset_ref_split(
+            string8_create_from_cstr((const uint8_t *)ref, string_length(ref)),
+            scope, sizeof(scope), id, sizeof(id))) {
+      continue;
+    }
+    (void)vkr_editor_content_asset_origin_path(ctx->editor->content, id, origin,
+                                               sizeof(origin));
+    if (needle[0] && !string_contains(origin, needle)) {
+      continue;
+    }
+    VkrBakeryJson *model = NULL;
+    for (VkrBakeryJson *item = models->first; item; item = item->next) {
+      if (vkr_bakery_json_is_string(vkr_bakery_json_get(item, "asset"), ref)) {
+        model = item;
+        break;
+      }
+    }
+    if (!model) {
+      model = vkr_bakery_json_object(arena);
+      ops_set(ctx, model, "asset", vkr_bakery_json_cstr(arena, ref));
+      ops_set(ctx, model, "origin", vkr_bakery_json_cstr(arena, origin));
+      ops_set(ctx, model, "triangles",
+              vkr_bakery_json_int(arena, info.triangles));
+      ops_set(ctx, model, "submeshes",
+              vkr_bakery_json_int(arena, info.submeshes));
+      ops_set(ctx, model, "entities", vkr_bakery_json_array(arena));
+      vkr_bakery_json_append(models, model);
+    }
+    vkr_bakery_json_append(vkr_bakery_json_get(model, "entities"),
+                           ops_id(ctx, entity));
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "models", models);
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -20610,6 +20691,15 @@ static const OpsDef s_ops[] = {
      "\"string\"},\"asset\":{\"type\":\"string\"},\"entity\":" OPS_ENTITY_SCHEMA
      ",\"lightmap_uvs\":{\"type\":\"boolean\"}}}",
      ops_run_model_reimport, NULL},
+    {"model.list",
+     "The imported models the open scene draws: each mesh 'asset' "
+     "(asset:<scope>/<id>), the content path it was imported from "
+     "('origin', what model.reimport imports again), its triangles and "
+     "submeshes, and the 'entities' that draw it; 'origin' keeps the models "
+     "whose path contains that text.",
+     "{\"type\":\"object\",\"properties\":{\"origin\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_model_list, NULL},
     {"lighting.bake",
      "Start the open project scene's Bake lighting job: reflection probes, "
      "the diffuse volume and, with 'lightmap' (default the Bakery panel's "

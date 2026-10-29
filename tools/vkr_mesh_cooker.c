@@ -4,6 +4,8 @@
 #include "core/vkr_json.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "math/mat.h"
+#include "math/vec.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
@@ -205,6 +207,53 @@ cleanup:
   return success;
 }
 
+/* The model's world bounds: every in-scene node's ranges, their boxes moved
+   by the node's world matrix. False when no range is placed. */
+static bool8_t vkr_mesh_cooker_bounds(const VkrMeshCookedDecoded *decoded,
+                                      Vec3 *out_min, Vec3 *out_max) {
+  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  const VkrMeshSource *source = &decoded->source;
+  for (uint64_t n = 0; n < source->nodes.length; ++n) {
+    const VkrMeshSourceNode *node = &source->nodes.data[n];
+    if (!node->in_scene || node->mesh_variant >= source->meshes.length) {
+      continue;
+    }
+    Mat4 world = node->local;
+    uint32_t parent = node->parent;
+    for (uint32_t depth = 0; parent < source->nodes.length && depth < 64u;
+         ++depth) {
+      world = mat4_mul(source->nodes.data[parent].local, world);
+      parent = source->nodes.data[parent].parent;
+    }
+    const VkrMeshSourceMesh *mesh = &source->meshes.data[node->mesh_variant];
+    for (uint32_t r = 0; r < mesh->range_count; ++r) {
+      const uint64_t index = (uint64_t)mesh->first_range + r;
+      if (index >= decoded->ranges.length) {
+        break;
+      }
+      const VkrGeometryUploadRange *range = &decoded->ranges.data[index];
+      for (uint32_t corner = 0; corner < 8u; ++corner) {
+        const Vec3 local =
+            vec3_new(corner & 1u ? range->max_extents.x : range->min_extents.x,
+                     corner & 2u ? range->max_extents.y : range->min_extents.y,
+                     corner & 4u ? range->max_extents.z : range->min_extents.z);
+        const Vec3 point = mat4_mul_vec3(world, local);
+        lo = vec3_new(Min(lo.x, point.x), Min(lo.y, point.y),
+                      Min(lo.z, point.z));
+        hi = vec3_new(Max(hi.x, point.x), Max(hi.y, point.y),
+                      Max(hi.z, point.z));
+      }
+    }
+  }
+  if (!(lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z)) {
+    return false_v;
+  }
+  *out_min = lo;
+  *out_max = hi;
+  return true_v;
+}
+
 /* Inspect through the runtime decoder so malformed streams and unsupported
  * artifact versions cannot enter a managed import manifest. */
 static bool8_t vkr_mesh_cooker_inspect(const char *input, const char *output,
@@ -284,7 +333,28 @@ static bool8_t vkr_mesh_cooker_inspect(const char *input, const char *output,
       goto cleanup;
     }
   }
-  if (fputs("],\"nodes\":[", destination) == EOF) {
+  uint64_t triangles = 0;
+  for (uint64_t i = 0; i < decoded.ranges.length; ++i) {
+    triangles += decoded.ranges.data[i].index_count / 3u;
+  }
+  if (fprintf(destination,
+              "],\"ranges\":%llu,\"triangles\":%llu,\"lightmap\":%s",
+              (unsigned long long)decoded.ranges.length,
+              (unsigned long long)triangles,
+              decoded.lightmap.atlas_count ? "true" : "false") < 0) {
+    goto cleanup;
+  }
+  Vec3 bounds_min;
+  Vec3 bounds_max;
+  if (vkr_mesh_cooker_bounds(&decoded, &bounds_min, &bounds_max) &&
+      fprintf(destination,
+              ",\"bounds\":{\"min\":[%.9g,%.9g,%.9g],"
+              "\"max\":[%.9g,%.9g,%.9g]}",
+              bounds_min.x, bounds_min.y, bounds_min.z, bounds_max.x,
+              bounds_max.y, bounds_max.z) < 0) {
+    goto cleanup;
+  }
+  if (fputs(",\"nodes\":[", destination) == EOF) {
     goto cleanup;
   }
   for (uint64_t i = 0; i < decoded.source.nodes.length; ++i) {

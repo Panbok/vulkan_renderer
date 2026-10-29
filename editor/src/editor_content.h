@@ -230,6 +230,11 @@ bool8_t vkr_editor_content_dragged_material(const VkrEditorContent *content,
 bool8_t vkr_editor_content_asset_origin(const VkrEditorContent *content,
                                         const char *id, char *out,
                                         uint32_t capacity);
+/** The content path (`assets/...`) a listed asset, by id, was imported from,
+ * as its record's `origin` names it, whether or not the file still exists. */
+bool8_t vkr_editor_content_asset_origin_path(const VkrEditorContent *content,
+                                             const char *id, char *out,
+                                             uint32_t capacity);
 /** The managed reference (asset:<scope>/<id>) of the listed asset whose
  * artifact is the file `path`, for a mesh an entity draws. */
 bool8_t vkr_editor_content_asset_for_path(const VkrEditorContent *content,

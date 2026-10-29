@@ -4550,6 +4550,9 @@ vkr_internal int vkr_bake_proxies_main(VkrBake *bake, int argc, char **argv) {
  * The interactive renderer is never used; callers own the bounded thumbnail
  * cache. */
 #define VKR_PREVIEW_RECIPE "material-sphere-v2"
+/* A cooked model in the same studio, scaled to the sphere's unit radius at
+ * the origin and seen from 35 degrees front-left and 20 degrees up. */
+#define VKR_PREVIEW_MODEL_RECIPE "model-studio-v1"
 #define VKR_PREVIEW_MAX_LOG_BYTES (4ull * 1024ull * 1024ull)
 #define VKR_PREVIEW_TIMEOUT_MS 180000u
 #define VKR_PREVIEW_LATITUDE 32u
@@ -4829,7 +4832,69 @@ typedef struct VkrPreviewArgs {
   const char *workspace;
   const char *harness;
   int64_t size;
+  /* A cooked model (.vkb) framed in the studio instead of a material on
+     the canonical sphere. */
+  bool8_t model;
 } VkrPreviewArgs;
+
+/* The studio camera for a model: its bounds, read from the mesh tool's
+   inspection, scaled to the sphere's unit radius at the origin and seen
+   from the front-left, a little above. */
+typedef struct VkrPreviewFraming {
+  float64_t translation[3];
+  float64_t scale;
+  float64_t camera[3];
+  float64_t yaw_degrees;
+  float64_t pitch_degrees;
+} VkrPreviewFraming;
+
+vkr_internal bool8_t vkr_preview_model_framing(VkrBake *bake,
+                                               const char *inspection,
+                                               VkrPreviewFraming *out) {
+  VkrBakeryJson *report = vkr_bake_load(bake, inspection, "Model inspection");
+  VKR_BAKE_TRY(report);
+  const VkrBakeryJson *bounds = vkr_bakery_json_get(report, "bounds");
+  const VkrBakeryJson *lo = vkr_bakery_json_get(bounds, "min");
+  const VkrBakeryJson *hi = vkr_bakery_json_get(bounds, "max");
+  float64_t min[3];
+  float64_t max[3];
+  const VkrBakeryJson *a = lo ? lo->first : NULL;
+  const VkrBakeryJson *b = hi ? hi->first : NULL;
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    if (!a || !b || !vkr_bake_number(a, &min[i]) ||
+        !vkr_bake_number(b, &max[i]) || !(min[i] <= max[i])) {
+      return vkr_bake_fail(bake, "Model has no bounds to frame");
+    }
+    a = a->next;
+    b = b->next;
+  }
+  float64_t radius_squared = 0.0;
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    const float64_t half = 0.5 * (max[i] - min[i]);
+    radius_squared += half * half;
+    out->translation[i] = -0.5 * (min[i] + max[i]);
+  }
+  const float64_t radius = sqrt(radius_squared);
+  if (!(radius > 1e-6)) {
+    return vkr_bake_fail(bake, "Model bounds are empty");
+  }
+  out->scale = 1.0 / radius;
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    out->translation[i] *= out->scale;
+  }
+  /* The 35 degree camera holds the unit sphere with a margin; models face
+     +Z, so the camera stands front-left, 35 degrees round and 20 up. */
+  const float64_t degrees = 3.14159265358979323846 / 180.0;
+  const float64_t distance = 1.06 / sin(17.5 * degrees);
+  const float64_t around = -35.0 * degrees;
+  const float64_t up = 20.0 * degrees;
+  out->camera[0] = distance * sin(around) * cos(up);
+  out->camera[1] = distance * sin(up);
+  out->camera[2] = distance * cos(around) * cos(up);
+  out->yaw_degrees = atan2(-out->camera[2], -out->camera[0]) / degrees;
+  out->pitch_degrees = -20.0;
+  return true_v;
+}
 
 vkr_internal bool8_t vkr_preview_bind_material(VkrBake *bake, const char *mesh,
                                                const char *material,
@@ -4924,7 +4989,7 @@ vkr_internal bool8_t vkr_preview_render(VkrBake *bake,
                                         const VkrPreviewArgs *args) {
   Arena *arena = bake->arena;
   char workspace[VKR_BAKE_PATH];
-  char material[VKR_BAKE_PATH];
+  char input[VKR_BAKE_PATH];
   char output[VKR_BAKE_PATH];
   if (!vkr_bake_resolve(args->workspace, workspace) ||
       !vkr_bakery_is_directory(workspace)) {
@@ -4940,13 +5005,17 @@ vkr_internal bool8_t vkr_preview_render(VkrBake *bake,
     bake->failed = false_v;
     return vkr_bake_fail(bake, "Select a supported initialized workspace");
   }
-  const uint64_t input_length = strlen(args->input);
-  if (!vkr_bake_resolve(args->input, material) ||
-      !vkr_bakery_is_file(material) ||
-      !vkr_bake_is_under(material, workspace) || input_length < 3u ||
-      strcmp(material + strlen(material) - 3u, ".mt") != 0) {
-    return vkr_bake_fail(bake, "Material preview input must be a managed .mt "
-                               "file");
+  const char *extension = args->model ? ".vkb" : ".mt";
+  const uint64_t extension_length = strlen(extension);
+  if (!vkr_bake_resolve(args->input, input) || !vkr_bakery_is_file(input) ||
+      !vkr_bake_is_under(input, workspace) ||
+      strlen(input) < extension_length ||
+      strcmp(input + strlen(input) - extension_length, extension) != 0) {
+    return vkr_bake_fail(bake, args->model
+                                   ? "Model preview input must be a managed "
+                                     ".vkb mesh"
+                                   : "Material preview input must be a "
+                                     "managed .mt file");
   }
   char cache[VKR_BAKE_PATH];
   (void)snprintf(cache, sizeof(cache), "%s/cache/thumbnails", workspace);
@@ -4988,11 +5057,26 @@ vkr_internal bool8_t vkr_preview_render(VkrBake *bake,
   const char *cook[] = {"tool",        "mesh",   "--input",       source,
                         "--output",    mesh,     "--bundle-root", bundle,
                         "--import-id", import_id};
-  bool8_t ok =
-      vkr_preview_sphere(bake, source) && vkr_bakery_make_directories(bundle) &&
-      vkr_preview_run(bake, bake->config->self_path, cook, ArrayCount(cook),
-                      workspace, vkr_bake_printf(bake, "%s/cook.log", job)) &&
-      vkr_preview_bind_material(bake, mesh, material, bundle);
+  VkrPreviewFraming framing = {.scale = 1.0};
+  bool8_t ok = true_v;
+  if (args->model) {
+    /* The model draws as cooked, with its own materials. */
+    const char *inspection = vkr_bake_printf(bake, "%s/inspect.json", job);
+    const char *inspect[] = {"tool", "mesh",     "--inspect", "--input",
+                             input,  "--output", inspection};
+    mesh = input;
+    ok = vkr_preview_run(bake, bake->config->self_path, inspect,
+                         ArrayCount(inspect), workspace,
+                         vkr_bake_printf(bake, "%s/inspect.log", job)) &&
+         vkr_preview_model_framing(bake, inspection, &framing);
+  } else {
+    ok =
+        vkr_preview_sphere(bake, source) &&
+        vkr_bakery_make_directories(bundle) &&
+        vkr_preview_run(bake, bake->config->self_path, cook, ArrayCount(cook),
+                        workspace, vkr_bake_printf(bake, "%s/cook.log", job)) &&
+        vkr_preview_bind_material(bake, mesh, input, bundle);
+  }
   const char *scene_path = vkr_bake_printf(bake, "%s/preview.scene.json", job);
   const char *case_path = vkr_bake_printf(bake, "%s/case.json", job);
   const char *profile_path = vkr_bake_printf(bake, "%s/profile.json", job);
@@ -5012,9 +5096,29 @@ vkr_internal bool8_t vkr_preview_render(VkrBake *bake,
     VkrBakeryJson *entities = vkr_bakery_json_get(scene, "entities");
     vkr_bakery_json_set(arena, vkr_bakery_json_get(entities->first, "mesh"),
                         "path", vkr_bakery_json_cstr(arena, mesh));
+    if (args->model) {
+      VkrBakeryJson *transform =
+          vkr_bakery_json_get(entities->first, "transform");
+      const float64_t scale[3] = {framing.scale, framing.scale, framing.scale};
+      vkr_bakery_json_set(arena, transform, "pos",
+                          vkr_preview_vector(arena, framing.translation, 3u));
+      vkr_bakery_json_set(arena, transform, "scale",
+                          vkr_preview_vector(arena, scale, 3u));
+      vkr_bakery_json_set(arena, entities->first, "name",
+                          vkr_bakery_json_cstr(arena, "Model"));
+    }
     vkr_preview_softbox_entities(bake, entities);
     VkrBakeryJson *document = vkr_preview_case(
         bake, vkr_bake_relative(bake, workspace, scene_path), args->size);
+    if (document && args->model) {
+      VkrBakeryJson *camera = vkr_bakery_json_get(document, "camera");
+      vkr_bakery_json_set(arena, camera, "position",
+                          vkr_preview_vector(arena, framing.camera, 3u));
+      vkr_bakery_json_set(arena, camera, "yaw",
+                          vkr_bakery_json_float(arena, framing.yaw_degrees));
+      vkr_bakery_json_set(arena, camera, "pitch",
+                          vkr_bakery_json_float(arena, framing.pitch_degrees));
+    }
     ok = document && vkr_bake_write_json(bake, scene_path, scene, false_v) &&
          vkr_bake_write_json(bake, case_path, document, false_v) &&
          vkr_bake_write_json(bake, profile_path,
@@ -5078,9 +5182,10 @@ vkr_internal bool8_t vkr_preview_render(VkrBake *bake,
   if (ok) {
     char output_digest[72];
     (void)vkr_bake_digest(bake, output, output_digest);
-    printf("{\"status\":\"ready\",\"recipe\":\"" VKR_PREVIEW_RECIPE
-           "\",\"output\":\"%s\",\"sha256\":\"%s\"}\n",
-           output, output_digest);
+    printf("{\"status\":\"ready\",\"recipe\":\"%s\",\"output\":\"%s\","
+           "\"sha256\":\"%s\"}\n",
+           args->model ? VKR_PREVIEW_MODEL_RECIPE : VKR_PREVIEW_RECIPE, output,
+           output_digest);
   }
   const bool8_t cancelled = vkr_bake_is_cancelled(NULL);
   if (ok || cancelled) {
@@ -5222,8 +5327,10 @@ vkr_internal bool8_t vkr_preview_prune(VkrBake *bake, const char *value,
 
 int vkr_bakery_preview_main(const VkrBakeryConfig *config, int argc,
                             char **argv) {
-  if (argc < 1 || (strcmp(argv[0], "material") && strcmp(argv[0], "prune"))) {
-    fprintf(stderr, "usage: vkr_bakery preview material|prune [options]\n");
+  if (argc < 1 || (strcmp(argv[0], "material") && strcmp(argv[0], "model") &&
+                   strcmp(argv[0], "prune"))) {
+    fprintf(stderr,
+            "usage: vkr_bakery preview material|model|prune [options]\n");
     return 2;
   }
   VkrBake bake = {.config = config};
@@ -5234,7 +5341,7 @@ int vkr_bakery_preview_main(const VkrBakeryConfig *config, int argc,
   }
   (void)vkr_bake_resolve(vkr_content_root(), bake.repo);
   vkr_bakery_install_cancel_signals();
-  VkrPreviewArgs args = {.size = 128};
+  VkrPreviewArgs args = {.size = 128, .model = strcmp(argv[0], "model") == 0};
   const char *directory = NULL;
   int64_t limit_mib = 512;
   int code = 0;
@@ -5276,11 +5383,14 @@ int vkr_bakery_preview_main(const VkrBakeryConfig *config, int argc,
     }
   } else if (code == 0) {
     if (!args.input || !args.output || !args.workspace) {
-      fprintf(stderr, "preview material: --input, --output and --workspace "
-                      "are required\n");
+      fprintf(stderr,
+              "preview %s: --input, --output and --workspace "
+              "are required\n",
+              argv[0]);
       code = 2;
     } else if (!vkr_preview_render(&bake, &args)) {
-      fprintf(stderr, "Material preview failed: %s\n", bake.error);
+      fprintf(stderr, "%s preview failed: %s\n",
+              args.model ? "Model" : "Material", bake.error);
       code = 1;
     }
   }

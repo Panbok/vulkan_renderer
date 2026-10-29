@@ -272,6 +272,9 @@ struct VkrEditorContent {
   char worker_workspace[CONTENT_PATH];
   uint32_t worker_size;
   bool8_t worker_material;
+  /* With worker_material: a cooked model framed in the studio instead of a
+     material on the sphere. */
+  bool8_t worker_model;
   bool8_t worker_reveal;
   bool8_t worker_ok;
   bool8_t worker_timed_out;
@@ -396,7 +399,7 @@ static void *content_worker(void *context) {
   if (content->worker_material) {
     executable = vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY);
     arguments[count++] = "preview";
-    arguments[count++] = "material";
+    arguments[count++] = content->worker_model ? "model" : "material";
   }
   arguments[count++] = "--input";
   arguments[count++] = content->worker_input;
@@ -2856,10 +2859,15 @@ static ContentPreview *content_preview(VkrEditorContent *content,
                                        VkrUiSystem *ui, uint32_t asset) {
   ContentAsset *entry = &content->entries[asset];
   if (entry->kind != CONTENT_TEXTURE && entry->kind != CONTENT_ENVIRONMENT &&
-      entry->kind != CONTENT_MATERIAL) {
+      entry->kind != CONTENT_MATERIAL && entry->kind != CONTENT_MESH) {
     return NULL;
   }
   if (entry->missing || entry->stale || !entry->path[0]) {
+    return NULL;
+  }
+  /* A model whose final textures still encode would cache an untextured
+     thumbnail under the same fingerprint; wait for the final tier. */
+  if (entry->kind == CONTENT_MESH && entry->pending_tier) {
     return NULL;
   }
   uint64_t key =
@@ -3020,7 +3028,10 @@ static void content_start_preview(VkrEditorContent *content) {
     string_format(content->worker_log, sizeof(content->worker_log),
                   "%.1000s.log", preview->path);
     content->worker_size = preview->size;
-    content->worker_material = entry->kind == CONTENT_MATERIAL;
+    /* Materials and models render in Bakery's studio; textures decode. */
+    content->worker_material =
+        entry->kind == CONTENT_MATERIAL || entry->kind == CONTENT_MESH;
+    content->worker_model = entry->kind == CONTENT_MESH;
     content->worker_reveal = false_v;
     content->worker_generation = content->generation;
     content->worker_ok = false_v;
@@ -4761,6 +4772,7 @@ static void content_build_asset_actions(VkrEditorContent *content,
                    entry->path);
       content->worker_reveal = true_v;
       content->worker_material = false_v;
+      content->worker_model = false_v;
       content->worker_generation = content->generation;
       content->running = CONTENT_NONE;
       content->worker_log[0] = 0;
@@ -5527,6 +5539,18 @@ bool8_t vkr_editor_content_asset_origin(const VkrEditorContent *content,
   for (uint32_t i = 0; content && i < content->count; ++i) {
     if (string_equals(content->entries[i].id, id)) {
       return content_origin_file(&content->entries[i], out, capacity);
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_editor_content_asset_origin_path(const VkrEditorContent *content,
+                                             const char *id, char *out,
+                                             uint32_t capacity) {
+  for (uint32_t i = 0; content && i < content->count; ++i) {
+    if (string_equals(content->entries[i].id, id)) {
+      return content->entries[i].origin[0] &&
+             content_copy(out, capacity, content->entries[i].origin);
     }
   }
   return false_v;
