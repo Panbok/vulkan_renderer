@@ -37,6 +37,7 @@ typedef struct MaterialsScan {
   uint32_t depth;
   char (*graphs)[VKR_BAKERY_PATH_CAPACITY];
   uint32_t graph_count;
+  uint32_t graph_capacity;
 } MaterialsScan;
 
 static bool8_t materials_visit(void *context, const char *name,
@@ -60,7 +61,7 @@ static bool8_t materials_visit(void *context, const char *name,
   } else if (!is_directory) {
     const size_t total = strlen(scan->relative);
     if (total > 4u && strcmp(scan->relative + total - 4u, ".mtg") == 0 &&
-        scan->graph_count < MATERIALS_GRAPH_MAX) {
+        scan->graph_count < scan->graph_capacity) {
       snprintf(scan->graphs[scan->graph_count++], VKR_BAKERY_PATH_CAPACITY,
                "%s", scan->relative + 1u);
     }
@@ -102,6 +103,40 @@ static bool8_t materials_xcrun(const char *const *arguments, uint32_t count) {
   return true_v;
 }
 
+/* Adds the graphs under `overlay_root`/assets to `scan`, the root's
+   graphs: a graph there replaces the root's copy of the same path, so each
+   path lists once. */
+static void materials_scan_overlay(MaterialsScan *scan,
+                                   const char *overlay_root) {
+  const uint32_t root_graphs = scan->graph_count;
+  MaterialsScan overlay = {.root = overlay_root,
+                           .graphs = scan->graphs + root_graphs,
+                           .graph_capacity = MATERIALS_GRAPH_MAX - root_graphs};
+  snprintf(overlay.relative, sizeof(overlay.relative), "/assets");
+  char overlay_assets[VKR_BAKERY_PATH_CAPACITY];
+  if (vkr_bakery_path_join(overlay_assets, sizeof(overlay_assets), overlay_root,
+                           "assets")) {
+    (void)vkr_bakery_list_directory(overlay_assets, materials_visit, &overlay);
+  }
+
+  uint32_t kept = 0u;
+  for (uint32_t k = 0; k < root_graphs; ++k) {
+    bool8_t shadowed = false_v;
+    for (uint32_t i = 0; i < overlay.graph_count && !shadowed; ++i) {
+      shadowed = strcmp(scan->graphs[k], overlay.graphs[i]) == 0;
+    }
+    if (!shadowed && kept != k) {
+      MemCopy(scan->graphs[kept], scan->graphs[k], sizeof(scan->graphs[k]));
+    }
+    kept += shadowed ? 0u : 1u;
+  }
+  for (uint32_t i = 0; i < overlay.graph_count; ++i) {
+    MemCopy(scan->graphs[kept + i], overlay.graphs[i],
+            sizeof(scan->graphs[kept + i]));
+  }
+  scan->graph_count = kept + overlay.graph_count;
+}
+
 int vkr_bakery_cmd_materials(VkrBakeryCli *cli) {
   if (!cli->shaders) {
     return vkr_bakery_usage("materials needs --shaders <catalog directory>");
@@ -123,7 +158,7 @@ int vkr_bakery_cmd_materials(VkrBakeryCli *cli) {
 
   Arena *arena = arena_create(MB(64), MB(1));
   VkrAllocator allocator = {.ctx = arena};
-  MaterialsScan scan = {.root = root};
+  MaterialsScan scan = {.root = root, .graph_capacity = MATERIALS_GRAPH_MAX};
   scan.graphs = malloc(sizeof(*scan.graphs) * MATERIALS_GRAPH_MAX);
   MaterialsFunction *functions =
       malloc(sizeof(*functions) * MATERIALS_FUNCTION_MAX);
@@ -141,6 +176,13 @@ int vkr_bakery_cmd_materials(VkrBakeryCli *cli) {
   if (vkr_bakery_path_join(assets, sizeof(assets), root, "assets")) {
     (void)vkr_bakery_list_directory(assets, materials_visit, &scan);
   }
+  /* A project outside the engine checkout keeps its graphs in its own
+     assets/, which overlays the root's. */
+  const char *overlay_root =
+      cli->overlay && cli->overlay[0] ? cli->overlay : NULL;
+  if (overlay_root) {
+    materials_scan_overlay(&scan, overlay_root);
+  }
   qsort(scan.graphs, scan.graph_count, sizeof(*scan.graphs), materials_compare);
 
   /* Each Custom graph's function, once. */
@@ -152,8 +194,14 @@ int vkr_bakery_cmd_materials(VkrBakeryCli *cli) {
     uint8_t *json = NULL;
     uint64_t length = 0u;
     char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
-    if (!vkr_bakery_path_join(absolute, sizeof(absolute), root,
-                              scan.graphs[i]) ||
+    /* The overlay's copy of a graph wins over the root's. */
+    const bool8_t overlaid =
+        overlay_root &&
+        vkr_bakery_path_join(absolute, sizeof(absolute), overlay_root,
+                             scan.graphs[i]) &&
+        vkr_bakery_is_file(absolute);
+    if ((!overlaid && !vkr_bakery_path_join(absolute, sizeof(absolute), root,
+                                            scan.graphs[i])) ||
         !vkr_bakery_read_file(absolute, 0u, &json, &length)) {
       continue;
     }

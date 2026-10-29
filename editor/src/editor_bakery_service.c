@@ -187,6 +187,9 @@ static uint32_t editor_bakery_service_arguments(const EditorBakeryWatch *watch,
   return length;
 }
 
+static void editor_bakery_service_send_run(EditorBakeryService *service,
+                                           EditorBakeryWatch *watch);
+
 static void editor_bakery_service_register(EditorBakeryService *service,
                                            EditorBakeryWatch *watch) {
   static char line[64u * 1024u];
@@ -217,12 +220,19 @@ static void editor_bakery_service_register(EditorBakeryService *service,
   if (!watch->pending || !watch->argument_count) {
     return;
   }
-  /* The previous daemon stopped before this watch's rebuild replied. */
+  /* The previous daemon stopped before this watch's rebuild replied, or the
+     editor asked for a run before the daemon connected. */
+  editor_bakery_service_send_run(service, watch);
+}
+
+static void editor_bakery_service_send_run(EditorBakeryService *service,
+                                           EditorBakeryWatch *watch) {
+  static char line[64u * 1024u];
   watch->rerun = ++service->next_request;
   MemZero(&watch->building, sizeof(watch->building));
-  length = (uint32_t)string_format(line, sizeof(line),
-                                   "{\"v\":1,\"id\":%llu,\"req\":\"run\"",
-                                   (unsigned long long)watch->rerun);
+  uint32_t length = (uint32_t)string_format(
+      line, sizeof(line), "{\"v\":1,\"id\":%llu,\"req\":\"run\"",
+      (unsigned long long)watch->rerun);
   length = editor_bakery_service_arguments(watch, line, sizeof(line), length);
   length +=
       (uint32_t)string_format(line + length, sizeof(line) - length, "}\n");
@@ -693,6 +703,17 @@ editor_bakery_service_handle(EditorBakeryService *service, uint32_t handle) {
     }
   }
   return NULL;
+}
+
+void editor_bakery_service_run(EditorBakeryService *service, uint32_t handle) {
+  EditorBakeryWatch *watch = editor_bakery_service_handle(service, handle);
+  if (!watch || !watch->argument_count) {
+    return;
+  }
+  watch->pending = true_v;
+  if (service->socket != VKR_LOCAL_SOCKET_INVALID) {
+    editor_bakery_service_send_run(service, watch);
+  }
 }
 
 void editor_bakery_service_unwatch(EditorBakeryService *service,

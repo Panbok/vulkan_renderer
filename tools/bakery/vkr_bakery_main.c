@@ -82,7 +82,8 @@ vkr_internal const VkrBakeryCommand vkr_bakery_commands[] = {
     {"preview", NULL, "preview material|prune [options]",
      "Render a material thumbnail, or prune the workspace thumbnail cache."},
     {"materials", vkr_bakery_cmd_materials,
-     "materials --shaders <catalog> [--root <content root>]",
+     "materials --shaders <catalog> [--root <content root>] [--overlay "
+     "<workspace>]",
      "Generate the project's Custom material graphs and compile them into "
      "the catalog's project library."},
     {"bundle", vkr_bakery_cmd_bundle,
@@ -273,6 +274,8 @@ vkr_internal int vkr_bakery_parse(int argc, char **argv, VkrBakeryCli *cli) {
       VKR_BAKERY_TAKE(cli->app);
     } else if (strcmp(argument, "--shaders") == 0) {
       VKR_BAKERY_TAKE(cli->shaders);
+    } else if (strcmp(argument, "--overlay") == 0) {
+      VKR_BAKERY_TAKE(cli->overlay);
     } else if (strcmp(argument, "--profile") == 0) {
       VKR_BAKERY_TAKE(cli->profile);
     } else if (strcmp(argument, "--template") == 0) {

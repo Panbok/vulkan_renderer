@@ -39,6 +39,9 @@ uint32_t editor_bakery_service_watch(EditorBakeryService *service,
                                      uint32_t argument_count);
 void editor_bakery_service_unwatch(EditorBakeryService *service,
                                    uint32_t handle);
+/** Runs a watch's command now, as after a change: for a build whose inputs
+ * may have changed while no daemon watched them. */
+void editor_bakery_service_run(EditorBakeryService *service, uint32_t handle);
 /** Moves up to `capacity` changed paths reported since the last call into
  * `out`; returns their count. */
 uint32_t editor_bakery_service_take_changes(

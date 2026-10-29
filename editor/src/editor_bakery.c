@@ -126,6 +126,8 @@ struct VkrEditorBakery {
      when an asset changes; a compile asks the renderer to reload it. */
   uint32_t materials_watch;
   bool8_t materials_watch_requested;
+  /* The workspace overlay the materials watch was registered with. */
+  char materials_overlay[EDITOR_BAKERY_PATH_CAPACITY];
   bool8_t materials_compiled;
 };
 
@@ -859,8 +861,20 @@ static void editor_bakery_watch_shaders(VkrEditorBakery *bakery) {
    generated source changed (ADR-096). Metal only. */
 static void editor_bakery_watch_materials(VkrEditorBakery *bakery) {
 #if defined(PLATFORM_APPLE)
+  /* A project outside the engine checkout keeps its graphs in its own
+     assets/, the workspace overlay; opening another project moves it. */
+  const char *overlay = vkr_vfs_overlay_root();
+  if (bakery->materials_watch_requested &&
+      !string_equals(bakery->materials_overlay, overlay ? overlay : "")) {
+    editor_bakery_service_unwatch(bakery->service, bakery->materials_watch);
+    bakery->materials_watch = EDITOR_BAKERY_SERVICE_NONE;
+    bakery->materials_watch_requested = false_v;
+  }
   if (!bakery->materials_watch_requested) {
     bakery->materials_watch_requested = true_v;
+    (void)string_format(bakery->materials_overlay,
+                        sizeof(bakery->materials_overlay), "%s",
+                        overlay ? overlay : "");
     char catalog[EDITOR_BAKERY_PATH_CAPACITY];
     char assets[EDITOR_BAKERY_PATH_CAPACITY];
     char engine[EDITOR_BAKERY_PATH_CAPACITY];
@@ -870,12 +884,23 @@ static void editor_bakery_watch_materials(VkrEditorBakery *bakery) {
     (void)string_format(assets, sizeof(assets), "%sassets", vkr_content_root());
     (void)string_format(engine, sizeof(engine), "%s/metal/library.metal",
                         catalog);
-    const char *paths[] = {assets, engine};
-    const char *arguments[] = {"materials", "--shaders", catalog, "--root",
-                               vkr_content_root()};
-    bakery->materials_watch =
-        editor_bakery_service_watch(bakery->service, paths, ArrayCount(paths),
-                                    arguments, ArrayCount(arguments));
+    char overlay_assets[EDITOR_BAKERY_PATH_CAPACITY];
+    (void)string_format(overlay_assets, sizeof(overlay_assets), "%sassets",
+                        overlay ? overlay : "");
+    const char *paths[] = {assets, engine, overlay_assets};
+    const char *arguments[] = {"materials",
+                               "--shaders",
+                               catalog,
+                               "--root",
+                               vkr_content_root(),
+                               "--overlay",
+                               overlay ? overlay : ""};
+    bakery->materials_watch = editor_bakery_service_watch(
+        bakery->service, paths, overlay ? 3u : 2u, arguments,
+        overlay ? ArrayCount(arguments) : ArrayCount(arguments) - 2u);
+    /* The engine's shaders or the graphs may have changed while no editor
+       watched them: build once now. Bakery compiles only a changed source. */
+    editor_bakery_service_run(bakery->service, bakery->materials_watch);
   }
   char changed[4][EDITOR_BAKERY_SERVICE_PATH];
   while (editor_bakery_service_take_changes(

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-22
+updated: 2026-10-29
 authority: adr
 ---
 
@@ -74,7 +74,10 @@ The owner settled three points on 2026-10-09:
    `VkrMetalCustomSurface<function>` in place of the Standard surface.
    Desktop-pipeline (Slang) generation waits for the Vulkan phase.
 4. **Project library.** `vkr_bakery materials --shaders <catalog>` scans
-   `assets/**/*.mtg` and keeps the graphs that lower to the Custom tier. It
+   `assets/**/*.mtg` under the content root and, with `--overlay
+   <workspace>`, under the workspace's own `assets/`, whose copy of a path
+   wins (a project outside the engine checkout keeps its graphs there), and
+   keeps the graphs that lower to the Custom tier. It
    writes `metal/project_materials.metal` (the engine's `library.metal`
    followed by every function and its entries) and compiles it with `xcrun
    metal` into `project_materials.metallib`, with `project_materials.json`
@@ -146,8 +149,13 @@ The owner settled three points on 2026-10-09:
    editor's loading state and the harness child) waits until no graph is
    pending.
 9. **Edits.** The editor's Bakery daemon watches the content root's
-   `assets/` and the catalog's `metal/library.metal`, and reruns `vkr_bakery
-   materials` after a change. When it compiled, the runtime asks the
+   `assets/`, the open workspace's `assets/` and the catalog's
+   `metal/library.metal`, and reruns `vkr_bakery materials` after a change.
+   It also runs it once when the watch starts and again when another
+   workspace opens, since an engine update or a graph edit may have
+   happened while no editor watched (before 2026-10-29 a library built
+   before an engine shader change stayed in place and every Custom graph
+   drew its Standard fallback). When it compiled, the runtime asks the
    renderer to reload. A function is named by the hash of its code, so a
    ready graph keeps its pipelines. The next frame preparation in which no
    creation runs:

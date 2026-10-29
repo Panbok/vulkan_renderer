@@ -31,6 +31,9 @@ typedef struct VkrBakeryCli {
   const char *socket;
   const char *app;
   const char *shaders;
+  /* `materials`: a workspace whose assets/ overlays the content root's, as
+     the editor's open project does (ADR-077). */
+  const char *overlay;
   /* Project packages: the game.json build profile and the player template
      directory (docs/proposals/project-packaging.md). */
   const char *profile;
