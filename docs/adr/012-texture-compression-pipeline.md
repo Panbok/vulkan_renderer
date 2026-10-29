@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-23
+updated: 2026-10-29
 authority: adr
 ---
 # ADR-012: Host-native KTX2 texture artifacts
@@ -327,6 +327,15 @@ which the tiled pipeline reads to tell rough glass from smooth
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 10). Changing the
 factors afterward requires recooking. An authored zero normal scale
 flattens the normal; an omitted scale defaults to one.
+
+Both pipelines read ambient occlusion from the MR texture's red channel
+(`occlusion_strength` times `orm.r`); no shader samples the occlusion slot.
+Since 2026-10-29 the glTF importer omits `occlusion_texture` when the
+material's occlusion texture reads the same image and UV set as its
+metallic-roughness texture, as an ORM texture does: after the pairing
+renamed the MR texture, the runtime loaded and kept the source image a
+second time. An occlusion image apart from the MR image still loads and is
+not shaded.
 
 Pairing requires decodable external images with identical extents, untransformed
 UV0 and default or repeat/linear/trilinear samplers. Converted specular-glossiness

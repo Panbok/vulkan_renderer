@@ -1165,6 +1165,85 @@ static void test_gltf_import_writes_detail_extras(void) {
   printf("  test_gltf_import_writes_detail_extras PASSED\n");
 }
 
+/* The generated material of a triangle whose metallic-roughness texture
+   reads image 0 (through texture 0) and whose occlusion texture is texture
+   `occlusion`: texture 1 shares image 0, texture 2 reads image 1. */
+static String8 gltf_test_occlusion_case(const char *stem, uint32_t occlusion,
+                                        VkrAllocator *allocator) {
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+  char gltf_path[1024];
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  char bin_path[1024];
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+  char mt_path[1024] = {0};
+  gltf_test_make_material_paths(stem, gltf_path, 0, mt_path, sizeof(mt_path),
+                                NULL, 0, NULL, 0);
+  gltf_test_write_basic_triangle_bin(bin_path);
+  char gltf_json[4096];
+  snprintf(gltf_json, sizeof(gltf_json),
+           "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+           "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+           "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+           "\"indices\":1,\"material\":0}]}],"
+           "\"materials\":[{\"pbrMetallicRoughness\":{"
+           "\"metallicRoughnessTexture\":{\"index\":0}},"
+           "\"occlusionTexture\":{\"index\":%u,\"strength\":0.5}}],"
+           "\"textures\":[{\"source\":0},{\"source\":0},{\"source\":1}],"
+           "\"images\":[{\"uri\":\"orm.png\"},{\"uri\":\"ao.png\"}],"
+           "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":42}],"
+           "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,"
+           "\"byteLength\":36},{\"buffer\":0,\"byteOffset\":36,"
+           "\"byteLength\":6}],\"accessors\":[{\"bufferView\":0,"
+           "\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},{"
+           "\"bufferView\":1,\"componentType\":5123,\"count\":3,"
+           "\"type\":\"SCALAR\"}]}",
+           occlusion, stem);
+  assert(gltf_test_write_file_text(gltf_path, gltf_json) == true_v);
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&scratch));
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  GltfImporterTestCapture capture = {.allocator = allocator};
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      allocator, &scratch, gltf_path, &error, &capture);
+  assert(vkr_mesh_loader_gltf_parse(&parse_info) == true_v);
+  String8 material = {0};
+  assert(gltf_test_read_file_text(allocator, mt_path, &material) == true_v);
+  arena_destroy(scratch_arena);
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+  return material;
+}
+
+/* Shading reads occlusion from the metallic-roughness texture's red channel:
+   an ORM image named for both must not load a second time through the
+   occlusion slot, which no shader samples. */
+static void test_gltf_import_shares_orm_occlusion(void) {
+  printf("  Running test_gltf_import_shares_orm_occlusion...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  for (uint32_t occlusion = 0u; occlusion < 2u; ++occlusion) {
+    const char *text = (const char *)gltf_test_occlusion_case(
+                           "gltf_import_orm_shared", occlusion, &allocator)
+                           .str;
+    assert(strstr(text, "metallic_roughness_texture=") != NULL);
+    assert(strstr(text, "occlusion_texture=") == NULL);
+    assert(strstr(text, "occlusion_strength=0.500000") != NULL);
+  }
+  const char *separate = (const char *)gltf_test_occlusion_case(
+                             "gltf_import_orm_separate", 2u, &allocator)
+                             .str;
+  assert(strstr(separate, "occlusion_texture=") != NULL);
+  arena_destroy(arena);
+  printf("  test_gltf_import_shares_orm_occlusion PASSED\n");
+}
+
 static void test_gltf_import_fails_without_position(void) {
   printf("  Running test_gltf_import_fails_without_position...\n");
 
@@ -2837,6 +2916,7 @@ bool32_t run_gltf_importer_tests(void) {
   test_gltf_import_converts_texture_coordinates();
   test_gltf_import_keeps_authored_tangents();
   test_gltf_import_writes_detail_extras();
+  test_gltf_import_shares_orm_occlusion();
   test_gltf_import_fails_without_position();
   test_gltf_import_rejects_data_uri_images();
   test_gltf_import_rejects_buffer_view_images();

@@ -2880,6 +2880,19 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
           metallic_roughness_texture_view, &textures)) {
     return false_v;
   }
+  /* Shading reads occlusion from the metallic-roughness texture's red
+     channel, never from the occlusion slot (ADR-012): an ORM image named for
+     both would load a second copy, after the pairing below renames the
+     metallic-roughness one, that no shader samples. */
+  if (metallic_roughness_texture_view && material->occlusion_texture.texture &&
+      metallic_roughness_texture_view->texture &&
+      material->occlusion_texture.texture->image &&
+      material->occlusion_texture.texture->image ==
+          metallic_roughness_texture_view->texture->image &&
+      material->occlusion_texture.texcoord ==
+          metallic_roughness_texture_view->texcoord) {
+    textures.occlusion_texture = (String8){0};
+  }
 
   /* Each pack below retries once with converted pixels when a memo hit's
      output turns out missing or stale. */
