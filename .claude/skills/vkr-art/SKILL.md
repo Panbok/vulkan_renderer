@@ -68,6 +68,19 @@ shader and no pipeline. `material.patch`, `material.describe` and
 - Two textures multiplied, other channels or other node chains are not
   Standard; fix the graph by the `reason` and `node` the answer names.
 - Expose a value as a `parameter` only when instances vary it.
+- Give surfaces seen up close detail maps (ADR-136): the output's
+  `detail_normal` takes a `normal_map` of a tileable detail normal,
+  `detail_uv_scale` a scalar (repeats per texture repeat: a material's
+  `world_size` over the detail's tile, 2 m over 0.25 m plaster is 8),
+  `detail_albedo` a texture of a grey `*_overlay_mask.png` (the name makes
+  `vkr_bakery cook` encode it as data) and `detail_albedo_strength` a
+  scalar. Expose them as parameters on one surface graph and set them per
+  instance. `tools/blender/vkr_asset_kit/detail_maps.py <project>
+  <family>...`, run with Blender's Python (it needs numpy), writes fine,
+  metal, wood, fabric, rubber, cardboard, plaster, concrete or carpet maps
+  into `assets/textures/vkr_detail`; cook that folder. Opaque and
+  cutout materials only, no layers; about 0.05 to 0.3 ms of
+  `Tiled.Opaque` in the Level Design Test's views.
 
 ## Layers
 
@@ -301,7 +314,11 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
    its footprint, so the player still collides. Send at most about 100
    deletes per batch: a larger one runs out of undo memory and rolls back,
    and a rolled-back batch gives the restored brushes new ids.
-5. Give each slot a library material (below), then rebake.
+5. Props baked with the Asset Kit carry their own texture sets: clear the
+   placements' slot overrides (`material.assign` with an empty
+   `material`), give kept screen slots their image and kept glass the
+   library's blended glass, then rebake. Older props without their own
+   sets take a library material per slot (below).
 
 - The mesh hangs on a child node of the placed root: `material.assign`
   that child with `slot` to give one surface a library material. Slots
@@ -313,12 +330,18 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
   the selected mesh (or of a placed model's mesh node): drag a material
   from Content onto a slot, click it to open the material, clear it to
   return to the model's own.
-- `entity.get` on that child answers `mesh` with its `asset` reference.
+- `model.list` answers every imported model the open scene draws: its
+  `asset`, the content path it came from (`origin`), its triangles and the
+  mesh entities that draw it (`origin` filters by a text). Use it to find
+  every placement of a rebuilt file.
+- `entity.get` on that child answers `mesh` with its `asset` reference,
+  `origin`, triangles and vertices.
   After editing the source, `model.reimport` with the `asset` or a placed
   `entity` rebuilds the asset for every copy without a reload, from the
   file it was imported from (or a new `source`); wait for the job before
-  the next one, and pass `lightmap_uvs` again or the rebuilt mesh loses
-  them. The saved edits on its nodes follow the new mesh, and the scene
+  the next one. A model cooked with lightmap UVs keeps them unless
+  `lightmap_uvs` is false. The saved edits on its nodes follow the new
+  mesh, and the scene
   shows unsaved: save before a bake. A mesh with lightmap UVs keeps its
   old lightmap until the next bake, which draws a changed model dark or
   blotched: rebake after reimporting lit props. Reimporting from a
@@ -328,13 +351,10 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
   saved edits that bind to nothing (kept and written back unchanged), and
   `save_blocked` with `overlay_problem` means the edit file did not load;
   the editor then refuses to save, so fix the file before editing more.
-- A glTF `COLOR_0` multiplies a plain material's base colour, so bake
-  ambient occlusion into it there (white where nothing should darken); on
-  surfaces that take a layered material with the
-  `vertex_color` mask, RGBA weigh its layers 0 to 3. A painted-metal graph
-  whose layer 1 is chipped steel and layer 2 grime, with the weights baked
-  in Blender (edges and floor height), wears every prop without textures
-  of its own.
+- A glTF `COLOR_0` multiplies a plain material's base colour; on surfaces
+  that take a layered material with the `vertex_color` mask, RGBA weigh
+  its layers 0 to 3. Baked texture sets carry wear and occlusion in their
+  own maps and export no `COLOR_0`.
 - A screen or sign that shows an image: give its face 0..1 UVs in Blender
   and a Standard graph whose emissive is a glow colour times an exposed
   `screen` texture (no pipeline), one instance per image, chosen per

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-28
+updated: 2026-10-29
 authority: proposal
 ---
 # Artist toolkit
@@ -129,7 +129,8 @@ Facts at commit `0d408fe6`.
   blends the layers by vertex colour on both pipelines, with no extra
   pipelines.
 - **Previews.** `vkr_bakery preview material` renders a sphere thumbnail in
-  an offscreen harness run. No interactive preview exists.
+  an offscreen harness run, and `preview model` a model framed in the same
+  studio (ADR-137). No interactive preview exists.
 - **Reload.** `vkr_material_loader_replace_live` swaps a material in place.
   No `.mt` editor or `.mt` writer exists.
 - **Cost data.** Not present. No per-material texture-sample, instruction or
@@ -695,7 +696,7 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | `look.*` | `volume` is implemented (ADR-097) | Scene |
 | `decal.*` | `place` is implemented (ADR-101) | Scene |
 | `scatter.*` | `paint` is implemented (ADR-102) | Scene |
-| `model.*` | `place` (with `fit` and an undo step) and `reimport` (from the recorded origin by default) are implemented (ADR-076); placements in review remain (Part 8) | Scene |
+| `model.*` | `place` (with `fit` and an undo step), `reimport` (from the recorded origin by default) and `list` (each imported model's origin and placements) are implemented (ADR-076); placements in review remain (Part 8) | Scene |
 | `env.*` | `describe`, `preset.save` and `preset.apply` are implemented (ADR-098) | Scene and documents |
 | `lighting.*` | `list`, `group`, `time` and `bake` with settings are implemented (ADR-100) | Live state and bake jobs |
 | `probe.*` | `create` is implemented (ADR-103) | Scene and its document |

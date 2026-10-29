@@ -52,65 +52,65 @@ owns placement, materials and bakes.
 - Overlap parts by at least a few millimetres or keep them 1 cm apart:
   coplanar faces z-fight in the engine.
 
-## Materials and UVs
+## Materials and texture sets
 
-- Give each surface its own material slot named after the library material
-  it will take (`paint_blue`, `steel`, `wood_desk`, `plastic_dark`,
-  `screen`). The engine's slots follow the glTF's primitive order, which
-  follows the slot order. Keep to eight slots: a ninth cannot take a
-  library material.
-- Box-project UVs in metres: a face's two widest axes divided by the
-  material's tile size. Library materials then tile at their `world_size`
-  without per-model unwrapping.
-- Build each Principled material as the library texture times a tint: an
-  image node into a MixRGB Multiply node exports as a texture with a
-  `baseColorFactor`. Split the ORM texture so G drives Roughness and B
-  Metallic; the exporter writes them as one `metallicRoughnessTexture`.
-  Turn on backface culling; it exports single-sided.
-- Faces that show an image (screens, signs) need 0..1 UVs: give them a
-  material of their own (`display`) and normalize each face's projected
-  coordinates to its bounds when building UVs, U along the face's width as
-  seen from the front and V up. A second screen material (`display_b`)
-  lets one model show two images. Image textures of 16:9 suit a display's
-  glass; draw them with a script (dark UI, cyan and orange accents) and
-  cook them like any texture.
+Bake every prop's own texture set with the VKR Asset Kit
+(`tools/blender/vkr_asset_kit`, [ADR-137](../../../../docs/adr/137-baked-asset-texture-sets-and-model-previews.md));
+library materials on slots and vertex-colour wear are the old pipeline.
 
-## Wear in vertex colours
+- Give each surface its own Principled material: base colour (a texture
+  times a tint is fine), roughness, metallic, a normal map, emission for
+  lights. Name it after what it is (`paint_blue`, `aluminium`, `oak`,
+  `rubber_black`, `glass_black`, `labels`): the name picks the smart kind
+  (paint, metal, plastic, laminate, wood, fabric, rubber, glass, label,
+  emissive, cardboard, organic) unless the material's `vkr_smart` property
+  names one. Painted metal chips to bare steel; plastic and laminate only
+  lighten at the edges, so name moulded plastic accordingly. Use clean
+  base textures: a tiled worn-paint texture puts chips in the middle of
+  every face, where the kit puts wear on edges and where hands reach.
+- Keep every closed part's faces pointing out. The kit turns inside-out
+  closed parts outward and reports `flipped_parts`; open cards keep their
+  winding and draw one side.
+- UVs on the high poly can be anything the materials need (metric box
+  projection for tiling textures). The kit gives the game mesh its own
+  atlas (UV0) at about 1,024 px/m, every hard edge a seam, and splits a
+  large model into up to five texture sets so none drops under 640 px/m.
+- Screens (`display`, `display_b`) and see-through glass (`glass_tint`, or
+  any material with alpha below 1 or transmission) are kept: they export
+  with their own material and UVs. Give screen faces 0..1 UVs (U along the
+  width as seen from the front, V up) and assign the image per placement;
+  assign the library's blended glass (`assets/materials/bm/glass.mt`) to
+  kept glass so shelves behind it show. Kept slots do not hide faces behind
+  them from the hidden-face pass.
+- Details are stamps, not geometry: give a scripted asset's object a
+  `vkr_details` JSON list, or parent empties with a `vkr_detail` kind
+  (Add Detail in the kit's panel). Kinds: `screw` (radius, drive
+  phillips|slot|hex, finish steel|black|zinc|brass|chrome), `rivet`, `vent`
+  (width, height, slots, slot_width), `perforation` (pitch, hole_radius),
+  `seam` (a cutting plane `point`/`cut` inside a `min`..`max` box), `ribs`,
+  `touch` (hands: smudged paint, polished metal), `wear` (scuffs), `grime`,
+  `glow` (status lights) and `condition` (0 new, 1 used, 2 worn out). Put
+  touch zones where hands go (handles, keyboards, armrests, buttons), wear
+  where feet and forklifts hit, grime where dirt gathers.
+- Run it headless through `vkr_asset_kit.bake.bake_asset(obj, name,
+  out_dir, Settings(project_root=...), details=...)`, as
+  `check_asset_kit.py` does, or from the 3D Viewport's VKR panel. It
+  writes `<name>.gltf` with MikkTSpace tangents (VKR keeps them, ADR-030),
+  `<set>_albedo/_normal/_orm/_emissive.png`, and detail map extras (fine,
+  metal, wood, fabric, rubber, cardboard maps in
+  `assets/textures/vkr_detail`) that the importer turns into the
+  material's `detail_*` keys (ADR-136).
+- One Blender process at a time; each bake takes 30 s to 3 min and up to
+  3 GB on the GPU. The first Cycles run compiles kernels for about 2 min.
 
-- A layered material with the `vertex_color` mask reads COLOR_0 as weights
-  of layers 0 to 3. Write a corner (face corner) float colour attribute:
-  R paint, G chipped bare metal, B grime, A unused. Keep R at least 0.05 so
-  the weights never sum to zero.
-- Put chips on bevel strips only (faces whose shortest edge is under about
-  9 mm), scaled by a cheap position noise; put grime on corners below
-  0.5 m, falling to zero at that height.
-- A plain material multiplies its base colour by COLOR_0, so its faces
-  carry baked ambient occlusion there (next section), or white
-  (1, 1, 1, 1) where they should stay unchanged.
-- Remove other colour attributes, make the attribute active and the render
-  colour, and export with `export_vertex_color="ACTIVE"`. Check the glTF:
-  a VEC4 COLOR_0 of 16-bit normalized values, read with the accessor's
-  component type.
+## Labels and soft parts
 
-## Ambient occlusion, labels and soft parts
-
-- Bake ambient occlusion into the plain faces' COLOR_0 with Cycles:
-  `bpy.ops.object.bake(type="AO", target="VERTEX_COLORS")` into a
-  temporary corner attribute, with a large plane just under the origin so
-  feet and plinths darken where they meet the floor, and the world's AO
-  distance about 0.3 m. Store `floor + (1 - floor) * ao` with a floor near
-  0.4, keep layered faces' weights, and keep emissive, screen and label
-  faces white. Remove the temporary attribute before export. The bake
-  takes well under a second per prop. Lightmaps still add the room's
-  occlusion; the vertex term adds the contact shadows a lightmap texel is
-  too coarse for.
 - Printed stickers and plates come from one atlas texture of square cells
   (logo, hazard signs, barcodes, rack and room plates, serial plates): a
   thin box of a `labels` material per sticker, a face integer attribute
   naming its cell, and UVs normalized over each face into that cell with
-  a 2% inset. Make the sticker's aspect match the cell's, stand it 1 to
-  2 mm proud of the surface, and give the material a semi-gloss plain
-  definition with the atlas as `base_color_texture`.
+  a 2% inset. Make the sticker's aspect match the cell's and stand it 1 to
+  2 mm proud of the surface; the bake prints it into the texture set.
 - Look up `bmesh` custom layers by name after every merge
   (`bm.faces.layers.int["cell"]`): `from_mesh` can add layers and a handle
   kept from before then reads another layer, so labels added before a
@@ -118,6 +118,8 @@ owns placement, materials and bakes.
 - Figures and displays inside enclosures: leave the front open or keep
   glass to a thin band, because tinted glass hides what the enclosure is
   for (an HEV suit in its pod). `Builder.sphere` makes helmets and domes.
+- Open containers (bins, cups) need open walls: a capped cylinder closes
+  them. Build a ring of outer and inner walls with lips.
 - Soft furnishings are boxes bevelled by 40 to 50% of their smallest size
   in six segments, in a fabric material; cables and hoses are bezier
   curves with a bevel depth, converted to mesh (`new_from_object` on the
@@ -127,13 +129,13 @@ owns placement, materials and bakes.
 
 ## Review before placing
 
-- Render a Workbench preview of each asset (material colour, cavity,
-  studio light) and put the previews on one contact sheet; judge shape and
-  proportion there before importing anything. Material colour shows labels
-  and screens blank: render a second sheet with `color_type` `TEXTURE` to
-  check every label's cell and orientation. Render with backface culling on
-  (`BM_PREVIEW_CULL=1` in `preview`) to catch flipped faces, which the
-  engine culls.
-- After placing, capture the level's rooms with `view.capture` and compare
-  each model with its prototype's footprint; fix the model and
-  `model.reimport` it rather than moving placements by hand.
+- Render the kit's studio preview of each export (`vkr_asset_kit.preview.
+  render_preview`: the glTF imported back into an empty scene, Cycles,
+  interior studio light, front-left and back-right) and put the previews
+  on one contact sheet; judge shape, wear and labels there before
+  importing anything.
+- After reimporting, check the level with `view.capture` in `base-color`
+  and `normals` modes first: a model reimported without lightmap UVs draws
+  dark under static lamps until it has them and a bake ran. Then capture
+  the lit rooms and compare each model with its prototype's footprint; fix
+  the model and `model.reimport` it rather than moving placements by hand.

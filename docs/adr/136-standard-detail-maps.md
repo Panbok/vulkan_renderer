@@ -299,6 +299,17 @@ change's code, built in a separate worktree.
   against change 1 observes no change and is inconclusive for authority.
   The invalid draw-count samples occur on both builds. The Mac then ran on
   battery in Low Power Mode, so no authoritative pair was taken.
+- Detail cost where it covers the screen (2026-10-29, supporting, not
+  authoritative): the Level Design Test's 57 library surfaces (walls,
+  floors, metals, wood) took detail maps through one Standard graph with
+  the four detail inputs. In the headless editor viewport (about 1,080 by
+  720 rendered pixels, MetalFX 0.6), five still views were timed with the
+  maps on and off in three interleaved rounds, 12 frames each:
+  `Tiled.Opaque` medians rose 0.03 to 0.08 ms in the office, locker
+  room, server room and warehouse and 0.23 to 0.29 ms in the crate store,
+  whose concrete floor fills most of the view; `gpu.submission` medians
+  moved within their 0.3 to 0.7 ms frame spread. The views were read with
+  `perf.snapshot` after a 3 s settle.
 - Unavailable: native Vulkan execution, a Vulkan detail capture and Vulkan
   timing, which wait for a Windows host; an authoritative before/after pair
   (above); register counts of the detail kinds (no offline Metal compiler
