@@ -543,6 +543,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                          VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_GPU_DRAW_ENCODE] = {"pass.gpu_draw_encode",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_LIGHT_SCATTER] = {"pass.light_scatter",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LIGHT_CLUSTERS] = {"pass.light_clusters",
                                         VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SKINNING] = {"pass.animation.skinning",

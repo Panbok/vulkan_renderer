@@ -43,10 +43,10 @@ vkr_rg_image_allows_read_without_write(const VkrRgImage *image) {
 
 vkr_internal bool8_t
 vkr_rg_buffer_allows_read_without_write(const VkrRgBuffer *buffer) {
-  return buffer &&
-         (buffer->imported ||
-          (buffer->desc.flags & (VKR_RG_RESOURCE_FLAG_EXTERNAL |
-                                 VKR_RG_RESOURCE_FLAG_PERSISTENT)) != 0);
+  return buffer && (buffer->imported || (buffer->desc.flags &
+                                         (VKR_RG_RESOURCE_FLAG_EXTERNAL |
+                                          VKR_RG_RESOURCE_FLAG_PERSISTENT |
+                                          VKR_RG_RESOURCE_FLAG_RETAINED)) != 0);
 }
 
 vkr_internal void
@@ -1275,6 +1275,21 @@ vkr_internal void vkr_rg_seed_barrier_state(VkrRenderGraph *graph,
                              : VKR_RG_BUFFER_ACCESS_NONE,
             true_v),
     };
+    /* A retained buffer seeds from its last submitted state, so its first
+       access this frame waits for the previous frame's last one. */
+    if ((buffer->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED) &&
+        graph->retained_provider.read_buffer) {
+      VkrRgRetainedBufferState state = {
+          .access = VKR_RG_BUFFER_ACCESS_NONE,
+          .stages = vkr_gpu_stages_for_buffer_access(VKR_RG_BUFFER_ACCESS_NONE,
+                                                     true_v),
+      };
+      graph->retained_provider.read_buffer(graph->retained_provider.context, i,
+                                           &state);
+      graph->buffer_states[i].access = state.access;
+      graph->buffer_states[i].stages = state.stages;
+      graph->buffer_states[i].retained_valid = state.content_valid;
+    }
   }
 }
 
@@ -1439,22 +1454,43 @@ vkr_internal bool8_t vkr_rg_declare_image_access(
   return true_v;
 }
 
-/** @brief Accumulates one buffer use into this pass's desired access. */
-vkr_internal bool8_t vkr_rg_declare_buffer_access(VkrRenderGraph *graph,
-                                                  VkrRgBufferHandle handle,
-                                                  VkrRgBufferAccessFlags access,
-                                                  VkrGpuStageFlags stages,
-                                                  uint32_t token,
-                                                  uint32_t *touched_count) {
+/**
+ * @brief Accumulates one buffer use into this pass's desired access.
+ *
+ * A retained buffer is read only with valid contents; any write makes them
+ * valid, since the writer owns what a reader may consume (ADR-029).
+ */
+vkr_internal bool8_t vkr_rg_declare_buffer_access(
+    VkrRenderGraph *graph, const VkrRgPass *pass, VkrRgBufferHandle handle,
+    VkrRgBufferAccessFlags access, VkrGpuStageFlags stages, uint32_t token,
+    uint32_t *touched_count) {
   uint32_t index = handle.id - 1;
   if (index >= graph->buffer_state_capacity ||
-      index >= graph->touched_buffer_capacity) {
+      index >= graph->touched_buffer_capacity ||
+      index >= graph->buffers.length) {
     return false_v;
   }
   if (stages == VKR_GPU_STAGE_NONE) {
     return false_v;
   }
   VkrRgBufferState *state = &graph->buffer_states[index];
+  const VkrRgBuffer *buffer = array_get_VkrRgBuffer(&graph->buffers, index);
+  if (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED) {
+    const VkrRgBufferAccessFlags reads =
+        VKR_RG_BUFFER_ACCESS_VERTEX | VKR_RG_BUFFER_ACCESS_INDEX |
+        VKR_RG_BUFFER_ACCESS_UNIFORM | VKR_RG_BUFFER_ACCESS_STORAGE_READ |
+        VKR_RG_BUFFER_ACCESS_TRANSFER_SRC | VKR_RG_BUFFER_ACCESS_INDIRECT_READ;
+    if ((access & reads) != 0u && !state->retained_valid) {
+      log_error("RenderGraph retained buffer '%.*s' is read by pass '%.*s' "
+                "with no valid contents",
+                (int)buffer->name.length, buffer->name.str,
+                (int)pass->desc.name.length, pass->desc.name.str);
+      return false_v;
+    }
+    if ((access & (VKR_RG_BUFFER_ACCESS_STORAGE_WRITE |
+                   VKR_RG_BUFFER_ACCESS_TRANSFER_DST)) != 0u)
+      state->retained_valid = true_v;
+  }
   if (state->pending_token == token) {
     state->pending_access =
         (VkrRgBufferAccessFlags)(state->pending_access | access);
@@ -1667,7 +1703,7 @@ vkr_internal bool8_t vkr_rg_declare_pass_accesses(
 
   for (uint64_t i = 0; i < pass->desc.buffer_reads.length; ++i) {
     VkrRgBufferUse *use = array_get_VkrRgBufferUse(&pass->desc.buffer_reads, i);
-    if (!vkr_rg_declare_buffer_access(graph, use->buffer, use->access,
+    if (!vkr_rg_declare_buffer_access(graph, pass, use->buffer, use->access,
                                       use->stages, token,
                                       touched_buffer_count)) {
       return false_v;
@@ -1677,7 +1713,7 @@ vkr_internal bool8_t vkr_rg_declare_pass_accesses(
   for (uint64_t i = 0; i < pass->desc.buffer_writes.length; ++i) {
     VkrRgBufferUse *use =
         array_get_VkrRgBufferUse(&pass->desc.buffer_writes, i);
-    if (!vkr_rg_declare_buffer_access(graph, use->buffer, use->access,
+    if (!vkr_rg_declare_buffer_access(graph, pass, use->buffer, use->access,
                                       use->stages, token,
                                       touched_buffer_count)) {
       return false_v;

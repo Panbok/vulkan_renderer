@@ -305,6 +305,18 @@ typedef struct VkrRgRetainedState {
 } VkrRgRetainedState;
 
 /**
+ * @brief One retained buffer's committed cross-frame state. See ADR-029.
+ *
+ * A buffer has one subresource. `content_valid` and the access and stages of
+ * the last successful submit mean what they mean for an image.
+ */
+typedef struct VkrRgRetainedBufferState {
+  VkrRgBufferAccessFlags access;
+  VkrGpuStageFlags stages;
+  bool8_t content_valid;
+} VkrRgRetainedBufferState;
+
+/**
  * @brief Backend hook for retained cross-frame subresource state.
  *
  * The graph does not own retained state: physical instances outlive any single
@@ -322,6 +334,12 @@ typedef struct VkrRgRetainedStateProvider {
                uint32_t subresource, VkrRgRetainedState *out_state);
   void (*commit)(void *context, uint32_t image_index, uint32_t instance_index,
                  uint32_t subresource, const VkrRgRetainedState *state);
+  /* Retained buffers have one instance. Without these hooks a retained buffer
+     seeds with invalid contents. */
+  void (*read_buffer)(void *context, uint32_t buffer_index,
+                      VkrRgRetainedBufferState *out_state);
+  void (*commit_buffer)(void *context, uint32_t buffer_index,
+                        const VkrRgRetainedBufferState *state);
 } VkrRgRetainedStateProvider;
 
 struct VkrRenderGraph;

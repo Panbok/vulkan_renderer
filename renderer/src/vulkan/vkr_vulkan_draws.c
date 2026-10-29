@@ -536,32 +536,26 @@ vkr_internal bool8_t vkr_vk_upload_ltc(VkrVulkanRenderer *renderer,
 }
 
 /* The frame's packed point lights, each with its first local shadow view.
-   A frame without point lights gets one zero row, so the table address is
-   never null (see vkr_vk_upload_decals). */
-vkr_internal bool8_t vkr_vk_upload_point_lights(
+   Rows carry intensity before exposure; the shaders apply the frame's
+   pre-exposure where they read it (ADR-019). A frame that declares no light
+   table (no scene rendering) reads them from upload memory, one zero row
+   when it has none, so the rows' address is never null (see
+   vkr_vk_upload_decals). */
+vkr_internal bool8_t vkr_vk_upload_light_rows(
     VkrVulkanFrameSlot *slot, const VkrPreparedFrame *packet,
     const VkrFrameLighting *lighting) {
-  if (!lighting || lighting->point_light_count == 0u) {
-    VkrGpuPointLightRow *row = vkr_vk_frame_upload_allocate(
-        slot, sizeof(*row), _Alignof(VkrGpuPointLightRow),
-        &slot->point_light_data, NULL);
-    if (!row) {
-      return false_v;
-    }
-    MemZero(row, sizeof(*row));
-    return true_v;
-  }
-  const uint64_t light_bytes =
-      (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow);
+  const uint32_t light_count = lighting ? lighting->point_light_count : 0u;
   VkrGpuPointLightRow *packed = vkr_vk_frame_upload_allocate(
-      slot, light_bytes, _Alignof(VkrGpuPointLightRow), &slot->point_light_data,
-      NULL);
+      slot, (uint64_t)Max(light_count, 1u) * sizeof(VkrGpuPointLightRow),
+      _Alignof(VkrGpuPointLightRow), &slot->point_light_data, NULL);
   if (!packed) {
     return false_v;
   }
-  for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
-    /* Rows carry intensity before exposure; the shaders apply the frame's
-       pre-exposure where they read it (ADR-019). */
+  if (light_count == 0u) {
+    MemZero(packed, sizeof(*packed));
+    return true_v;
+  }
+  for (uint32_t i = 0u; i < light_count; ++i) {
     vkr_point_light_pack(&lighting->point_lights[i], 1.0f, &packed[i]);
     /* Only the light head can be shadowed (ADR-135). */
     packed[i].p3.w =
@@ -569,6 +563,63 @@ vkr_internal bool8_t vkr_vk_upload_point_lights(
             ? (float32_t)packet->input.local_shadow->light_first_view[i]
             : 0.0f;
   }
+  return true_v;
+}
+
+/* Every shading pass reads the frame's light rows from the graph's retained
+   light table, into which Lighting.Scatter first writes the rows the
+   renderer lists as changed since the last submitted frame
+   (vkr_light_table.h). A table whose contents the graph does not keep, new or
+   recreated, takes every row. */
+vkr_internal bool8_t vkr_vk_upload_point_lights(
+    VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
+    const VkrPreparedFrame *packet, const VkrFrameLighting *lighting) {
+  slot->point_light_updates = 0u;
+  slot->point_light_update_count = 0u;
+  VkrVulkanGraphBufferInstance *table =
+      vkr_vk_graph_buffer(renderer, renderer->light_table_handle);
+  if (!table) {
+    return vkr_vk_upload_light_rows(slot, packet, lighting);
+  }
+  const VkrLightTableFrame *frame = &packet->light_table;
+  const uint32_t light_count = lighting ? lighting->point_light_count : 0u;
+  if (frame->count != light_count || (frame->count && !frame->rows)) {
+    log_error("Vulkan light table frame has %u rows, the frame has %u lights",
+              frame->count, light_count);
+    return false_v;
+  }
+  if ((uint64_t)frame->count * sizeof(VkrGpuPointLightRow) >
+      table->buffer.size) {
+    log_error(
+        "Vulkan light table holds %llu rows, the frame has %u lights",
+        (unsigned long long)(table->buffer.size / sizeof(VkrGpuPointLightRow)),
+        frame->count);
+    return false_v;
+  }
+  slot->point_light_data = table->buffer.address;
+  const bool8_t full = frame->full || !table->retained_state.content_valid;
+  const uint32_t update_count = full ? frame->count : frame->update_count;
+  if (update_count == 0u) {
+    return true_v;
+  }
+  VkrLightRowUpdate *updates = vkr_vk_frame_upload_allocate(
+      slot, (uint64_t)update_count * sizeof(VkrLightRowUpdate), 16u,
+      &slot->point_light_updates, NULL);
+  if (!updates) {
+    return false_v;
+  }
+  if (full) {
+    for (uint32_t row = 0u; row < update_count; ++row) {
+      updates[row] = (VkrLightRowUpdate){
+          .row = row,
+          .value = frame->rows[row],
+      };
+    }
+  } else {
+    MemCopy(updates, frame->updates,
+            (uint64_t)update_count * sizeof(VkrLightRowUpdate));
+  }
+  slot->point_light_update_count = update_count;
   return true_v;
 }
 
@@ -827,7 +878,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   };
   slot->anisotropy = anisotropy_address;
 
-  if (!vkr_vk_upload_point_lights(slot, packet, lighting)) {
+  if (!vkr_vk_upload_point_lights(renderer, slot, packet, lighting)) {
     return false_v;
   }
 

@@ -2155,9 +2155,9 @@ vkr_internal void test_tiled_graph_topology(void) {
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
-    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 385u,
-    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 379u,
-    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 401u,
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 386u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 380u,
+    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 402u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -2576,12 +2576,21 @@ vkr_internal void test_retained_flag_rejects_conflicting_lifetimes(void) {
   assert(rg_barrier_test_load_json(&allocator, ok_source, &json));
   vkr_rg_json_destroy(&json);
 
+  /* A retained buffer is one instance: RETAINED is its lifetime flag, so a
+     second one is rejected. */
   const char *buffer_source =
       "{\"version\":1,\"name\":\"retained\",\"resources\":[{"
       "\"name\":\"buffer\",\"type\":\"buffer\",\"size\":16,"
       "\"usage\":[\"STORAGE\"],\"flags\":[\"RETAINED\"]}],"
       "\"passes\":[]}";
-  assert(!rg_barrier_test_load_json(&allocator, buffer_source, &json));
+  assert(rg_barrier_test_load_json(&allocator, buffer_source, &json));
+  vkr_rg_json_destroy(&json);
+  const char *buffer_conflict_source =
+      "{\"version\":1,\"name\":\"retained\",\"resources\":[{"
+      "\"name\":\"buffer\",\"type\":\"buffer\",\"size\":16,"
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"RETAINED\",\"PER_FRAME_SLOT\"]}],"
+      "\"passes\":[]}";
+  assert(!rg_barrier_test_load_json(&allocator, buffer_conflict_source, &json));
   vkr_rg_json_destroy(&json);
 
   arena_destroy(arena);
@@ -2698,6 +2707,120 @@ vkr_internal void test_retained_commit_then_read_succeeds(void) {
   vkr_rg_destroy(graph);
   arena_destroy(arena);
   printf("  test_retained_commit_then_read_succeeds PASSED\n");
+}
+
+typedef struct RgRetainedBufferTestStore {
+  VkrRgRetainedBufferState states[4];
+  uint32_t commit_calls;
+} RgRetainedBufferTestStore;
+
+vkr_global RgRetainedBufferTestStore g_retained_buffer_store;
+
+vkr_internal void
+rg_retained_buffer_test_read(void *context, uint32_t buffer_index,
+                             VkrRgRetainedBufferState *out_state) {
+  RgRetainedBufferTestStore *store = context;
+  if (buffer_index < ArrayCount(store->states) &&
+      store->states[buffer_index].content_valid)
+    *out_state = store->states[buffer_index];
+}
+
+vkr_internal void
+rg_retained_buffer_test_commit(void *context, uint32_t buffer_index,
+                               const VkrRgRetainedBufferState *state) {
+  RgRetainedBufferTestStore *store = context;
+  store->commit_calls++;
+  if (buffer_index < ArrayCount(store->states))
+    store->states[buffer_index] = *state;
+}
+
+/* A retained buffer read with no writer fails until a submitted frame wrote
+   it, and the next frame's first write waits for the previous frame's last
+   read: the light table's scatter (ADR-135) depends on that barrier. */
+vkr_internal void test_retained_buffer_carries_contents_and_access(void) {
+  printf("  Running test_retained_buffer_carries_contents_and_access...\n");
+  Arena *arena = arena_create(MB(4), MB(4));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  MemZero(&g_retained_buffer_store, sizeof(g_retained_buffer_store));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRgRetainedStateProvider provider = {
+      .context = &g_retained_buffer_store,
+      .read_buffer = rg_retained_buffer_test_read,
+      .commit_buffer = rg_retained_buffer_test_commit,
+  };
+  vkr_rg_set_retained_state_provider(graph, &provider);
+
+  VkrRgBufferDesc desc = {.size = 64u, .flags = VKR_RG_RESOURCE_FLAG_RETAINED};
+  bitset8_set(&desc.usage, VKR_BUFFER_USAGE_STORAGE);
+  VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
+
+  /* A reader alone has nothing to read. */
+  assert(vkr_rg_begin_frame(graph, &frame));
+  VkrRgBufferHandle buffer =
+      vkr_rg_create_buffer(graph, string8_lit("table"), &desc);
+  assert(vkr_rg_buffer_handle_valid(buffer));
+  VkrRgPassBuilder lone_reader =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+  assert(vkr_rg_pass_read_buffer(&lone_reader, buffer,
+                                 VKR_RG_BUFFER_ACCESS_STORAGE_READ, 0u, 0u));
+  assert(vkr_rg_export_buffer(graph, buffer));
+  assert(!vkr_rg_compile_schedule(graph));
+  vkr_rg_end_frame(graph);
+
+  for (uint32_t frame_index = 0u; frame_index < 2u; ++frame_index) {
+    assert(vkr_rg_begin_frame(graph, &frame));
+    buffer = vkr_rg_create_buffer(graph, string8_lit("table"), &desc);
+    assert(vkr_rg_buffer_handle_valid(buffer));
+    VkrRgPassBuilder writer =
+        rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "writer");
+    assert(vkr_rg_pass_write_buffer(
+        &writer, buffer, VKR_RG_BUFFER_ACCESS_STORAGE_WRITE, 0u, 0u));
+    VkrRgPassBuilder reader =
+        rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+    assert(vkr_rg_pass_read_buffer(&reader, buffer,
+                                   VKR_RG_BUFFER_ACCESS_STORAGE_READ, 0u, 0u));
+    assert(vkr_rg_export_buffer(graph, buffer));
+    assert(vkr_rg_compile_schedule(graph));
+    assert(graph->execution_order.length == 2u);
+    const VkrRgPass *first =
+        &graph->passes.data[graph->execution_order.data[0]];
+    if (frame_index == 0u) {
+      /* A new buffer has no earlier use to wait for. */
+      assert(first->pre_buffer_barriers.length == 0u ||
+             first->pre_buffer_barriers.data[0].src_access ==
+                 VKR_RG_BUFFER_ACCESS_NONE);
+    } else {
+      assert(first->pre_buffer_barriers.length == 1u);
+      assert(first->pre_buffer_barriers.data[0].src_access ==
+             VKR_RG_BUFFER_ACCESS_STORAGE_READ);
+      assert(first->pre_buffer_barriers.data[0].dst_access ==
+             VKR_RG_BUFFER_ACCESS_STORAGE_WRITE);
+    }
+    vkr_rg_commit_retained_state(graph);
+    vkr_rg_end_frame(graph);
+    const VkrRgRetainedBufferState *stored =
+        &g_retained_buffer_store.states[buffer.id - 1u];
+    assert(stored->content_valid);
+    assert(stored->access == VKR_RG_BUFFER_ACCESS_STORAGE_READ);
+  }
+
+  /* With the contents committed, a frame that only reads compiles. */
+  assert(vkr_rg_begin_frame(graph, &frame));
+  buffer = vkr_rg_create_buffer(graph, string8_lit("table"), &desc);
+  VkrRgPassBuilder reader =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+  assert(vkr_rg_pass_read_buffer(&reader, buffer,
+                                 VKR_RG_BUFFER_ACCESS_STORAGE_READ, 0u, 0u));
+  assert(vkr_rg_export_buffer(graph, buffer));
+  assert(vkr_rg_compile_schedule(graph));
+  vkr_rg_end_frame(graph);
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_retained_buffer_carries_contents_and_access PASSED\n");
 }
 
 vkr_internal void test_retained_uncommitted_frame_rolls_back(void) {
@@ -3139,6 +3262,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_retained_is_not_an_instance_domain();
   test_retained_read_without_contents_fails_compile();
   test_retained_commit_then_read_succeeds();
+  test_retained_buffer_carries_contents_and_access();
   test_retained_uncommitted_frame_rolls_back();
   test_retained_state_is_per_instance_and_per_layer();
   test_retained_write_does_not_validate_other_layers();

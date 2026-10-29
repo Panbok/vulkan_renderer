@@ -92,6 +92,8 @@ typedef struct VkrRgBufferState {
   VkrRgBufferAccessFlags pending_access;
   VkrGpuStageFlags pending_stages;
   uint32_t pending_token;
+  /** A retained buffer's seed validity, kept current in execution order. */
+  bool8_t retained_valid;
 } VkrRgBufferState;
 
 /**

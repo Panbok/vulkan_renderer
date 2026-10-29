@@ -156,6 +156,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.light_table_scatter.comp",
+      "entry": "vk_light_table_scatter",
+      "stage": "compute"
+    },
+    {
       "name": "packet.light_cluster_bin.comp",
       "entry": "vk_light_cluster_bin",
       "stage": "compute"

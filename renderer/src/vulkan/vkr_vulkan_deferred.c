@@ -1632,6 +1632,46 @@ vkr_vk_local_shadow_overflow_tag(const VkrPreparedFrame *packet) {
   return (uint32_t)(packet->input.frame.frame_index % 255u) + 1u;
 }
 
+/* Lighting.Scatter: writes the frame's light row updates into the retained
+   light table, one thread per update, before Lighting.Clusters and every
+   pass that shades lights read it. The graph orders this write after the
+   previous frame's reads (ADR-029). */
+bool8_t vkr_vk_prepare_light_scatter(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphBufferInstance *table =
+      vkr_vk_deferred_buffer(renderer, pass, 0u);
+  if (!table || slot->point_light_data != table->buffer.address)
+    return false_v;
+  const uint32_t update_count = slot->point_light_update_count;
+  if (update_count == 0u)
+    return true_v;
+
+  const VkrVulkanLightScatterRoot root = {
+      .table = table->buffer.address,
+      .updates = slot->point_light_updates,
+      .update_count = update_count,
+      .table_rows =
+          (uint32_t)Min(table->buffer.size / sizeof(VkrGpuPointLightRow),
+                        (VkDeviceSize)UINT32_MAX),
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanLightScatterRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines
+          [VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_TABLE_SCATTER];
+  prepared->groups[prepared->dispatch_count][0] =
+      vkr_ceil_div_u32(update_count, 64u);
+  prepared->groups[prepared->dispatch_count][1] = 1u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
+}
+
 /* Lighting.Clusters (ADR-135): sizes the frame's clusters to the render
    extent, fills the mapped VkrVulkanLightClusters record that every frame
    root and the G-buffer resolve already address, and queues the prepare

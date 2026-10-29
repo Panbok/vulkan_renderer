@@ -509,11 +509,49 @@ vkr_internal void vkr_vk_retained_commit(void *context, uint32_t image_index,
     *slot = *state;
 }
 
+/* A retained buffer's one instance, or NULL when the index names no live
+   retained buffer of this graph generation. */
+vkr_internal VkrVulkanGraphBufferInstance *
+vkr_vk_retained_buffer(VkrVulkanRenderer *renderer, uint32_t buffer_index) {
+  if (buffer_index >= renderer->graph->buffers.length)
+    return NULL;
+  const VkrRgBuffer *buffer =
+      array_get_VkrRgBuffer(&renderer->graph->buffers, buffer_index);
+  VkrVulkanGraphBuffer *slot = &renderer->graph_buffers[buffer_index];
+  if (!buffer || !slot->live || slot->graph_generation != buffer->generation ||
+      slot->instance_count != 1u ||
+      (slot->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED) == 0u)
+    return NULL;
+  return &slot->instances[0];
+}
+
+vkr_internal void
+vkr_vk_retained_buffer_read(void *context, uint32_t buffer_index,
+                            VkrRgRetainedBufferState *out_state) {
+  const VkrVulkanGraphBufferInstance *instance =
+      vkr_vk_retained_buffer((VkrVulkanRenderer *)context, buffer_index);
+  /* As for images, an unresolvable buffer reports its seed unchanged:
+     invalid contents. So does a new instance, which no submit has used. */
+  if (instance && instance->retained_state.content_valid)
+    *out_state = instance->retained_state;
+}
+
+vkr_internal void
+vkr_vk_retained_buffer_commit(void *context, uint32_t buffer_index,
+                              const VkrRgRetainedBufferState *state) {
+  VkrVulkanGraphBufferInstance *instance =
+      vkr_vk_retained_buffer((VkrVulkanRenderer *)context, buffer_index);
+  if (instance)
+    instance->retained_state = *state;
+}
+
 void vkr_vk_install_retained_provider(VkrVulkanRenderer *renderer) {
   const VkrRgRetainedStateProvider provider = {
       .context = renderer,
       .read = vkr_vk_retained_read,
       .commit = vkr_vk_retained_commit,
+      .read_buffer = vkr_vk_retained_buffer_read,
+      .commit_buffer = vkr_vk_retained_buffer_commit,
   };
   vkr_rg_set_retained_state_provider(renderer->graph, &provider);
 }
@@ -902,6 +940,7 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
   renderer->transmission_gpu_candidate_instance_buffer_handle =
       VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->temporal_transform_history_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->light_table_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->skinning_output_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
@@ -922,6 +961,8 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
     else if (vkr_string8_equals_cstr(&buffer->name,
                                      "temporal_transform_history"))
       renderer->temporal_transform_history_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name, "light_table"))
+      renderer->light_table_handle = handle;
     else if (vkr_string8_equals_cstr(&buffer->name, "skinning_output"))
       renderer->skinning_output_handle = handle;
     if (buffer->imported ||
@@ -2188,6 +2229,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_GBUFFER_RESOLVE_SAMPLE1:
     return vkr_vk_prepare_deferred_gbuffer(renderer, &prepared->compute, pass,
                                            true_v);
+  case VKR_RG_EXECUTOR_LIGHT_SCATTER:
+    return vkr_vk_prepare_light_scatter(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_LIGHT_CLUSTERS:
     return vkr_vk_prepare_light_clusters(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK:

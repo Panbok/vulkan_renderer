@@ -1114,20 +1114,20 @@ vkr_rg_json_parse_resource(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
   }
 
   if (out_resource->type == VKR_RG_JSON_RESOURCE_BUFFER) {
-    if (out_resource->flags & VKR_RG_JSON_RESOURCE_FLAG_RETAINED)
-      return vkr_rg_json_error(ctx, field_path,
-                               "RETAINED currently supports images only");
+    /* A retained buffer is one graph-owned instance whose contents survive
+       across frames (ADR-029), so RETAINED is its lifetime flag. */
     const uint32_t lifetime_flags =
         out_resource->flags & (VKR_RG_JSON_RESOURCE_FLAG_PERSISTENT |
                                VKR_RG_JSON_RESOURCE_FLAG_EXTERNAL |
                                VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE |
                                VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT |
-                               VKR_RG_JSON_RESOURCE_FLAG_HISTORY);
+                               VKR_RG_JSON_RESOURCE_FLAG_HISTORY |
+                               VKR_RG_JSON_RESOURCE_FLAG_RETAINED);
     if (!lifetime_flags || (lifetime_flags & (lifetime_flags - 1u)) != 0u)
       return vkr_rg_json_error(
           ctx, field_path,
           "buffer requires exactly one PERSISTENT, EXTERNAL, PER_IMAGE, "
-          "PER_FRAME_SLOT, or HISTORY lifetime flag");
+          "PER_FRAME_SLOT, HISTORY, or RETAINED lifetime flag");
   }
 
   if (out_resource->type == VKR_RG_JSON_RESOURCE_IMAGE) {

@@ -1462,6 +1462,13 @@ vkr_global const VkrVulkanReflectedField s_vk_light_cluster_build_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightClusterBuildRoot, index_capacity),
 };
 
+vkr_global const VkrVulkanReflectedField s_vk_light_scatter_fields[] = {
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightScatterRoot, table),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightScatterRoot, updates),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightScatterRoot, update_count),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightScatterRoot, table_rows),
+};
+
 vkr_global const VkrVulkanReflectedField s_vk_local_shadow_mask_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, frame),
     {"frame_address_padding",
@@ -1815,6 +1822,10 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
     VKR_VULKAN_REFLECTED_ROOT(
         VKR_VULKAN_PACKET_LIGHT_CLUSTER_BIN_COMP_SPV, "vk_light_cluster_bin",
         s_vk_light_cluster_build_fields, VkrVulkanLightClusterBuildRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_LIGHT_TABLE_SCATTER_COMP_SPV,
+                              "vk_light_table_scatter",
+                              s_vk_light_scatter_fields,
+                              VkrVulkanLightScatterRoot),
     VKR_VULKAN_REFLECTED_ROOT(
         VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV, "vk_local_shadow_mask",
         s_vk_local_shadow_mask_fields, VkrVulkanLocalShadowMaskRoot),
@@ -3182,6 +3193,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
       VKR_VULKAN_PACKET_LIGHT_CLUSTER_PREPARE_COMP_SPV,
       VKR_VULKAN_PACKET_LIGHT_CLUSTER_BIN_COMP_SPV,
+      VKR_VULKAN_PACKET_LIGHT_TABLE_SCATTER_COMP_SPV,
       VKR_VULKAN_PACKET_SKINNING_COMP_SPV,
       VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV,
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV,
@@ -3274,6 +3286,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "vk_gpu_draw_encode",
       "vk_light_cluster_prepare",
       "vk_light_cluster_bin",
+      "vk_light_table_scatter",
       "vk_skinning",
       "vk_temporal_transform",
       "vk_gbuffer_resolve",

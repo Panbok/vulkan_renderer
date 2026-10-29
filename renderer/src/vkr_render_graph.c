@@ -240,9 +240,12 @@ vkr_rg_image_final_subresource_layout(const VkrRenderGraph *graph,
 }
 
 void vkr_rg_commit_retained_state(VkrRenderGraph *graph) {
-  if (!graph || !graph->retained_provider.commit || !graph->subresource_states)
+  if (!graph)
     return;
-  const uint32_t image_count = (uint32_t)graph->images.length;
+  const uint32_t image_count =
+      graph->retained_provider.commit && graph->subresource_states
+          ? (uint32_t)graph->images.length
+          : 0u;
   for (uint32_t i = 0; i < image_count; ++i) {
     const VkrRgImage *image = array_get_VkrRgImage(&graph->images, i);
     if (!image || !(image->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED))
@@ -266,6 +269,24 @@ void vkr_rg_commit_retained_state(VkrRenderGraph *graph) {
       graph->retained_provider.commit(graph->retained_provider.context, i,
                                       instance, s, &state);
     }
+  }
+
+  if (!graph->retained_provider.commit_buffer || !graph->buffer_states)
+    return;
+  const uint32_t buffer_count = (uint32_t)graph->buffers.length;
+  for (uint32_t i = 0; i < buffer_count; ++i) {
+    const VkrRgBuffer *buffer = array_get_VkrRgBuffer(&graph->buffers, i);
+    if (!buffer || !buffer->declared_this_frame ||
+        !(buffer->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED))
+      continue;
+    const VkrRgBufferState *terminal = &graph->buffer_states[i];
+    const VkrRgRetainedBufferState state = {
+        .access = terminal->access,
+        .stages = terminal->stages,
+        .content_valid = terminal->retained_valid,
+    };
+    graph->retained_provider.commit_buffer(graph->retained_provider.context, i,
+                                           &state);
   }
 }
 
@@ -775,9 +796,12 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
               (int)name.length, name.str);
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }
-  if (desc->flags & VKR_RG_RESOURCE_FLAG_RETAINED) {
-    log_error("RenderGraph buffer '%.*s': RETAINED currently supports images "
-              "only",
+  /* A retained buffer keeps its contents in one graph-owned instance. */
+  if ((desc->flags & VKR_RG_RESOURCE_FLAG_RETAINED) &&
+      (desc->flags & (VKR_RG_RESOURCE_RETAINED_EXCLUSIONS |
+                      VKR_RG_RESOURCE_FLAG_PER_IMAGE))) {
+    log_error("RenderGraph buffer '%.*s': RETAINED cannot combine with "
+              "TRANSIENT, EXTERNAL, HISTORY, PER_FRAME_SLOT, or PER_IMAGE",
               (int)name.length, name.str);
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }

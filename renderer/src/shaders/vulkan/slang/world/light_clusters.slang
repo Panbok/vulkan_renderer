@@ -286,6 +286,52 @@ void vk_light_cluster_prepare(uint3 thread_id : SV_DispatchThreadID)
                                               sphere.w, near_w);
 }
 
+// Lighting.Scatter: the light table keeps the frame's light rows across
+// frames; the frame's updates name a row and carry its contents, and one
+// thread writes each update into its row before Lighting.Clusters and every
+// pass that shades lights read the table.
+// One changed row, as the renderer lists it (VkrLightRowUpdate,
+// vkr_light_table.h): 80 bytes with the row 16-byte aligned.
+struct VkrVkLightRowUpdate
+{
+    uint row;
+    uint3 reserved;
+    VkrGpuPointLightRow value;
+};
+
+struct VkrVkLightScatterRoot
+{
+    VkrGpuPointLightRow *table;
+    VkrVkLightRowUpdate *updates;
+    uint update_count;
+    uint table_rows;
+};
+
+struct VkrVkLightScatterPush
+{
+    VkrVkLightScatterRoot *root;
+    uint2 reserved;
+};
+
+[[vk::push_constant]] ConstantBuffer<VkrVkLightScatterPush>
+    g_light_scatter_push;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_light_table_scatter(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkLightScatterRoot root =
+        vkr_vk_uniform_root(*g_light_scatter_push.root);
+    uint update = thread_id.x;
+    if (update >= root.update_count)
+        return;
+    uint row = root.updates[update].row;
+    // The renderer lists rows below the frame's count, which the host bounds
+    // by the table; the test keeps any other row inside it.
+    if (row < root.table_rows)
+        root.table[row] = root.updates[update].value;
+}
+
 groupshared uint g_light_cluster_items[VKR_LIGHT_CLUSTER_ITEM_WORDS];
 
 [shader("compute")]

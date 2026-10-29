@@ -251,6 +251,8 @@ static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
   "packet.light_cluster_prepare.comp.spv"
 #define VKR_VULKAN_PACKET_LIGHT_CLUSTER_BIN_COMP_SPV                           \
   "packet.light_cluster_bin.comp.spv"
+#define VKR_VULKAN_PACKET_LIGHT_TABLE_SCATTER_COMP_SPV                         \
+  "packet.light_table_scatter.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
   "packet.deferred_lighting.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV                   \
@@ -542,6 +544,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_PREPARE,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_BIN,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_TABLE_SCATTER,
   VKR_VULKAN_DEFERRED_PIPELINE_SKINNING,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_TRANSFORM,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE,
@@ -1240,6 +1243,19 @@ _Static_assert(sizeof(VkrVulkanLightClusterBuildRoot) == 64u &&
                    offsetof(VkrVulkanLightClusterBuildRoot, counters) == 32u &&
                    offsetof(VkrVulkanLightClusterBuildRoot, light_count) == 40u,
                "Light cluster build root ABI drift");
+
+/* Lighting.Scatter's dispatch: update i, a VkrLightRowUpdate, writes its
+   value into table row updates[i].row. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanLightScatterRoot {
+  uint64_t table;
+  uint64_t updates;
+  uint32_t update_count;
+  uint32_t table_rows;
+  uint64_t reserved;
+} VkrVulkanLightScatterRoot;
+_Static_assert(sizeof(VkrVulkanLightScatterRoot) == 32u &&
+                   offsetof(VkrVulkanLightScatterRoot, update_count) == 16u,
+               "Light scatter root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
   uint64_t frame;
@@ -2742,6 +2758,9 @@ typedef struct VkrVulkanGraphBufferInstance {
   Mat4 history_view;
   bool8_t history_motion_valid;
   bool8_t history_valid;
+  /** Committed cross-frame state of a RETAINED buffer (ADR-029), written only
+      after a submit is proven. */
+  VkrRgRetainedBufferState retained_state;
 } VkrVulkanGraphBufferInstance;
 
 typedef struct VkrVulkanGraphBuffer {
@@ -3366,7 +3385,14 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanCommandPartitions gpu_command_partitions;
   VkrVulkanCommandPartitions transmission_gpu_command_partitions;
   uint64_t gpu_world_epoch;
+  /** The light rows every shading pass reads: the graph's light table when
+      the frame declares it, else this frame's uploaded rows. */
   uint64_t point_light_data;
+  /** This frame's VkrLightRowUpdate records for Lighting.Scatter, in upload
+      memory: the rows that changed since the last submitted frame, or every
+      row when the table's contents are not kept (vkr_light_table.h). */
+  uint64_t point_light_updates;
+  uint32_t point_light_update_count;
   /** This frame's VkrVulkanLightClusters (ADR-135), never zero once the
       packet tables are uploaded: one empty cluster until Lighting.Clusters
       prepares, which fills the mapped record. */
@@ -3923,6 +3949,9 @@ struct VkrVulkanRenderer {
   VkrRgBufferHandle gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle transmission_gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle temporal_transform_history_handle;
+  /** The retained light table (ADR-029, ADR-135) when this frame declares it.
+   */
+  VkrRgBufferHandle light_table_handle;
   VkrRgBufferHandle skinning_output_handle;
   VkrSkinningHistory skinning_history[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
   VkrVulkanPreparedGraphPass *prepared_graph_passes;
@@ -4493,6 +4522,9 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(VkrVulkanRenderer *renderer,
                                              VkrVulkanPreparedCompute *prepared,
                                              const VkrRgPass *pass,
                                              VkrVulkanDiffuseVolumeStage stage);
+bool8_t vkr_vk_prepare_light_scatter(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
                                       VkrVulkanPreparedCompute *prepared,
                                       const VkrRgPass *pass);
