@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-28
+updated: 2026-10-29
 authority: adr
 ---
 
@@ -93,6 +93,15 @@ already made light code a per-frame variant).
   same segment with no gain: its trees are opaque, terrain geometry did not
   change the vertex phase, and proxies cut 24% of its draws without
   changing frame time.
+- **Splitting the opaque pass by the data it reads**, PETAFAB's rule for
+  keeping each pass's working set in the L1 cache. On 2026-10-29 a 2 s Metal
+  counter trace of the Bistro street view (2560×1440, MetalFX at 0.6, M1 Pro,
+  shipped kinds) over `Tiled.Opaque` read fragment occupancy 17%, ALU
+  limiter 44%, texture cache limiter 3%, last-level cache limiter 10%,
+  texture sample limiter 10% and read bandwidth 6%: still latency-bound at
+  low occupancy, not cache-bound, so a split would add passes without a
+  limiter to relieve. The desktop `Lighting.Deferred` shows the same pattern
+  (ADR-087). Not pursued.
 
 ## Revisit when
 
