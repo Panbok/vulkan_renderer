@@ -402,23 +402,29 @@ float3 vkr_metal_packet_local_shadow_sample(
   if (strength <= 0.0)
     return float3(1.0);
   bool point = kind != 2u;
-  float3 light_position =
-      root->local_shadow_views[first_view].light_position_near.xyz;
+  // A light's faces share its near and far planes and projection parameters
+  // (vkr_local_shadow_write_views), so the first view holds them; a point
+  // light's faces look along the axes, so the depth along the receiver's
+  // face is the largest component of its offset. Reading a second view for
+  // them cost the opaque pass's shadowed lights a dependent load and
+  // registers.
+  const device VkrLocalShadowView &first = root->local_shadow_views[first_view];
+  float3 light_position = first.light_position_near.xyz;
   float3 from_light = world_position - light_position;
-  uint face = point ? vkr_local_shadow_face(from_light) : 0u;
-  const device VkrLocalShadowView &source =
-      root->local_shadow_views[first_view + face];
-  float forward_depth = dot(from_light, source.light_direction_far.xyz);
-  if (forward_depth <= source.light_position_near.w ||
-      forward_depth >= source.light_direction_far.w)
+  const float3 extent = abs(from_light);
+  float forward_depth =
+      point ? max(extent.x, max(extent.y, extent.z))
+            : dot(from_light, first.light_direction_far.xyz);
+  if (forward_depth <= first.light_position_near.w ||
+      forward_depth >= first.light_direction_far.w)
     return float3(1.0);
-  float footprint = 2.0 * forward_depth * source.projection_params.x *
-                    source.projection_params.y;
+  float footprint = 2.0 * forward_depth * first.projection_params.x *
+                    first.projection_params.y;
   float3 receiver =
-      world_position + normal * (source.projection_params.w * footprint) -
-      normalize(from_light) * (source.projection_params.z * footprint);
+      world_position + normal * (first.projection_params.w * footprint) -
+      normalize(from_light) * (first.projection_params.z * footprint);
   from_light = receiver - light_position;
-  face = point ? vkr_local_shadow_face(from_light) : 0u;
+  uint face = point ? vkr_local_shadow_face(from_light) : 0u;
   const device VkrLocalShadowView &view =
       root->local_shadow_views[first_view + face];
   float4 clip = view.light_view_projection * float4(receiver, 1.0);

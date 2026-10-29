@@ -872,7 +872,9 @@ struct VkrMetalTiledLocalShadow {
         frame, first_view_encoded, kind, world_position, geometric_normal);
   }
 
-  bool contribution_cutoff() const { return false; }
+  // Lights below VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF take no shading and no
+  // shadow lookup, as in the desktop pipeline's deferred lighting.
+  bool contribution_cutoff() const { return true; }
   void measure(uint, float) const {}
 };
 
@@ -884,7 +886,7 @@ struct VkrMetalTiledNoLocalShadow {
     return float3(1.0f);
   }
 
-  bool contribution_cutoff() const { return false; }
+  bool contribution_cutoff() const { return true; }
   void measure(uint, float) const {}
 };
 

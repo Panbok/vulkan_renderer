@@ -1496,12 +1496,15 @@ System Traces (M1 Pro, Release, local and not authoritative):
 | Before | 3.84 ms, 19.5% occupancy | 7.42 / 7.57 ms, 19.0% |
 | The sun's cascades sampled before the material is read (`vkr_metal_tiled_early_sun_visibility`); each diffuse-volume probe's SH evaluated at the normal as read | 3.52 ms, 21.7% | 7.28 ms, 19.8% |
 | The cloud chain sampled from a cube (ADR-074) | 2.29 ms, 20.9% | 5.90 ms, 19.9% |
+| A shadowed light's normal offset from its first view, without a second face's view; lights below `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` skipped, as in the desktop pipeline | 2.28 ms | 5.64 ms |
 
 The early lookup gates on the geometric normal facing the sun in place of
 the normal-mapped one; a surface whose geometric normal faces away lies in
 its own shadow in the cascades. Moving the diffuse and environment light
 ahead of the direct light raised the counts by 4, and a SIMD-uniform light
-index did not change them. Captures against the build before these
+index did not change them. Captures of the last row against the build
+before it: the lightmapped Bistro identical, Bistro with dynamic lamps at
+most 1 of 255 (`tiled_bistro_capture`, `tiled_bistro_baked_capture`). Captures against the build before these
 changes are in ADR-074's tiled chain evidence.
 
 ### Sun contact shadow measurement
