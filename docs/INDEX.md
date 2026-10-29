@@ -185,7 +185,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [025](adr/025-selected-renderer-implementation-strategy.md) | Procedural renderer and prepared native commands | implemented |
 | [027](adr/027-immediate-mode-grid-ui.md) | Content-sized grid UI, viewport bars/world grid, dock stacks, Console and Bakery | implemented |
 | [028](adr/028-gpu-driven-deferred-visibility-buffer.md) | One GPU-driven world topology: shared culling and indirect draws; visibility buffer and deferred resolve on the desktop pipeline (Vulkan); desktop culling rows per candidate with exact bucket partitions | implemented |
-| [029](adr/029-retained-graph-resources.md) | Retain submitted image contents per subresource | implemented |
+| [029](adr/029-retained-graph-resources.md) | Retain submitted image and buffer contents per subresource | implemented |
 | [030](adr/030-offline-mesh-optimization-and-cooking.md) | Versioned meshoptimizer artifacts preserving glTF nodes, shared geometry and CPU skin influences | implemented |
 | [031](adr/031-versioned-packed-static-geometry-abi.md) | One 32-byte packed static vertex ABI | implemented |
 | [032](adr/032-two-phase-confirmed-visibility.md) | Keep exact one-phase visibility gates; the tiled one-sample path culls in two phases instead (ADR-128) | declined |

@@ -268,6 +268,17 @@ the GPU between frames.
 - **2c** Metal table and scatter pass (Mac). **2d** Vulkan table and scatter
   pass (Windows); then the helper goes.
 
+**Status of 2a and 2d (2026-10-28).** Vulkan's half of 2a landed in
+ee41ebfd. The Vulkan table and scatter pass build on 2b. The table
+is not imported: it is `light_table`, a retained graph buffer (ADR-029,
+which now covers buffers), so the graph itself carries the table's access
+state across frames, and a buffer it recreates comes back with invalid
+contents, which is item 7's new generation. Its size is fixed at 1024 rows,
+the current `VKR_MAX_SCENE_POINT_LIGHTS`, rather than the generation's
+count rounded up; a larger table changes that size or adds a count source.
+Vulkan takes 2b's updates: it uploads the listed rows, and every row when
+the list is `full` or the table's retained contents are invalid.
+
 **Evidence.** CPU time of the lighting system and upload bytes per frame at
 2,500 and 20,000 lights, before and after, on a still scene (no updates) and
 on the mover cases; image parity on the clustered, stress and lamp captures

@@ -100,6 +100,18 @@ than depth culling saves.
    one decal row, zero when the frame has none, so no shader reads through
    a null table address (the AMD driver may hoist such a load above its
    guard).
+8. **Light table.** Since 2026-10-28 the light rows live in `light_table`,
+   a retained graph buffer of 65536 bytes (1024 rows; ADR-029).
+   `Lighting.Scatter` (`pass.light_scatter`) runs before
+   `Lighting.Clusters` and writes the frame's updates into it, one thread
+   per update (`vk_light_table_scatter`); every pass that reads light rows
+   declares a read of the table, so the graph orders the scatter after the
+   previous frame's reads and every read after the scatter. The updates
+   are the rows the renderer lists as changed since the last submitted
+   frame (`VkrLightTableFrame`, `vkr_light_table.h`), or every row when the
+   renderer's list is full or the graph does not keep the table's
+   contents. A frame without scene rendering declares no table and reads
+   its uploaded rows.
 
 ## Consequences
 
