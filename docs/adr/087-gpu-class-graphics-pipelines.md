@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-28
+updated: 2026-10-29
 authority: adr
 ---
 
@@ -1561,6 +1561,13 @@ top 0.36 ms, nearly all the grid build, since the plaza has few pixels past
 the near cascades. On the Level Design Test's view across the valley
 (headless editor at 1146×595, Epic, fixed scale), alternating the setting
 three times gave 13.8 ms frames off and 14.45 ms on.
+
+A pixel-footprint hit test in the trace (PETAFAB's pixel-cone epsilon: a miss
+nearer than half the receiver's trace pixel ends the ray, and the smallest
+step grows to match) left `Tiled.SunShadow` at 0.324 ms p50 against 0.324 and
+0.324 ms without it (`tiled_bistro_plaza_windowed_sun_epic`,
+`local-windowed-gpu`, M1 Pro, 2026-10-29, local), so it was not kept; work
+on this pass starts at the grid build.
 
 Cooked against GPU-generated volumes, the same binary's replace-all plaza
 capture changes 20,583 of 921,600 pixels by more than 2 of 255, along
