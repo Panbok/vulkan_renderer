@@ -376,8 +376,9 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
 - Static lights bake into lightmaps, and the tiled pipeline adds no
   runtime light for them. After changing static lights, run
   `lighting.bake` on a project scene. Its `lightmap_settings` and
-  `diffuse_settings` hold only the values to change; 0 keeps Bakery's
-  default. Lightmap bakes are incremental: they reuse the last set when
+  `diffuse_settings` hold only the values to change; 0 keeps the value
+  of the scene's last bake (saved in the scene), else Bakery's default.
+  Lightmap bakes are incremental: they reuse the last set when
   nothing changed and relight only what edits reach, and an unchanged
   diffuse volume is kept. `full: true` rebakes both; use it when an
   incremental result looks wrong and before shipping.

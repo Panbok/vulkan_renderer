@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-23
+updated: 2026-10-29
 authority: adr
 ---
 
@@ -43,7 +43,14 @@ Lights and bakes) found these gaps:
      names.
 
    The project holds them for the session. The `bake_scene` request writes
-   each group with only its nonzero values, so zero keeps Bakery's default.
+   each group with only its nonzero values. The job merges them over the
+   scene's `bake_recipes.lightmap_settings` and `diffuse_settings`, the
+   values of its last bake, and saves the result there (2026-10-29), so zero
+   keeps the scene's last value, else Bakery's default, and a level baked
+   with a bounded volume (the Level Design Test) keeps its bounds across
+   sessions and machines. The window still opens at zeros and does not
+   show the saved values, and nothing removes a saved value: the
+   volume's bounds, once saved, change only to other bounds.
    Cmd `scene.bake <samples>` still replaces the lightmap sample count. The
    Bake settings window (Cmd `window bake`, the Lighting palette's Bake
    settings) edits them as Details rows and runs Bake lighting. Without a
@@ -134,6 +141,14 @@ tree):
   wrote both groups into the request. The diffuse job ran with
   `--voxel-size 0.5`, `--samples 64` and `--photons 20000`. An unknown
   settings key was refused. `lighting.time 18.5` moved the clock.
+- **Saved settings** (2026-10-29, Release, Metal):
+  `python3 tools/checks/check_lightmap_rebake.py --bakery
+  build_release/tools/bakery/vkr_bakery` passed: the scene's
+  `bake_recipes` held the first bake's `diffuse_settings` (spacing 1,
+  bounds) and `lightmap_settings` (samples 48), and a bake that named no
+  settings found both lightmaps and volume unchanged. The Level Design
+  Test's full bake from the editor (samples 64, spacing 2 and its bounds)
+  left the same values in its scene file.
 - **Not run:** no CPU test was added. The settings go through type
   descriptors, which the scene document tests cover, and the editor code
   has no CPU suite. Timing was not measured: the outlines exist only while

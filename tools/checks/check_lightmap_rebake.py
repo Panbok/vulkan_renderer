@@ -16,7 +16,9 @@ static lamps and an atmosphere sun, this checks that:
   artifact and says how the set was produced;
 - the diffuse volume follows the same flow: kept when unchanged, baked again
   by `full`, and after the lamp edit gathered again only at the probes the
-  lamp reaches, with its `volume_index`.
+  lamp reaches, with its `volume_index`;
+- the scene's `bake_recipes` keep the last bake's settings, so a bake that
+  names none (the next session's) repeats them and changes nothing.
 
 It bakes on the host's GPU (Metal ray tracing or Vulkan ray queries) in a few
 seconds per bake and needs a Release vkr_bakery.
@@ -114,12 +116,12 @@ def main():
             scene['atmosphere'] = {'enabled': True, 'sun_direction': [0.3, 0.6, 0.5]}
             jobs.write_managed_scene(scene_path, scene)
 
-        def bake(**extra):
+        def bake(settings=True, **extra):
             request = dict(create, operation='bake_scene', scene_path=str(scene_path),
-                           bakes={'lightmap': True, 'diffuse': True},
-                           diffuse_settings={'spacing': 1.0,
-                                             'bounds': [-7, -1, -12, 7, 5, 12]},
-                           **extra)
+                           bakes={'lightmap': True, 'diffuse': True}, **extra)
+            if settings:
+                request['diffuse_settings'] = {'spacing': 1.0, 'bounds': [-7, -1, -12, 7, 5, 12]}
+                request['lightmap_settings'] = {'samples': 48}
             started = time.monotonic()
             job = jobs.Job(request, result_path)
             assert job.execute() == 0, result_path.read_text() + job.output
@@ -137,14 +139,21 @@ def main():
         assert sorted(path.name for path in builds.iterdir()) == sorted(
             [revision(first), revision(first_volume)])
 
-        # Nothing changed: the set, its record and its revision stay.
-        output, unchanged_seconds = bake()
-        assert 'Lightmaps unchanged' in output, output
-        assert 'Diffuse volume unchanged' in output, output
-        assert lightmap_record(scene_path) == first
-        assert volume_record(scene_path) == first_volume
-        assert sorted(path.name for path in builds.iterdir()) == sorted(
-            [revision(first), revision(first_volume)])
+        # The scene keeps the settings the bake used.
+        recipes = jobs.read_managed_scene(scene_path)['bake_recipes']
+        assert recipes['diffuse_settings'] == {'spacing': 1.0, 'bounds': [-7, -1, -12, 7, 5, 12]}, recipes
+        assert recipes['lightmap_settings'] == {'samples': 48}, recipes
+
+        # Nothing changed: the set, its record and its revision stay, also
+        # when the request names no settings and the scene's repeat.
+        for settings in (True, False):
+            output, unchanged_seconds = bake(settings=settings)
+            assert 'Lightmaps unchanged' in output, output
+            assert 'Diffuse volume unchanged' in output, output
+            assert lightmap_record(scene_path) == first
+            assert volume_record(scene_path) == first_volume
+            assert sorted(path.name for path in builds.iterdir()) == sorted(
+                [revision(first), revision(first_volume)])
 
         # A full rebake bakes again though nothing changed; it names the set
         # it replaced as its previous build.

@@ -1378,12 +1378,42 @@ vkr_project_lighting_runtime(VkrProjectJob *job, VkrBakeryJson *scene,
                                             true_v);
 }
 
+/* A bake's settings group (`lightmap_settings` or `diffuse_settings`): the
+   scene's from its last bake, each value the request names replacing its
+   own, saved back to the scene's `bake_recipes` so the next bake, on any
+   machine, repeats them without the Bake settings window. */
+vkr_internal VkrBakeryJson *vkr_project_bake_settings(VkrProjectJob *job,
+                                                      VkrBakeryJson *scene,
+                                                      const char *key) {
+  Arena *arena = job->arena;
+  VkrBakeryJson *recipes = vkr_bakery_json_get(scene, "bake_recipes");
+  const VkrBakeryJson *saved =
+      recipes && recipes->type == VKR_BAKERY_JSON_OBJECT
+          ? vkr_bakery_json_get(recipes, key)
+          : NULL;
+  VkrBakeryJson *settings = saved && saved->type == VKR_BAKERY_JSON_OBJECT
+                                ? vkr_bakery_json_clone(arena, saved)
+                                : vkr_bakery_json_object(arena);
+  const VkrBakeryJson *requested = vkr_bakery_json_get(job->request, key);
+  if (requested && requested->type == VKR_BAKERY_JSON_OBJECT) {
+    for (const VkrBakeryJson *field = requested->first; field;
+         field = field->next) {
+      vkr_bakery_json_set(arena, settings, (const char *)field->key.str,
+                          vkr_bakery_json_clone(arena, field));
+    }
+  }
+  if (recipes && recipes->type == VKR_BAKERY_JSON_OBJECT && settings->first) {
+    vkr_bakery_json_set(arena, recipes, key,
+                        vkr_bakery_json_clone(arena, settings));
+  }
+  return settings;
+}
+
 vkr_internal bool8_t vkr_project_prepare_volume(VkrProjectJob *job,
                                                 VkrBakeryJson *scene,
                                                 const char *asset_root,
                                                 VkrBakeryJson *runtime,
                                                 VkrProjectLightingBake *out) {
-  Arena *arena = job->arena;
   char *revision = out->revision;
   vkr_project_uuid4(revision);
   char *directory = out->directory;
@@ -1408,10 +1438,8 @@ vkr_internal bool8_t vkr_project_prepare_volume(VkrProjectJob *job,
   for (uint32_t i = 0u; i < ArrayCount(fixed); ++i) {
     VKR_PROJECT_TRY(vkr_project_argument_push(job, &out->arguments, fixed[i]));
   }
-  const VkrBakeryJson *requested =
-      vkr_bakery_json_get(job->request, "diffuse_settings");
-  VkrBakeryJson *settings = requested ? vkr_bakery_json_clone(arena, requested)
-                                      : vkr_bakery_json_object(arena);
+  VkrBakeryJson *settings =
+      vkr_project_bake_settings(job, scene, "diffuse_settings");
   static const char *const lists[] = {"bounds"};
   for (uint32_t l = 0u; l < ArrayCount(lists); ++l) {
     const VkrBakeryJson *values = vkr_bakery_json_get(settings, lists[l]);
@@ -1608,7 +1636,6 @@ vkr_internal bool8_t vkr_project_check_lightmap_class(VkrProjectJob *job,
 vkr_internal bool8_t vkr_project_prepare_lightmaps(
     VkrProjectJob *job, VkrBakeryJson *scene, const char *asset_root,
     VkrBakeryJson *runtime, VkrProjectLightingBake *out) {
-  Arena *arena = job->arena;
   char *revision = out->revision;
   vkr_project_uuid4(revision);
   char *directory = out->directory;
@@ -1632,10 +1659,8 @@ vkr_internal bool8_t vkr_project_prepare_lightmaps(
   for (uint32_t i = 0u; i < ArrayCount(fixed); ++i) {
     VKR_PROJECT_TRY(vkr_project_argument_push(job, &out->arguments, fixed[i]));
   }
-  const VkrBakeryJson *requested =
-      vkr_bakery_json_get(job->request, "lightmap_settings");
-  VkrBakeryJson *settings = requested ? vkr_bakery_json_clone(arena, requested)
-                                      : vkr_bakery_json_object(arena);
+  VkrBakeryJson *settings =
+      vkr_project_bake_settings(job, scene, "lightmap_settings");
   static const char *const scalars[] = {"samples",
                                         "max_depth",
                                         "seed",

@@ -20717,7 +20717,7 @@ static const OpsDef s_ops[] = {
      "denoise_iterations, indirect_clamp) and 'diffuse_settings' "
      "(spacing, face_size, samples, max_depth, seed, photons, "
      "photon_radius) replace the Bake settings window's values; 0 keeps "
-     "Bakery's default.",
+     "the value of the scene's last bake, else Bakery's default.",
      "{\"type\":\"object\",\"properties\":{\"lightmap\":{\"type\":"
      "\"boolean\"},\"full\":{\"type\":\"boolean\"},"
      "\"lightmap_settings\":{\"type\":\"object\"},"

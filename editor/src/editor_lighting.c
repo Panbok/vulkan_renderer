@@ -277,11 +277,17 @@ void vkr_editor_bake_settings_window_build(VkrEditorUi *editor,
                  &note);
     return;
   }
+  /* Two lines: the note no longer fits one at the window's usual width. */
+  note.style.min_size_pt.y = 34.0f;
+  note.style.max_size_pt.y = 34.0f;
+  note.text.layout.word_wrap = true_v;
+  note.text.layout.max_width =
+      Max(1.0f, width - VKR_EDITOR_DETAILS_PAD_PT * 2.0f);
   vkr_ui_label(ui, string8_lit("bake.note"),
-               string8_lit("Bake lighting sends these to Bakery; 0 keeps its "
-                           "default."),
+               string8_lit("Bake lighting sends these to Bakery; 0 keeps the "
+                           "scene's last value, else Bakery's default."),
                &note);
-  y += 26.0f;
+  y += 38.0f;
   VkrEditorDetails *details = &editor->bake_settings_details;
   vkr_editor_details_begin(details);
   vkr_editor_details_error(details, ui, width, &y);
