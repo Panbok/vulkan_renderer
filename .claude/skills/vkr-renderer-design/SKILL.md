@@ -47,6 +47,12 @@ blocking wait, mutex acquisition, string formatting, name lookup, handle
 acquire/release churn, or pipeline creation. Prepare capacity and pipeline state
 before recording. A bump into already committed capacity is permitted.
 
+Record a frame into one command buffer per queue and let graph dependencies
+place its barriers. Do not add a submit, an encoder split or a hand-placed
+barrier per pass, per material or per object type, and draw one indirect batch
+per pipeline state rather than a pass per kind of object: each Metal encoder
+boundary idled the GPU 25 to 50 us, about 2.2 ms a Bistro frame (ADR-025).
+
 GPU completion checks and required target/slot waits belong at frame preparation
 or lifecycle boundaries. Removing a wait requires another completion proof;
 removing the check alone is a lifetime bug.

@@ -42,6 +42,17 @@ and unnecessary synchronization. Hoist draw/pass constants into their owning
 producer when that reduces measured cost. Reduce bandwidth and register pressure
 without weakening numerical precision or lifetime requirements.
 
+Size an intermediate image's format to the channels, sign and range its
+readers use; an unread alpha or RGBA16F for non-negative bloom-grade data
+doubles its traffic. A store into a packed or narrower float may truncate
+instead of rounding (Apple GPUs truncate `B10G11R11`), so round in the shader
+to a value the format holds, with margin for fast-math `exp2` and `log2`, and
+compare captures against the wider format before accepting it
+(`vkr_bloom_store`, ADR-044). Keep `discard` and alpha test out of opaque
+pipeline variants and draw opaque before alpha-tested before blended work: on
+tiled GPUs a pipeline that can discard loses hidden-surface removal for every
+draw it shades.
+
 Before calling expensive shader work efficient or proposing an optimization,
 record its dispatch extent, iteration bounds, nominal texture/buffer accesses,
 filtered samples, formats, temporary storage lifetime, and preserved quality
