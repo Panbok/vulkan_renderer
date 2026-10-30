@@ -1504,7 +1504,19 @@ its own shadow in the cascades. Moving the diffuse and environment light
 ahead of the direct light raised the counts by 4, and a SIMD-uniform light
 index did not change them. Captures of the last row against the build
 before it: the lightmapped Bistro identical, Bistro with dynamic lamps at
-most 1 of 255 (`tiled_bistro_capture`, `tiled_bistro_baked_capture`). Captures against the build before these
+most 1 of 255 (`tiled_bistro_capture`, `tiled_bistro_baked_capture`).
+
+Deferring the dynamic lights to a full-screen draw at the end of each opaque
+pass, which would read the surface from four memoryless targets the forward
+draws write (base and metalness, the two normals, depth and roughness, the
+material row), was compiled and counted on 2026-10-30 and not built: the
+forward draws without lights still took 92 registers, and the light draw 64
+with unshadowed lights, 80 with shadowed ones and 116 with rectangle lights.
+The shadowed loop's own 80, for its shadow view and four compares a light,
+would raise occupancy by about a seventh for the 3.6 ms the lights cost on
+Bistro with dynamic lamps, against four more targets in the pass (the texture
+demand target alone costs about 1 ms, see `tiled.metal`) and a costlier draw
+for frames with rectangle lights. Captures against the build before these
 changes are in ADR-074's tiled chain evidence.
 
 ### Sun contact shadow measurement
