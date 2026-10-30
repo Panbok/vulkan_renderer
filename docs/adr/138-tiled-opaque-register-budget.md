@@ -53,8 +53,8 @@ fragment occupancy down to about 80: 104 registers 19.5%, 88 22.8%, 80
    ([ADR-074](074-volumetric-cloud-layer.md) owns its contract).
 4. **Shadowed local lights.** A shadowed light reads its offset, depth
    range and projection from its first shadow view. A point light's face is
-   projected from the offset along the face's axes
-   (`vkr_metal_local_shadow_face_axes`), with no face matrix. Lights below
+   projected from the offset along the face's axes, each a signed component
+   of the offset (`vkr_metal_local_shadow_face_offset`), with no face matrix. Lights below
    `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` take no shading, as in the desktop
    pipeline's deferred lighting.
 5. **No-volume variants.** Frames whose scene binds no diffuse volume take
@@ -93,6 +93,7 @@ Release, dirty tree, local and not authoritative:
 | 4, face projection; 5 | shadowed loop 88 → 80; general no-volume 92 → 76 | 2.10 ms | 5.64 ms |
 | 6 | every variant −4 | 1.97 ms, 25.5% | 5.64 / 5.65 ms |
 | 7 | shadowed no-volume 84 → 80 | 1.96 / 1.98 ms | 5.32 / 5.33 / 5.34 ms, 23.1% |
+| 4, signed components in place of axis dot products | unchanged, 264 bytes less code | | 5.40 / 5.41 ms against 5.54 / 5.56 ms in the same batch |
 
 Captures against the build before each change
 (`tiled_bistro_capture`, `tiled_bistro_baked_capture`, `local-offscreen`
@@ -108,6 +109,7 @@ profile):
 - Row 6: at most 2 of 255 (65 to 67 dB).
 - Row 7: lightmapped Bistro identical, Bistro with dynamic lamps at most 1 of
   255 (73.3 dB).
+- Signed components: Bistro with dynamic lamps identical.
 
 After row 7, counters over `Tiled.Opaque` on Bistro with dynamic lamps read
 fragment occupancy 23.1%, ALU limiter 62%, F32 utilization 25.5% and F16
