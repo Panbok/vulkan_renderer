@@ -733,6 +733,60 @@ static bool32_t test_dynamic_volume_marks_reached_bricks(void) {
   return true_v;
 }
 
+/* Frames take turns through the active bricks' valid probes in brick
+   order: three frames of 50 walk bricks 0 and 1, every seventh probe
+   invalid, without a repeat, and wrap to the first probe after the last. */
+static bool32_t test_dynamic_volume_probes_take_turns(void) {
+  printf("  Running test_dynamic_volume_probes_take_turns...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(8), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(
+      vkr_scene_init(&scene, &allocator, VKR_SCENE_WORLD_ROOT_ID, 8u, &error));
+  uint32_t entries[3];
+  uint8_t probe_valid[3u * 64u];
+  VkrSceneDiffuseVolume volume =
+      lighting_test_brick_volume(entries, probe_valid);
+  for (uint32_t probe = 0u; probe < 3u * 64u; probe += 7u) {
+    probe_valid[probe] = 0u;
+  }
+  scene.diffuse_volume = &volume;
+  (void)lighting_test_dynamic_light(&scene, vec3_new(1.5f, 1.5f, 1.5f), 1.0f);
+  (void)lighting_test_dynamic_light(&scene, vec3_new(8.5f, 1.0f, 1.0f), 1.0f);
+  vkr_scene_update(&scene, 0.0);
+  (void)vkr_scene_resolve_world(&scene);
+
+  uint32_t expected[128];
+  uint32_t expected_count = 0u;
+  for (uint32_t probe = 0u; probe < 2u * 64u; ++probe) {
+    if (probe_valid[probe]) {
+      expected[expected_count++] = probe;
+    }
+  }
+  VkrDynamicVolumeSelection selection = {0};
+  static VkrDynamicVolumeFrame frame;
+  uint32_t position = 0u;
+  for (uint32_t turn = 0u; turn < 3u; ++turn) {
+    assert(
+        vkr_dynamic_volume_select(&selection, &scene, NULL, NULL, 50u, &frame));
+    assert(frame.input.trace_probe_count == 50u);
+    for (uint32_t i = 0u; i < 50u; ++i) {
+      assert(frame.trace_probes[i] == expected[position % expected_count]);
+      ++position;
+    }
+  }
+
+  vkr_dynamic_volume_selection_destroy(&selection);
+  scene.diffuse_volume = NULL;
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_dynamic_volume_probes_take_turns PASSED\n");
+  return true_v;
+}
+
 /* Past VKR_DYNAMIC_VOLUME_LIGHTS_MAX the layer keeps the brightest sources:
    three bright lights last in scene order replace three dim ones rather
    than being left out. */
@@ -1553,6 +1607,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_point_light_gpu_row_packing();
   passed &= test_dynamic_volume_marks_reached_bricks();
   passed &= test_dynamic_volume_keeps_strongest_lights();
+  passed &= test_dynamic_volume_probes_take_turns();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();
   passed &= test_spot_light_follows_parent_rotation();
   passed &= test_time_of_day_turns_sun_and_switches_night_groups();

@@ -24,9 +24,13 @@ typedef struct VkrDynamicVolumeSelection {
   uint64_t *active_bricks;
   uint64_t *next_bricks;
   uint32_t brick_words;
-  /* This frame's active probes, reused from frame to frame. */
-  uint32_t *active_probes;
-  uint32_t active_probe_capacity;
+  /* This frame's active bricks in brick order, each with the position of
+     its first probe among the frame's active probes, and every brick's
+     probe count (its valid probes; all of them for a runtime grid), so the
+     round-robin cursor expands only the probes it traces. */
+  uint32_t *active_list;
+  uint32_t *active_first;
+  uint8_t *brick_probes;
   /* Cells of 4 x 4 x 4 indirection entries (x fastest): cell c lists the
      bricks that overlap it, cell_bricks[cell_first[c]] up to
      cell_bricks[cell_first[c + 1]], and cell_unmarked[c] counts those this

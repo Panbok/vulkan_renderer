@@ -136,7 +136,11 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
      about 30 million tests a frame on the café volume (7,581 bricks) at
      the cap. A map from each entry to its brick still read every entry
      of a large sphere's bounds: 6.2 ms a frame for 4,096 sources of 14 m
-     (see Evidence).
+     (see Evidence). The frame's active list holds the active bricks, each
+     with the position of its first probe among the active probes and its
+     count of valid probes, counted once per volume. The round-robin
+     cursor finds its brick by binary search and expands only the probes
+     it traces, in the order of a flat probe list.
    - The renderer measures `Volume.Build` and `Volume.Trace` with GPU
      timestamps and sets how many probes the next frame may trace within
      1.0 ms, between 64 and 2048 (`vkr_renderer_dynamic_volume_probe_budget`).
@@ -352,8 +356,11 @@ Windows, RX 6700 XT, Adrenalin 26.6.3.
     layout of 7,290 level-0 bricks in 45 × 18 × 45 entries, ranges of 4,
     14 and 32 m. With the entry map: 2.2, 6.2 and 34.5 ms a frame. With
     the entry map bounded by the brick count: 1.5, 7.0 and 24.6 ms. With
-    the cells: 2.7, 2.5 and 3.2 ms. What remains at 4,096 sources is the
-    gather and the active probe list, not the marking.
+    the cells: 2.7, 2.5 and 3.2 ms. With the active list of bricks rather
+    than probes as well: 1.7, 1.2 and 2.1 ms, most of it the gather of
+    4,096 sources. `test_dynamic_volume_probes_take_turns` (three frames of
+    50 over two bricks, every seventh probe invalid: no repeat, invalid
+    probes skipped, the wrap); 911 CPU tests pass.
 - **The hang.** Until the megabuffer bases were passed in, any frame whose
   rays hit geometry lost the device. Radeon GPU Detective showed waves
   stalled on the index loads with no page fault, and the disassembly the

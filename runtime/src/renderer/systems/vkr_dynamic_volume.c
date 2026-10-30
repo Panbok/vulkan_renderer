@@ -622,7 +622,9 @@ void vkr_dynamic_volume_selection_destroy(
   }
   vkr_heap_free(selection->active_bricks);
   vkr_heap_free(selection->next_bricks);
-  vkr_heap_free(selection->active_probes);
+  vkr_heap_free(selection->active_list);
+  vkr_heap_free(selection->active_first);
+  vkr_heap_free(selection->brick_probes);
   vkr_heap_free(selection->cell_first);
   vkr_heap_free(selection->cell_bricks);
   vkr_heap_free(selection->cell_unmarked);
@@ -661,6 +663,10 @@ vkr_internal bool8_t dynamic_volume_follow(
       vkr_heap_alloc_zeroed(Max(words, 1u), sizeof(uint64_t));
   selection->next_bricks =
       vkr_heap_alloc_zeroed(Max(words, 1u), sizeof(uint64_t));
+  const uint32_t bricks = Max(volume->brick_count, 1u);
+  selection->active_list = vkr_heap_alloc_zeroed(bricks, sizeof(uint32_t));
+  selection->active_first = vkr_heap_alloc_zeroed(bricks, sizeof(uint32_t));
+  selection->brick_probes = vkr_heap_alloc_zeroed(bricks, sizeof(uint8_t));
   selection->cell_first = vkr_heap_alloc_zeroed(cells + 1u, sizeof(uint32_t));
   selection->cell_unmarked = vkr_heap_alloc_zeroed(cells, sizeof(uint32_t));
   selection->point_power =
@@ -668,10 +674,24 @@ vkr_internal bool8_t dynamic_volume_follow(
   selection->point_heap =
       vkr_heap_alloc_zeroed(VKR_DYNAMIC_VOLUME_LIGHTS_MAX, sizeof(uint32_t));
   if (!selection->active_bricks || !selection->next_bricks ||
-      !selection->cell_first || !selection->cell_unmarked ||
-      !selection->point_power || !selection->point_heap) {
+      !selection->active_list || !selection->active_first ||
+      !selection->brick_probes || !selection->cell_first ||
+      !selection->cell_unmarked || !selection->point_power ||
+      !selection->point_heap) {
     vkr_dynamic_volume_selection_destroy(selection);
     return false_v;
+  }
+  /* A bake's brick traces its valid probes; a runtime grid's, all of them. */
+  for (uint32_t b = 0u; b < volume->brick_count; ++b) {
+    uint32_t count = 0u;
+    for (uint32_t i = 0u; i < 64u; ++i) {
+      const uint32_t probe = b * 64u + i;
+      if (probe < volume->probe_count &&
+          (volume->runtime_grid || volume->probe_valid[probe])) {
+        ++count;
+      }
+    }
+    selection->brick_probes[b] = (uint8_t)count;
   }
   /* Each cell lists the bricks that overlap it, in brick order: count, sum,
      then fill with cell_unmarked as each cell's cursor. */
@@ -718,23 +738,43 @@ vkr_internal bool8_t dynamic_volume_follow(
   return true_v;
 }
 
-vkr_internal bool8_t dynamic_volume_reserve_probes(
-    VkrDynamicVolumeSelection *selection, uint32_t count) {
-  if (count <= selection->active_probe_capacity) {
-    return true_v;
+/* Writes `count` of the frame's active probes from position `cursor`
+   among them, wrapping past the last: the active brick holding the cursor,
+   found by its first probe position, then each brick's probes in order. */
+vkr_internal void
+dynamic_volume_trace_probes(const VkrDynamicVolumeSelection *selection,
+                            const VkrSceneDiffuseVolume *volume,
+                            uint32_t active_count, uint32_t cursor,
+                            uint32_t count, uint32_t *out_probes) {
+  uint32_t low = 0u;
+  uint32_t high = active_count - 1u;
+  while (low < high) {
+    const uint32_t middle = (low + high + 1u) / 2u;
+    if (selection->active_first[middle] <= cursor) {
+      low = middle;
+    } else {
+      high = middle - 1u;
+    }
   }
-  uint32_t capacity = Max(selection->active_probe_capacity, 4096u);
-  while (capacity < count) {
-    capacity *= 2u;
+  uint32_t item = low;
+  uint32_t skip = cursor - selection->active_first[item];
+  uint32_t written = 0u;
+  while (written < count) {
+    const uint32_t b = selection->active_list[item];
+    for (uint32_t i = 0u; i < 64u && written < count; ++i) {
+      const uint32_t probe = b * 64u + i;
+      if (probe >= volume->probe_count ||
+          !(volume->runtime_grid || volume->probe_valid[probe])) {
+        continue;
+      }
+      if (skip > 0u) {
+        --skip;
+        continue;
+      }
+      out_probes[written++] = probe;
+    }
+    item = item + 1u < active_count ? item + 1u : 0u;
   }
-  uint32_t *probes = vkr_heap_realloc(selection->active_probes,
-                                      (size_t)capacity * sizeof(uint32_t));
-  if (!probes) {
-    return false_v;
-  }
-  selection->active_probes = probes;
-  selection->active_probe_capacity = capacity;
-  return true_v;
 }
 
 bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
@@ -778,17 +818,8 @@ bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
   const Vec3 origin = vec3_sub(volume->origin, scene->origin_offset);
   MemZero(selection->next_bricks,
           (uint64_t)selection->brick_words * sizeof(uint64_t));
-  uint32_t active_probe_count = 0u;
   /* A grid's probes all hold its light and take turns; a bake's probes hold
      dynamic light only within its sources' reach. */
-  if (volume->runtime_grid) {
-    if (!dynamic_volume_reserve_probes(selection, volume->probe_count)) {
-      return false_v;
-    }
-    for (uint32_t probe = 0u; probe < volume->probe_count; ++probe) {
-      selection->active_probes[active_probe_count++] = probe;
-    }
-  }
   if (!volume->runtime_grid) {
     const uint32_t cells = selection->cell_dimensions[0] *
                            selection->cell_dimensions[1] *
@@ -808,19 +839,17 @@ bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
                                  gather.spheres[i].radius);
     }
   }
-  for (uint32_t b = 0u; b < volume->brick_count && !volume->runtime_grid; ++b) {
-    if (!(selection->next_bricks[b / 64u] & (UINT64_C(1) << (b % 64u)))) {
+  uint32_t active_count = 0u;
+  uint32_t active_probe_count = 0u;
+  for (uint32_t b = 0u; b < volume->brick_count; ++b) {
+    if ((!volume->runtime_grid &&
+         !(selection->next_bricks[b / 64u] & (UINT64_C(1) << (b % 64u)))) ||
+        selection->brick_probes[b] == 0u) {
       continue;
     }
-    if (!dynamic_volume_reserve_probes(selection, active_probe_count + 64u)) {
-      return false_v;
-    }
-    for (uint32_t i = 0u; i < 64u; ++i) {
-      const uint32_t probe = b * 64u + i;
-      if (probe < volume->probe_count && volume->probe_valid[probe]) {
-        selection->active_probes[active_probe_count++] = probe;
-      }
-    }
+    selection->active_list[active_count] = b;
+    selection->active_first[active_count++] = active_probe_count;
+    active_probe_count += selection->brick_probes[b];
   }
 
   /* Bricks the light left clear; those past the frame's cap stay marked and
@@ -855,9 +884,10 @@ bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
   if (active_probe_count) {
     selection->cursor %= active_probe_count;
   }
-  for (uint32_t i = 0u; i < trace_count; ++i) {
-    out->trace_probes[i] =
-        selection->active_probes[(selection->cursor + i) % active_probe_count];
+  if (trace_count) {
+    dynamic_volume_trace_probes(selection, volume, active_count,
+                                selection->cursor, trace_count,
+                                out->trace_probes);
   }
   selection->cursor += trace_count;
   input->trace_probe_count = trace_count;
