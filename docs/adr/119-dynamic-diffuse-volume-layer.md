@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-30
 authority: adr
 ---
 
@@ -121,12 +121,25 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
      changed one adding itself (+1) and taking its record away (−1); records
      with no light (−1); emissive rows past the static candidates. A light's
      empty group name and a record's `default` name the same group.
+   - At most 4,096 point sources (`VKR_DYNAMIC_VOLUME_LIGHTS_MAX`, 128
+     until 2026-10-30, when the first 128 in scene order were kept). Past
+     the cap, a source replaces the weakest one kept when its luminous
+     power, intensity times luminance, is greater.
    - Each source reaches a sphere where its irradiance falls to 0.05
      (32 m at most); the bricks it touches are active, and the bricks it
-     left clear. Active probes take turns.
+     left clear. Active probes take turns. Each sphere looks up the bricks
+     of the indirection entries inside its bounds, through a map from
+     entry to brick built once per volume. Testing every brick against
+     every source would cost about 30 million tests a frame on the café
+     volume (7,581 bricks) at the cap.
    - The renderer measures `Volume.Build` and `Volume.Trace` with GPU
      timestamps and sets how many probes the next frame may trace within
      1.0 ms, between 64 and 2048 (`vkr_renderer_dynamic_volume_probe_budget`).
+     Since the budget follows GPU time, two runs trace different probes. The
+     diagnostic `VKR_DYNAMIC_VOLUME_PROBE_BUDGET=n` (1 to 2048) fixes it.
+     Captures still differ a little between runs: on the stress street,
+     `indirect_diffuse` changed by 0.18 to 0.66 of 255 on average, and only
+     depth repeated.
 5. **Trace** ([volume_trace.slang](../../renderer/src/shaders/vulkan/slang/world/volume_trace.slang)).
    One group per probe, 128 rays on a spherical Fibonacci set rotated each
    frame. Alpha-tested candidates commit where their base colour's alpha
@@ -139,6 +152,22 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
    pass roots: on Adrenalin 26.6.3 a row's index pointer, loaded from the
    geometry row, compiled to an address whose high word was its low word,
    and the GPU hung with no page fault.
+   - **Light grid** (since 2026-10-30). Before the probes trace, three
+     dispatches build a world grid of the signed point sources. It has six
+     cascades of 16 × 16 × 16 cells, centred on the camera: 1 m cells in
+     the first, and each next one has cells twice the size. A source's
+     sphere is its range, or, without a range, its reach (as above). Each
+     cell lists at most 64 sources (32-bit slots; 6.4 MB per frame slot).
+     A list within that capacity is sorted into row order. A fuller list
+     keeps the 64 sources with the most irradiance at the cell: a
+     histogram finds the threshold, and ties go to the lower row. A hit,
+     and the relight at a reflection probe's capture origin, walk the
+     list of the finest cascade whose cube holds them; outside the
+     coarsest cube no source reaches. A list holds every source whose
+     range reaches the cell, in row order, so shading sums the same terms
+     as the full loop did. Only a source without a range changes: it now
+     stops at its reach. Rectangle lights, at most 8, are still looped
+     over directly.
 6. **Lookup.** `dynamic_sh` (RGBA16F, the composed SH's probe layout, one
    band) holds the layer unscaled and signed;
    `packet_diffuse_volume_lookup` adds it to the composed layers before the
@@ -202,6 +231,14 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
   viewport image, and frames without the layer held them too.
 - Rectangle lights are approximated by their centre; spot cones use the
   shared punctual kernel.
+- More sources make each probe cost more, so the measured budget traces
+  fewer of them: with the stress street's 920 sources, about 90 probes a
+  frame against about 600 with 128. Probes in reach therefore update less
+  often. A cell keeps at most 64 sources; on the stress street, about 390
+  cells near dense groups of lights keep their strongest 64.
+- The café traces at the budget's floor of 64 probes a frame, which
+  already take about 1.03 ms at 2560 × 1440, with or without the light
+  grid.
 - The grid on a scene as large as Bistro is coarse (4.88 m spacing for
   10 × 10 × 10 bricks); it serves blockout, not final lighting.
 - Without records, a bake's static lights count as unchanged.
@@ -277,6 +314,34 @@ Windows, RX 6700 XT, Adrenalin 26.6.3.
   1.5 ms and the frame to 14.4 ms.
 - **CPU tests.** `build_test.bat` (format, path and libc guards, Debug
   build): 804 passed, with `test_changed_lamp_group_leaves_bake`.
+- **Light grid and the source cap** (2026-10-30, Release, `local-offscreen`
+  and `local-offscreen-gpu-repeated`).
+  - `dynamic_volume_bistro_stress_capture` is the night street with the
+    café's volume and 920 short-range dynamic lights (64 moving). With
+    `VKR_DYNAMIC_VOLUME_PROBE_BUDGET=512`, two runs before the grid differ
+    by an `indirect_diffuse` MAE of 0.18 to 0.66 of 255 at frames 0, 200
+    and 400. The grid, at the 128 cap, differs from them by 0.18 to 0.62,
+    and depth is identical (`sha256:0604a14c…`, `sha256:1a5cd778…`, grid
+    `sha256:355ab528…`). A CPU replay of the grid puts at most 29 of
+    those 128 sources in one cell, so every list holds all the sources
+    that reach it.
+  - With the cap at 4,096, the layer holds all 920 lights.
+    `indirect_diffuse` then differs from the 128-light runs by an MAE of
+    about 18.5 of 255: 30 % of pixels gain, and 30 % lose, more than
+    8/255 (`sha256:1b22932d…`).
+  - `dynamic_volume_bistro_stress_timing` (2560 × 1440, measured budget),
+    128 against 920 sources: 597 against 90 probes a frame (p50),
+    `Volume.Trace` 0.816 against 0.928 ms (p50), and a frame wall of 23.6
+    against 25.7 ms (`sha256:1e37a62b…`, `sha256:fa329bc8…`).
+  - `dynamic_volume_bistro_cafe_timing` with the pre-grid trace and
+    relight kernels in a copied shader catalog (`VKR_SHADER_CATALOG`),
+    against the grid kernels: `Volume.Trace` 1.030 against 1.034 and
+    1.038 ms (p50), both at 64 probes (`sha256:6f5e22ed…`,
+    `sha256:c332e67f…`, `sha256:ebe1434c…`).
+  - `test_dynamic_volume_keeps_strongest_lights` (three bright lights after
+    4,096 dim ones are kept) and `test_dynamic_volume_marks_reached_bricks`
+    (bricks of levels 0 and 1 marked only when a sphere reaches them);
+    909 CPU tests pass.
 - **The hang.** Until the megabuffer bases were passed in, any frame whose
   rays hit geometry lost the device. Radeon GPU Detective showed waves
   stalled on the index loads with no page fault, and the disassembly the

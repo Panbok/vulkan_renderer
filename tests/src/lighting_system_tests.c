@@ -646,6 +646,140 @@ static bool32_t test_point_light_gpu_row_packing(void) {
   return true_v;
 }
 
+/* A dynamic point light for the diffuse volume's layer at `position`. */
+vkr_internal VkrEntityId lighting_test_dynamic_light(VkrScene *scene,
+                                                     Vec3 position,
+                                                     float32_t intensity) {
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  const VkrEntityId entity = vkr_scene_create_entity(scene, &error);
+  assert(entity.u64 != VKR_ENTITY_ID_INVALID.u64);
+  assert(vkr_scene_set_transform(scene, entity, position, vkr_quat_identity(),
+                                 vec3_one()));
+  const ScenePointLight light = {
+      .color = vec3_one(),
+      .intensity = intensity,
+      .range = 1.0f,
+      .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT,
+      .enabled = true_v,
+      .mobility = VKR_LIGHT_MOBILITY_DYNAMIC,
+  };
+  assert(vkr_scene_set_point_light(scene, entity, &light));
+  return entity;
+}
+
+/* Three bricks over a 6 x 3 x 6 indirection grid with 1 m probes: brick 0
+   at level 0 from entry (0, 0, 0), brick 1 at level 1 from (3, 0, 0), which
+   covers entries 3 to 5 in x, y and z up to 2, and brick 2 at level 0 from
+   (0, 0, 4). */
+vkr_internal VkrSceneDiffuseVolume
+lighting_test_brick_volume(uint32_t *entries, uint8_t *probe_valid) {
+  entries[0] = 0u;
+  entries[1] = (1u << 30u) | 3u;
+  entries[2] = 4u << 20u;
+  MemSet(probe_valid, 1, 3u * 64u);
+  return (VkrSceneDiffuseVolume){
+      .spacing = 1.0f,
+      .dimensions = {6u, 3u, 6u},
+      .probe_count = 3u * 64u,
+      .brick_entries = entries,
+      .brick_count = 3u,
+      .probe_valid = probe_valid,
+      .dynamic_sh = {.id = 1u},
+  };
+}
+
+/* The dynamic layer marks a brick active when a source's sphere reaches its
+   box, whatever the brick's level, and no other: each source looks its
+   bricks up in the indirection entries inside its bounds. */
+static bool32_t test_dynamic_volume_marks_reached_bricks(void) {
+  printf("  Running test_dynamic_volume_marks_reached_bricks...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(8), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(
+      vkr_scene_init(&scene, &allocator, VKR_SCENE_WORLD_ROOT_ID, 8u, &error));
+  uint32_t entries[3];
+  uint8_t probe_valid[3u * 64u];
+  VkrSceneDiffuseVolume volume =
+      lighting_test_brick_volume(entries, probe_valid);
+  scene.diffuse_volume = &volume;
+
+  /* One inside brick 0, one 0.5 m short of brick 1's box (x from 9 m), and
+     one 1.5 m short of brick 2's box (z from 12 m), past its 1 m range. */
+  (void)lighting_test_dynamic_light(&scene, vec3_new(1.5f, 1.5f, 1.5f), 1.0f);
+  (void)lighting_test_dynamic_light(&scene, vec3_new(8.5f, 1.0f, 1.0f), 1.0f);
+  (void)lighting_test_dynamic_light(&scene, vec3_new(1.5f, 1.5f, 10.5f), 1.0f);
+  vkr_scene_update(&scene, 0.0);
+  (void)vkr_scene_resolve_world(&scene);
+
+  VkrDynamicVolumeSelection selection = {0};
+  static VkrDynamicVolumeFrame frame;
+  assert(
+      vkr_dynamic_volume_select(&selection, &scene, NULL, NULL, 64u, &frame));
+  assert(frame.input.point_light_count == 3u);
+  assert(selection.active_bricks[0] ==
+         ((UINT64_C(1) << 0u) | (UINT64_C(1) << 1u)));
+
+  vkr_dynamic_volume_selection_destroy(&selection);
+  scene.diffuse_volume = NULL;
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_dynamic_volume_marks_reached_bricks PASSED\n");
+  return true_v;
+}
+
+/* Past VKR_DYNAMIC_VOLUME_LIGHTS_MAX the layer keeps the brightest sources:
+   three bright lights last in scene order replace three dim ones rather
+   than being left out. */
+static bool32_t test_dynamic_volume_keeps_strongest_lights(void) {
+  printf("  Running test_dynamic_volume_keeps_strongest_lights...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(64), MB(128), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, VKR_SCENE_WORLD_ROOT_ID,
+                        VKR_DYNAMIC_VOLUME_LIGHTS_MAX + 8u, &error));
+  uint32_t entries[3];
+  uint8_t probe_valid[3u * 64u];
+  VkrSceneDiffuseVolume volume =
+      lighting_test_brick_volume(entries, probe_valid);
+  scene.diffuse_volume = &volume;
+
+  for (uint32_t i = 0u; i < VKR_DYNAMIC_VOLUME_LIGHTS_MAX; ++i) {
+    (void)lighting_test_dynamic_light(&scene, vec3_new(1.5f, 1.5f, 1.5f), 1.0f);
+  }
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    (void)lighting_test_dynamic_light(&scene, vec3_new(8.5f, 1.0f, 1.0f), 5.0f);
+  }
+  vkr_scene_update(&scene, 0.0);
+  (void)vkr_scene_resolve_world(&scene);
+
+  VkrDynamicVolumeSelection selection = {0};
+  static VkrDynamicVolumeFrame frame;
+  assert(
+      vkr_dynamic_volume_select(&selection, &scene, NULL, NULL, 64u, &frame));
+  assert(frame.input.point_light_count == VKR_DYNAMIC_VOLUME_LIGHTS_MAX);
+  uint32_t bright = 0u;
+  for (uint32_t i = 0u; i < frame.input.point_light_count; ++i) {
+    bright += frame.point_lights[i].intensity > 2.0f ? 1u : 0u;
+  }
+  assert(bright == 3u);
+  /* The bright lights' brick joins with them. */
+  assert(selection.active_bricks[0] & (UINT64_C(1) << 1u));
+
+  vkr_dynamic_volume_selection_destroy(&selection);
+  scene.diffuse_volume = NULL;
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_dynamic_volume_keeps_strongest_lights PASSED\n");
+  return true_v;
+}
+
 /* A scaled parent must move the rectangle's center, but must not distort its
  * authored area or replace the rigid parent/child orientation with world-matrix
  * axes. This independently catches the local-rotation-only regression. */
@@ -1415,6 +1549,8 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_baked_lamps_past_capacity_keep_nearest();
   passed &= test_changed_lamp_group_leaves_bake();
   passed &= test_point_light_gpu_row_packing();
+  passed &= test_dynamic_volume_marks_reached_bricks();
+  passed &= test_dynamic_volume_keeps_strongest_lights();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();
   passed &= test_spot_light_follows_parent_rotation();
   passed &= test_time_of_day_turns_sun_and_switches_night_groups();

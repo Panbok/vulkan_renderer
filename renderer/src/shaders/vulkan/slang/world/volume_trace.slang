@@ -71,6 +71,12 @@ struct VkrVkVolumeTraceRoot
     float *probe_relight;
     uint ibl_probe_count;
     uint reserved1;
+    // The signed point lights' world grid (vk_volume_light_grid_bin): the
+    // cells' counts, then each cell's VKR_VOLUME_LIGHT_GRID_CAPACITY rows.
+    uint *light_grid;
+    uint2 reserved2;
+    // xyz: the camera, which centres the grid's cascades.
+    float4 light_grid_centre;
 };
 #define VKR_VOLUME_TRACE_GRID 1u
 // The bake's lamp groups keep their direct light in bands, which a probe's
@@ -123,6 +129,24 @@ struct VkrVkVolumeDecodePush
 // Upper bound of one ray's radiance, so a ray grazing an emitter cannot
 // flash a probe.
 #define VKR_VOLUME_TRACE_RADIANCE_MAX 64.0f
+
+// The signed point lights' world grid: cascades of 16^3 cells centred on the
+// camera, 1 m cells in cascade 0 and twice the size in each next one, each
+// cell listing at most VKR_VOLUME_LIGHT_GRID_CAPACITY rows in row order.
+// Mirrors VKR_VULKAN_VOLUME_LIGHT_GRID_* in vkr_vulkan_internal.h.
+#define VKR_VOLUME_LIGHT_GRID_CELLS 16
+#define VKR_VOLUME_LIGHT_GRID_CASCADES 6u
+#define VKR_VOLUME_LIGHT_GRID_CASCADE_CELLS 4096u
+#define VKR_VOLUME_LIGHT_GRID_CELL_COUNT                                       \
+    (VKR_VOLUME_LIGHT_GRID_CASCADES * VKR_VOLUME_LIGHT_GRID_CASCADE_CELLS)
+#define VKR_VOLUME_LIGHT_GRID_CAPACITY 64u
+// A source with no range reaches where its irradiance falls to this, at
+// most VKR_VOLUME_LIGHT_REACH_MAX metres: the selection's spheres
+// (dynamic_volume_reach in vkr_dynamic_volume.c).
+#define VKR_VOLUME_LIGHT_REACH_FLOOR 0.05f
+#define VKR_VOLUME_LIGHT_REACH_MAX 32.0f
+// The overflow histogram's bins: four a factor of two of importance.
+#define VKR_VOLUME_LIGHT_GRID_BINS 256u
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -365,6 +389,289 @@ float3 vk_volume_dynamic_response(VkrVkVolumeTraceRoot *root, float3 position,
     return vkr_diffuse_volume_l1(red, green, blue, normal) / total;
 }
 
+// The sphere a signed point light reaches: its range when it has one, as
+// vkr_punctual_light_term bounds it, otherwise where its irradiance falls
+// to VKR_VOLUME_LIGHT_REACH_FLOOR.
+float vk_volume_light_reach(VkrGpuPointLightRow light)
+{
+    uint kind = uint(light.p2.w + 0.5f);
+    if (kind != 0u && light.p2.z > 0.0f)
+        return light.p2.z;
+    float luminous = abs(light.p2.x) *
+                     dot(light.p1.rgb, float3(0.2126f, 0.7152f, 0.0722f));
+    return min(sqrt(max(luminous, 0.0f) / VKR_VOLUME_LIGHT_REACH_FLOOR),
+               VKR_VOLUME_LIGHT_REACH_MAX);
+}
+
+// The first cell of cascade `cascade`, in cells of its size from the
+// world's origin: the camera's cell sits in the cube's middle.
+int3 vk_volume_light_grid_base(float3 centre, uint cascade)
+{
+    float size = float(1u << cascade);
+    return int3(floor(centre / size)) - VKR_VOLUME_LIGHT_GRID_CELLS / 2;
+}
+
+float vk_volume_box_distance_squared(float3 position, float3 low, float3 high)
+{
+    float3 outside = max(max(low - position, 0.0f), position - high);
+    return dot(outside, outside);
+}
+
+// The cell of the finest cascade whose cube holds `position`, or ~0u
+// outside the coarsest, where no source reaches, and without sources.
+uint vk_volume_light_grid_cell(VkrVkVolumeTraceRoot *root, float3 position)
+{
+    if (root.light_count == 0u)
+        return ~0u;
+    for (uint cascade = 0u; cascade < VKR_VOLUME_LIGHT_GRID_CASCADES;
+         ++cascade)
+    {
+        float size = float(1u << cascade);
+        int3 cell = int3(floor(position / size)) -
+                    vk_volume_light_grid_base(root.light_grid_centre.xyz,
+                                              cascade);
+        if (all(cell >= 0) && all(cell < VKR_VOLUME_LIGHT_GRID_CELLS))
+            return cascade * VKR_VOLUME_LIGHT_GRID_CASCADE_CELLS +
+                   uint((cell.z * VKR_VOLUME_LIGHT_GRID_CELLS + cell.y) *
+                            VKR_VOLUME_LIGHT_GRID_CELLS +
+                        cell.x);
+    }
+    return ~0u;
+}
+
+// The rows a cell lists, in row order; none for ~0u.
+uint vk_volume_light_grid_count(VkrVkVolumeTraceRoot *root, uint cell)
+{
+    return cell != ~0u
+               ? min(root.light_grid[cell], VKR_VOLUME_LIGHT_GRID_CAPACITY)
+               : 0u;
+}
+
+uint vk_volume_light_grid_row(VkrVkVolumeTraceRoot *root, uint cell,
+                              uint index)
+{
+    return root.light_grid[VKR_VOLUME_LIGHT_GRID_CELL_COUNT +
+                           cell * VKR_VOLUME_LIGHT_GRID_CAPACITY + index];
+}
+
+// One thread per signed point light and cascade: the light joins the list
+// of every cell its sphere touches, past the cells inside the next finer
+// cascade's cube, which no lookup reads. A list past its capacity keeps
+// counting; vk_volume_light_grid_resolve chooses its rows.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_volume_light_grid_bin(uint3 id : SV_DispatchThreadID)
+{
+    VkrVkVolumeTraceRoot *root = g_volume_trace_push.root;
+    uint row = id.x / VKR_VOLUME_LIGHT_GRID_CASCADES;
+    uint cascade = id.x % VKR_VOLUME_LIGHT_GRID_CASCADES;
+    if (row >= root.light_count)
+        return;
+    VkrGpuPointLightRow light = root.lights[row];
+    float reach = vk_volume_light_reach(light);
+    // Wider by a hair, so a point the shading reaches never falls in a
+    // cell the rounding left out; a row past its reach adds nothing.
+    reach = reach * 1.0001f + 1.0e-3f;
+    float size = float(1u << cascade);
+    float3 centre = root.light_grid_centre.xyz;
+    int3 base = vk_volume_light_grid_base(centre, cascade);
+    int3 low = max(int3(floor((light.p0.xyz - reach) / size)) - base, 0);
+    int3 high = min(int3(floor((light.p0.xyz + reach) / size)) - base,
+                    VKR_VOLUME_LIGHT_GRID_CELLS - 1);
+    float3 inner_low = 0.0f;
+    float3 inner_high = 0.0f;
+    if (cascade > 0u)
+    {
+        int3 inner = vk_volume_light_grid_base(centre, cascade - 1u);
+        inner_low = float3(inner) * (0.5f * size);
+        inner_high = float3(inner + VKR_VOLUME_LIGHT_GRID_CELLS) *
+                     (0.5f * size);
+    }
+    for (int z = low.z; z <= high.z; ++z)
+    {
+        for (int y = low.y; y <= high.y; ++y)
+        {
+            for (int x = low.x; x <= high.x; ++x)
+            {
+                float3 cell_low = float3(base + int3(x, y, z)) * size;
+                float3 cell_high = cell_low + size;
+                if (cascade > 0u && all(cell_low >= inner_low) &&
+                    all(cell_high <= inner_high))
+                    continue;
+                if (vk_volume_box_distance_squared(light.p0.xyz, cell_low,
+                                                   cell_high) > reach * reach)
+                    continue;
+                uint cell = cascade * VKR_VOLUME_LIGHT_GRID_CASCADE_CELLS +
+                            uint((z * VKR_VOLUME_LIGHT_GRID_CELLS + y) *
+                                     VKR_VOLUME_LIGHT_GRID_CELLS +
+                                 x);
+                uint slot;
+                InterlockedAdd(root.light_grid[cell], 1u, slot);
+                if (slot < VKR_VOLUME_LIGHT_GRID_CAPACITY)
+                    root.light_grid[VKR_VOLUME_LIGHT_GRID_CELL_COUNT +
+                                    cell * VKR_VOLUME_LIGHT_GRID_CAPACITY +
+                                    slot] = row;
+            }
+        }
+    }
+}
+
+groupshared uint g_light_grid_rows[VKR_VOLUME_LIGHT_GRID_CAPACITY];
+groupshared uint g_light_grid_bins[VKR_VOLUME_LIGHT_GRID_BINS];
+groupshared uint g_light_grid_flags[VKR_VOLUME_LIGHT_GRID_CAPACITY];
+groupshared uint g_light_grid_threshold;
+groupshared uint g_light_grid_quota;
+groupshared uint g_light_grid_filled;
+
+// Sorts g_light_grid_rows ascending, one element a thread (bitonic).
+void vk_volume_light_grid_sort(uint thread)
+{
+    for (uint size = 2u; size <= VKR_VOLUME_LIGHT_GRID_CAPACITY; size <<= 1u)
+    {
+        for (uint stride = size >> 1u; stride > 0u; stride >>= 1u)
+        {
+            GroupMemoryBarrierWithGroupSync();
+            uint partner = thread ^ stride;
+            if (partner > thread)
+            {
+                uint a = g_light_grid_rows[thread];
+                uint b = g_light_grid_rows[partner];
+                bool ascending = (thread & size) == 0u;
+                if ((a > b) == ascending)
+                {
+                    g_light_grid_rows[thread] = b;
+                    g_light_grid_rows[partner] = a;
+                }
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+}
+
+// A row's histogram bin in a cell: its luminous intensity over the squared
+// distance to the cell, four bins a factor of two.
+uint vk_volume_light_grid_importance(VkrGpuPointLightRow light,
+                                     float distance_squared)
+{
+    float luminous = abs(light.p2.x) *
+                     dot(light.p1.rgb, float3(0.2126f, 0.7152f, 0.0722f));
+    float importance = luminous / max(distance_squared, 0.01f);
+    if (!(importance > 0.0f))
+        return 0u;
+    return uint(clamp(log2(importance) * 4.0f + 128.0f, 0.0f,
+                      float(VKR_VOLUME_LIGHT_GRID_BINS - 1u)));
+}
+
+// One group per cell. A list within its capacity sorts into row order, so
+// shading sums its rows in the order of the full list. A cell past it keeps
+// its strongest rows: a histogram finds the weakest bin it keeps whole or in
+// part, and that bin's rows join in row order until the list is full.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_volume_light_grid_resolve(uint3 group : SV_GroupID,
+                                  uint thread : SV_GroupIndex)
+{
+    VkrVkVolumeTraceRoot *root = g_volume_trace_push.root;
+    uint cell = group.x;
+    uint count = root.light_grid[cell];
+    if (count == 0u)
+        return;
+    uint *rows = root.light_grid + VKR_VOLUME_LIGHT_GRID_CELL_COUNT +
+                 cell * VKR_VOLUME_LIGHT_GRID_CAPACITY;
+    if (count <= VKR_VOLUME_LIGHT_GRID_CAPACITY)
+    {
+        g_light_grid_rows[thread] = thread < count ? rows[thread] : ~0u;
+        vk_volume_light_grid_sort(thread);
+        if (thread < count)
+            rows[thread] = g_light_grid_rows[thread];
+        return;
+    }
+
+    uint cascade = cell / VKR_VOLUME_LIGHT_GRID_CASCADE_CELLS;
+    uint local = cell % VKR_VOLUME_LIGHT_GRID_CASCADE_CELLS;
+    int3 coords = int3(local % 16u, (local / 16u) % 16u, local / 256u);
+    float size = float(1u << cascade);
+    float3 low =
+        float3(vk_volume_light_grid_base(root.light_grid_centre.xyz, cascade) +
+               coords) *
+        size;
+    float3 high = low + size;
+    for (uint bin = thread; bin < VKR_VOLUME_LIGHT_GRID_BINS; bin += 64u)
+        g_light_grid_bins[bin] = 0u;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint row = thread; row < root.light_count; row += 64u)
+    {
+        VkrGpuPointLightRow light = root.lights[row];
+        float reach = vk_volume_light_reach(light) * 1.0001f + 1.0e-3f;
+        float distance_squared =
+            vk_volume_box_distance_squared(light.p0.xyz, low, high);
+        if (distance_squared <= reach * reach)
+            InterlockedAdd(g_light_grid_bins[vk_volume_light_grid_importance(
+                               light, distance_squared)],
+                           1u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (thread == 0u)
+    {
+        uint above = 0u;
+        uint bin = VKR_VOLUME_LIGHT_GRID_BINS - 1u;
+        while (bin > 0u &&
+               above + g_light_grid_bins[bin] < VKR_VOLUME_LIGHT_GRID_CAPACITY)
+        {
+            above += g_light_grid_bins[bin];
+            --bin;
+        }
+        g_light_grid_threshold = bin;
+        g_light_grid_quota = VKR_VOLUME_LIGHT_GRID_CAPACITY - above;
+        g_light_grid_filled = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint threshold = g_light_grid_threshold;
+    for (uint first = 0u; first < root.light_count; first += 64u)
+    {
+        uint row = first + thread;
+        uint flag = 0u;
+        if (row < root.light_count)
+        {
+            VkrGpuPointLightRow light = root.lights[row];
+            float reach = vk_volume_light_reach(light) * 1.0001f + 1.0e-3f;
+            float distance_squared =
+                vk_volume_box_distance_squared(light.p0.xyz, low, high);
+            if (distance_squared <= reach * reach)
+            {
+                uint bin =
+                    vk_volume_light_grid_importance(light, distance_squared);
+                flag = bin > threshold ? 1u : (bin == threshold ? 2u : 0u);
+            }
+        }
+        g_light_grid_flags[thread] = flag;
+        GroupMemoryBarrierWithGroupSync();
+        // One thread takes the chunk's rows in row order, so the threshold
+        // bin's lowest rows join first.
+        if (thread == 0u)
+        {
+            for (uint j = 0u; j < 64u; ++j)
+            {
+                uint taken = g_light_grid_flags[j];
+                if (taken == 2u && g_light_grid_quota > 0u)
+                    --g_light_grid_quota;
+                else if (taken != 1u)
+                    continue;
+                if (g_light_grid_filled < VKR_VOLUME_LIGHT_GRID_CAPACITY)
+                    g_light_grid_rows[g_light_grid_filled++] = first + j;
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (thread >= g_light_grid_filled)
+        g_light_grid_rows[thread] = ~0u;
+    vk_volume_light_grid_sort(thread);
+    if (thread < g_light_grid_filled)
+        rows[thread] = g_light_grid_rows[thread];
+    if (thread == 0u)
+        root.light_grid[cell] = g_light_grid_filled;
+}
+
 // Irradiance the light sources give a surface, each signed and shadowed.
 float3 vk_volume_direct_irradiance(VkrVkVolumeTraceRoot *root,
                                    RaytracingAccelerationStructure scene,
@@ -372,9 +679,12 @@ float3 vk_volume_direct_irradiance(VkrVkVolumeTraceRoot *root,
 {
     float3 irradiance = 0.0f;
     float3 origin = position + normal * VKR_VOLUME_TRACE_OFFSET;
-    for (uint i = 0u; i < root.light_count; ++i)
+    uint cell = vk_volume_light_grid_cell(root, position);
+    uint cell_count = vk_volume_light_grid_count(root, cell);
+    for (uint j = 0u; j < cell_count; ++j)
     {
-        VkrGpuPointLightRow light = root.lights[i];
+        VkrGpuPointLightRow light =
+            root.lights[vk_volume_light_grid_row(root, cell, j)];
         VkrPunctualLightTerm term = vkr_punctual_light_term(
             light.p0, light.p1, light.p2, light.p3, position);
         float n_dot_l = dot(normal, term.direction);
@@ -787,9 +1097,12 @@ float vk_volume_direct_luminance(VkrVkVolumeTraceRoot *root,
                                  float3 position)
 {
     float3 irradiance = 0.0f;
-    for (uint i = 0u; i < root.light_count; ++i)
+    uint cell = vk_volume_light_grid_cell(root, position);
+    uint cell_count = vk_volume_light_grid_count(root, cell);
+    for (uint j = 0u; j < cell_count; ++j)
     {
-        VkrGpuPointLightRow light = root.lights[i];
+        VkrGpuPointLightRow light =
+            root.lights[vk_volume_light_grid_row(root, cell, j)];
         VkrPunctualLightTerm term = vkr_punctual_light_term(
             light.p0, light.p1, light.p2, light.p3, position);
         if (!term.in_range || term.cone <= 0.0f)

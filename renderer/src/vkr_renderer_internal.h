@@ -260,6 +260,11 @@ struct VkrRenderer {
      the first accepted packet. */
   VkrLightTable *light_table;
   uint32_t light_rows_updated;
+  /* The diffuse volume dynamic layer's signed sources and traced probes in
+     the last accepted packet (lighting.volume.sources and
+     lighting.volume.probes_traced, ADR-119); zero without an update. */
+  uint32_t volume_sources;
+  uint32_t volume_probes_traced;
 
   // Last target dimensions applied on the rendering thread.
   uint32_t last_window_width;

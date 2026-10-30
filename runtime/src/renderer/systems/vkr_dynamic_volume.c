@@ -8,15 +8,17 @@
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
-/* Lights and emitters reach probes within these spheres. */
+/* Rectangle lights and emitters reach probes within these spheres; point
+   lights within their own reach (dynamic_volume_point_reach). */
 typedef struct DynamicVolumeSphere {
   Vec3 center;
   float32_t radius;
 } DynamicVolumeSphere;
 
 #define DYNAMIC_VOLUME_SPHERES_MAX                                             \
-  (VKR_DYNAMIC_VOLUME_LIGHTS_MAX + VKR_DYNAMIC_VOLUME_RECTANGLE_LIGHTS_MAX +   \
-   256u)
+  (VKR_DYNAMIC_VOLUME_RECTANGLE_LIGHTS_MAX + 256u)
+/* Indirection entries the brick map covers at most (64 MiB of map). */
+#define DYNAMIC_VOLUME_ENTRY_MAP_MAX (1u << 24u)
 /* Irradiance below which a source's bounce is left out, in the volume's
    physical units, and the farthest reach of an unbounded source. */
 #define DYNAMIC_VOLUME_IRRADIANCE_FLOOR 0.05f
@@ -36,9 +38,13 @@ typedef struct DynamicVolumeSphere {
 typedef struct DynamicVolumeGather {
   const VkrScene *scene;
   const VkrSceneDiffuseVolume *volume;
+  VkrDynamicVolumeSelection *selection;
   VkrDynamicVolumeFrame *out;
   DynamicVolumeSphere *spheres;
   uint32_t sphere_count;
+  /* Whether the point lights filled the cap, so the selection's heap
+     orders their slots by luminous power. */
+  bool8_t point_heap;
   /* Bake records a current static light matched this frame. */
   uint8_t *matched;
   uint32_t record_count;
@@ -140,22 +146,77 @@ vkr_internal uint8_t dynamic_volume_record_slot(const VkrScene *scene,
   return VKR_SCENE_LIGHT_GROUP_NONE;
 }
 
-/* Adds a point, spot or polynomial light, signed, with its reach. */
+/* The sphere a point, spot or polynomial light reaches probes within. */
+vkr_internal float32_t dynamic_volume_point_reach(const VkrPointLight *point) {
+  const float32_t reach = dynamic_volume_reach(
+      point->intensity * dynamic_volume_luminance(point->color));
+  return point->range > 0.0f ? Min(point->range, reach) : reach;
+}
+
+/* Restores the min-heap of point light slots, by luminous power, below
+   position `at`. */
+vkr_internal void dynamic_volume_heap_down(uint32_t *heap,
+                                           const float32_t *power,
+                                           uint32_t count, uint32_t at) {
+  for (;;) {
+    const uint32_t left = 2u * at + 1u;
+    const uint32_t right = left + 1u;
+    uint32_t weakest = at;
+    if (left < count && power[heap[left]] < power[heap[weakest]]) {
+      weakest = left;
+    }
+    if (right < count && power[heap[right]] < power[heap[weakest]]) {
+      weakest = right;
+    }
+    if (weakest == at) {
+      return;
+    }
+    const uint32_t slot = heap[at];
+    heap[at] = heap[weakest];
+    heap[weakest] = slot;
+    at = weakest;
+  }
+}
+
+/* Adds a point, spot or polynomial light, signed. Past the cap it replaces
+   the weakest light kept when its luminous power is greater, so the layer
+   keeps the strongest sources rather than the first in scene order. */
 vkr_internal void dynamic_volume_add_point(DynamicVolumeGather *gather,
                                            const VkrPointLight *point,
                                            float32_t sign) {
-  VkrDynamicVolumeInput *input = &gather->out->input;
-  if (input->point_light_count >= VKR_DYNAMIC_VOLUME_LIGHTS_MAX ||
-      point->intensity <= 0.0f) {
+  if (point->intensity <= 0.0f) {
     return;
   }
-  gather->out->point_lights[input->point_light_count] = *point;
-  gather->out->point_light_signs[input->point_light_count++] = sign;
-  const float32_t reach = dynamic_volume_reach(
-      point->intensity * dynamic_volume_luminance(point->color));
-  dynamic_volume_add_sphere(gather, point->position,
-                            point->range > 0.0f ? Min(point->range, reach)
-                                                : reach);
+  VkrDynamicVolumeInput *input = &gather->out->input;
+  VkrDynamicVolumeSelection *selection = gather->selection;
+  const float32_t power =
+      point->intensity * dynamic_volume_luminance(point->color);
+  uint32_t slot = input->point_light_count;
+  if (slot < VKR_DYNAMIC_VOLUME_LIGHTS_MAX) {
+    input->point_light_count++;
+  } else {
+    if (!gather->point_heap) {
+      for (uint32_t i = 0u; i < VKR_DYNAMIC_VOLUME_LIGHTS_MAX; ++i) {
+        selection->point_heap[i] = i;
+      }
+      for (uint32_t i = VKR_DYNAMIC_VOLUME_LIGHTS_MAX / 2u; i-- > 0u;) {
+        dynamic_volume_heap_down(selection->point_heap, selection->point_power,
+                                 VKR_DYNAMIC_VOLUME_LIGHTS_MAX, i);
+      }
+      gather->point_heap = true_v;
+    }
+    slot = selection->point_heap[0];
+    if (!(power > selection->point_power[slot])) {
+      return;
+    }
+  }
+  gather->out->point_lights[slot] = *point;
+  gather->out->point_light_signs[slot] = sign;
+  selection->point_power[slot] = power;
+  if (gather->point_heap) {
+    dynamic_volume_heap_down(selection->point_heap, selection->point_power,
+                             VKR_DYNAMIC_VOLUME_LIGHTS_MAX, 0u);
+  }
 }
 
 vkr_internal void dynamic_volume_add_rectangle(DynamicVolumeGather *gather,
@@ -248,7 +309,6 @@ vkr_internal void dynamic_volume_point_lights_cb(const VkrArchetype *arch,
   (void)arch;
   DynamicVolumeGather *gather = user;
   const VkrScene *scene = gather->scene;
-  VkrDynamicVolumeInput *input = &gather->out->input;
   const uint32_t count = vkr_entity_chunk_count(chunk);
   VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
   SceneTransform *transforms =
@@ -265,8 +325,7 @@ vkr_internal void dynamic_volume_point_lights_cb(const VkrArchetype *arch,
     const bool8_t dynamic = light->mobility == VKR_LIGHT_MOBILITY_DYNAMIC;
     /* Static lights count only against the bake's record of them. */
     if ((!dynamic && !gather->volume->baked_lights_known) || !light->enabled ||
-        group <= 0.0f || !vkr_scene_entity_visible(scene, entities[i]) ||
-        input->point_light_count >= VKR_DYNAMIC_VOLUME_LIGHTS_MAX) {
+        group <= 0.0f || !vkr_scene_entity_visible(scene, entities[i])) {
       continue;
     }
     const Vec3 position = mat4_position(transforms[i].world);
@@ -427,22 +486,79 @@ vkr_internal void dynamic_volume_emitters(DynamicVolumeGather *gather,
   }
 }
 
-/* Whether the box from `low` to `high` meets any sphere. */
-vkr_internal bool8_t dynamic_volume_box_reached(
-    const DynamicVolumeGather *gather, Vec3 low, Vec3 high) {
-  for (uint32_t i = 0u; i < gather->sphere_count; ++i) {
-    const DynamicVolumeSphere *sphere = &gather->spheres[i];
-    const float32_t dx =
-        Max(Max(low.x - sphere->center.x, sphere->center.x - high.x), 0.0f);
-    const float32_t dy =
-        Max(Max(low.y - sphere->center.y, sphere->center.y - high.y), 0.0f);
-    const float32_t dz =
-        Max(Max(low.z - sphere->center.z, sphere->center.z - high.z), 0.0f);
-    if (dx * dx + dy * dy + dz * dz <= sphere->radius * sphere->radius) {
-      return true_v;
+/* Brick b's box, from its lowest indirection entry and level, in render
+   space. */
+vkr_internal void dynamic_volume_brick_box(const VkrSceneDiffuseVolume *volume,
+                                           Vec3 origin, uint32_t b, Vec3 *low,
+                                           Vec3 *high) {
+  const uint32_t packed = volume->brick_entries[b];
+  const uint32_t level = packed >> 30u;
+  const float32_t scale = level == 0u ? 1.0f : (level == 1u ? 3.0f : 9.0f);
+  const float32_t spacing = volume->spacing;
+  *low = vec3_add(origin,
+                  vec3_scale(vec3_new((float32_t)(packed & 1023u),
+                                      (float32_t)((packed >> 10u) & 1023u),
+                                      (float32_t)((packed >> 20u) & 1023u)),
+                             3.0f * spacing));
+  *high =
+      vec3_add(*low, vec3_new(3.0f * scale * spacing, 3.0f * scale * spacing,
+                              3.0f * scale * spacing));
+}
+
+/* Marks active the bricks whose boxes a sphere reaches: the bricks of the
+   indirection entries inside its bounds, through the entry map. */
+vkr_internal void
+dynamic_volume_mark_sphere(VkrDynamicVolumeSelection *selection,
+                           const VkrSceneDiffuseVolume *volume, Vec3 origin,
+                           Vec3 center, float32_t radius) {
+  if (!(radius > 0.0f)) {
+    return;
+  }
+  const float32_t entry = 3.0f * volume->spacing;
+  const float32_t offset[3] = {center.x - origin.x, center.y - origin.y,
+                               center.z - origin.z};
+  int32_t low[3];
+  int32_t high[3];
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const int32_t last = (int32_t)volume->dimensions[axis] - 1;
+    low[axis] = Max((int32_t)vkr_floor_f32((offset[axis] - radius) / entry), 0);
+    high[axis] =
+        Min((int32_t)vkr_floor_f32((offset[axis] + radius) / entry), last);
+    if (low[axis] > high[axis]) {
+      return;
     }
   }
-  return false_v;
+  for (int32_t z = low[2]; z <= high[2]; ++z) {
+    for (int32_t y = low[1]; y <= high[1]; ++y) {
+      for (int32_t x = low[0]; x <= high[0]; ++x) {
+        const uint64_t index =
+            ((uint64_t)z * volume->dimensions[1] + (uint64_t)y) *
+                volume->dimensions[0] +
+            (uint64_t)x;
+        const uint32_t brick = selection->entry_bricks[index];
+        if (!brick) {
+          continue;
+        }
+        const uint32_t b = brick - 1u;
+        const uint64_t bit = UINT64_C(1) << (b % 64u);
+        if (selection->next_bricks[b / 64u] & bit) {
+          continue;
+        }
+        Vec3 box_low;
+        Vec3 box_high;
+        dynamic_volume_brick_box(volume, origin, b, &box_low, &box_high);
+        const float32_t dx =
+            Max(Max(box_low.x - center.x, center.x - box_high.x), 0.0f);
+        const float32_t dy =
+            Max(Max(box_low.y - center.y, center.y - box_high.y), 0.0f);
+        const float32_t dz =
+            Max(Max(box_low.z - center.z, center.z - box_high.z), 0.0f);
+        if (dx * dx + dy * dy + dz * dz <= radius * radius) {
+          selection->next_bricks[b / 64u] |= bit;
+        }
+      }
+    }
+  }
 }
 
 void vkr_dynamic_volume_selection_destroy(
@@ -453,6 +569,9 @@ void vkr_dynamic_volume_selection_destroy(
   vkr_heap_free(selection->active_bricks);
   vkr_heap_free(selection->next_bricks);
   vkr_heap_free(selection->active_probes);
+  vkr_heap_free(selection->entry_bricks);
+  vkr_heap_free(selection->point_power);
+  vkr_heap_free(selection->point_heap);
   MemZero(selection, sizeof(*selection));
 }
 
@@ -465,14 +584,52 @@ vkr_internal bool8_t dynamic_volume_follow(
     return true_v;
   }
   vkr_dynamic_volume_selection_destroy(selection);
+  const uint64_t entries = (uint64_t)volume->dimensions[0] *
+                           volume->dimensions[1] * volume->dimensions[2];
+  if (entries > DYNAMIC_VOLUME_ENTRY_MAP_MAX) {
+    log_error("Dynamic volume of %llu indirection entries exceeds the brick "
+              "map's %u",
+              (unsigned long long)entries, DYNAMIC_VOLUME_ENTRY_MAP_MAX);
+    return false_v;
+  }
   const uint32_t words = (volume->brick_count + 63u) / 64u;
   selection->active_bricks =
       vkr_heap_alloc_zeroed(Max(words, 1u), sizeof(uint64_t));
   selection->next_bricks =
       vkr_heap_alloc_zeroed(Max(words, 1u), sizeof(uint64_t));
-  if (!selection->active_bricks || !selection->next_bricks) {
+  selection->entry_bricks =
+      vkr_heap_alloc_zeroed(Max(entries, 1u), sizeof(uint32_t));
+  selection->point_power =
+      vkr_heap_alloc_zeroed(VKR_DYNAMIC_VOLUME_LIGHTS_MAX, sizeof(float32_t));
+  selection->point_heap =
+      vkr_heap_alloc_zeroed(VKR_DYNAMIC_VOLUME_LIGHTS_MAX, sizeof(uint32_t));
+  if (!selection->active_bricks || !selection->next_bricks ||
+      !selection->entry_bricks || !selection->point_power ||
+      !selection->point_heap) {
     vkr_dynamic_volume_selection_destroy(selection);
     return false_v;
+  }
+  /* Each indirection entry names the brick that covers it: a level-1 brick
+     covers 3^3 entries and a level-2 brick 9^3. */
+  for (uint32_t b = 0u; b < volume->brick_count; ++b) {
+    const uint32_t packed = volume->brick_entries[b];
+    const uint32_t level = packed >> 30u;
+    const uint32_t scale = level == 0u ? 1u : (level == 1u ? 3u : 9u);
+    const uint32_t first[3] = {packed & 1023u, (packed >> 10u) & 1023u,
+                               (packed >> 20u) & 1023u};
+    const uint32_t end[3] = {Min(first[0] + scale, volume->dimensions[0]),
+                             Min(first[1] + scale, volume->dimensions[1]),
+                             Min(first[2] + scale, volume->dimensions[2])};
+    for (uint32_t z = first[2]; z < end[2]; ++z) {
+      for (uint32_t y = first[1]; y < end[1]; ++y) {
+        for (uint32_t x = first[0]; x < end[0]; ++x) {
+          const uint64_t index = ((uint64_t)z * volume->dimensions[1] + y) *
+                                     volume->dimensions[0] +
+                                 x;
+          selection->entry_bricks[index] = b + 1u;
+        }
+      }
+    }
   }
   selection->volume = volume;
   selection->brick_count = volume->brick_count;
@@ -518,6 +675,7 @@ bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
   DynamicVolumeGather gather = {
       .scene = scene,
       .volume = volume,
+      .selection = selection,
       .out = out,
       .spheres = spheres,
       .matched = matched,
@@ -537,7 +695,6 @@ bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
 
   /* Bricks are placed in document space; lights in render space. */
   const Vec3 origin = vec3_sub(volume->origin, scene->origin_offset);
-  const float32_t spacing = volume->spacing;
   MemZero(selection->next_bricks,
           (uint64_t)selection->brick_words * sizeof(uint64_t));
   uint32_t active_probe_count = 0u;
@@ -551,22 +708,22 @@ bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
       selection->active_probes[active_probe_count++] = probe;
     }
   }
+  if (!volume->runtime_grid) {
+    for (uint32_t i = 0u; i < out->input.point_light_count; ++i) {
+      dynamic_volume_mark_sphere(
+          selection, volume, origin, out->point_lights[i].position,
+          dynamic_volume_point_reach(&out->point_lights[i]));
+    }
+    for (uint32_t i = 0u; i < gather.sphere_count; ++i) {
+      dynamic_volume_mark_sphere(selection, volume, origin,
+                                 gather.spheres[i].center,
+                                 gather.spheres[i].radius);
+    }
+  }
   for (uint32_t b = 0u; b < volume->brick_count && !volume->runtime_grid; ++b) {
-    const uint32_t packed = volume->brick_entries[b];
-    const uint32_t level = packed >> 30u;
-    const float32_t scale = level == 0u ? 1.0f : (level == 1u ? 3.0f : 9.0f);
-    const Vec3 low = vec3_add(
-        origin, vec3_scale(vec3_new((float32_t)(packed & 1023u),
-                                    (float32_t)((packed >> 10u) & 1023u),
-                                    (float32_t)((packed >> 20u) & 1023u)),
-                           3.0f * spacing));
-    const Vec3 high =
-        vec3_add(low, vec3_new(3.0f * scale * spacing, 3.0f * scale * spacing,
-                               3.0f * scale * spacing));
-    if (!dynamic_volume_box_reached(&gather, low, high)) {
+    if (!(selection->next_bricks[b / 64u] & (UINT64_C(1) << (b % 64u)))) {
       continue;
     }
-    selection->next_bricks[b / 64u] |= UINT64_C(1) << (b % 64u);
     if (!dynamic_volume_reserve_probes(selection, active_probe_count + 64u)) {
       return false_v;
     }

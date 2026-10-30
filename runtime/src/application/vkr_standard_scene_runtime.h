@@ -452,6 +452,11 @@ typedef struct VkrStandardSceneRuntime {
    * VKR_LOCAL_SHADOW_ATLAS_LAYERS, at most
    * VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX; zero keeps the preset's. */
   uint32_t local_shadow_atlas_layer_override;
+  /** Diagnostic dynamic diffuse layer probe budget from
+   * VKR_DYNAMIC_VOLUME_PROBE_BUDGET, at most
+   * VKR_DYNAMIC_VOLUME_TRACE_PROBES_MAX, so captures trace the same probes
+   * every run; zero follows the renderer's measured budget. */
+  uint32_t dynamic_volume_probe_budget_override;
   bool8_t disable_soft_shadows;
   bool8_t disable_fog;
   bool8_t disable_volumetric_fog;

@@ -952,6 +952,18 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       atlas_layers > 0 && atlas_layers <= VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX
           ? (uint32_t)atlas_layers
           : 0u;
+  char volume_probe_budget[32];
+  const int64_t probe_budget =
+      vkr_platform_environment_variable("VKR_DYNAMIC_VOLUME_PROBE_BUDGET",
+                                        volume_probe_budget,
+                                        sizeof(volume_probe_budget)) &&
+              volume_probe_budget[0] != '\0'
+          ? string_parse_i64(volume_probe_budget, NULL)
+          : 0;
+  application->dynamic_volume_probe_budget_override =
+      probe_budget > 0 && probe_budget <= VKR_DYNAMIC_VOLUME_TRACE_PROBES_MAX
+          ? (uint32_t)probe_budget
+          : 0u;
   /* The editor presents through the presenter where the renderer has one
      (ADR-111); VKR_EDITOR_PRESENTER=0 keeps one presentation per Scene. */
   application->presenter_enabled =
@@ -2559,10 +2571,13 @@ vkr_internal void vkr_standard_scene_runtime_prepare_dynamic_volume(
   if (draw->frame_lighting.diffuse_volume.dynamic_sh.id == 0u) {
     return;
   }
+  const uint32_t probe_budget =
+      application->dynamic_volume_probe_budget_override
+          ? application->dynamic_volume_probe_budget_override
+          : vkr_renderer_dynamic_volume_probe_budget(&application->renderer);
   draw->has_dynamic_volume = vkr_dynamic_volume_select(
       &application->dynamic_volume_selection, scene, &draw->world_payload,
-      &application->assets.material_system,
-      vkr_renderer_dynamic_volume_probe_budget(&application->renderer),
+      &application->assets.material_system, probe_budget,
       &draw->dynamic_volume);
 }
 

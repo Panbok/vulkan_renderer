@@ -267,9 +267,10 @@ void vkr_vk_destroy_volume_slot(VkrVulkanRenderer *renderer,
   }
   slot->tlas = VK_NULL_HANDLE;
   VkrVulkanBuffer *buffers[] = {
-      &slot->tlas_buffer,  &slot->tlas_instances,
-      &slot->tlas_scratch, &slot->blas_positions,
-      &slot->blas_scratch, &slot->volume_probe_relight};
+      &slot->tlas_buffer,      &slot->tlas_instances,
+      &slot->tlas_scratch,     &slot->blas_positions,
+      &slot->blas_scratch,     &slot->volume_probe_relight,
+      &slot->volume_light_grid};
   for (uint32_t i = 0u; i < ArrayCount(buffers); ++i) {
     if (buffers[i]->handle) {
       vkr_vk_destroy_buffer(renderer, buffers[i]);
@@ -1189,6 +1190,7 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
   slot->volume_grid_probes_image = VK_NULL_HANDLE;
   slot->volume_grid_moments_image = VK_NULL_HANDLE;
   slot->volume_relight_count = 0u;
+  slot->volume_light_count = 0u;
   slot->probe_relight = 0u;
   if (!slot->volume_build_ready) {
     return true_v;
@@ -1257,6 +1259,17 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
           VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
           (VkDeviceSize)relight_count * sizeof(float32_t),
           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+    return false_v;
+  }
+  /* The point lights' world grid: each cell's count, then its rows. */
+  if (input->point_light_count &&
+      !vkr_vk_ensure_volume_buffer(
+          renderer, &slot->volume_light_grid, VKR_VULKAN_MEMORY_CLASS_DEVICE,
+          VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
+          (VkDeviceSize)VKR_VULKAN_VOLUME_LIGHT_GRID_CELL_COUNT *
+              (1u + VKR_VULKAN_VOLUME_LIGHT_GRID_CAPACITY) * sizeof(uint32_t),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+              VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
     return false_v;
   }
   MemCopy(trace, input->trace_probes,
@@ -1336,6 +1349,11 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
       .ibl_probes = relight_count ? slot->ibl_probes : 0u,
       .probe_relight = relight_count ? slot->volume_probe_relight.address : 0u,
       .ibl_probe_count = relight_count,
+      .light_grid =
+          input->point_light_count ? slot->volume_light_grid.address : 0u,
+      .light_grid_centre = {packet->input.globals.view_position.x,
+                            packet->input.globals.view_position.y,
+                            packet->input.globals.view_position.z, 0.0f},
   };
   /* The sun and sky are a bake's; a grid traces them (physical, unlike the
      pre-exposed frame constants). */
@@ -1352,6 +1370,7 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
   bricks->last_use_submit_value = renderer->submit_value + 1u;
   slot->volume_trace_root = root_address;
   slot->volume_relight_count = relight_count;
+  slot->volume_light_count = input->point_light_count;
   slot->probe_relight = relight_count ? slot->volume_probe_relight.address : 0u;
   slot->volume_trace_count = input->trace_probe_count;
   slot->volume_clear_count = input->clear_probe_count;
@@ -1468,6 +1487,46 @@ void vkr_vk_record_volume_trace(VkrVulkanRenderer *renderer,
     vkr_vk_volume_clear_image(command, slot->volume_grid_moments_image, &open);
   }
   vkr_vk_volume_push(renderer, command, slot->volume_trace_root);
+  /* The point lights' world grid, which the trace and the relight read:
+     counts from zero, rows binned per cascade, then each cell's list sorted
+     into row order or cut to its strongest rows. */
+  if (slot->volume_light_count) {
+    vkCmdFillBuffer(command, slot->volume_light_grid.handle, 0u,
+                    (VkDeviceSize)VKR_VULKAN_VOLUME_LIGHT_GRID_CELL_COUNT *
+                        sizeof(uint32_t),
+                    0u);
+    vkr_vk_volume_memory_barrier(command, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                 VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    vkr_vk_cmd_bind_pipeline(
+        command, VK_PIPELINE_BIND_POINT_COMPUTE,
+        renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_LIGHT_GRID_BIN]);
+    vkr_vk_cmd_dispatch(
+        command,
+        (slot->volume_light_count * VKR_VULKAN_VOLUME_LIGHT_GRID_CASCADES +
+         63u) /
+            64u,
+        1u, 1u);
+    vkr_vk_volume_memory_barrier(command,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    vkr_vk_cmd_bind_pipeline(
+        command, VK_PIPELINE_BIND_POINT_COMPUTE,
+        renderer
+            ->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_LIGHT_GRID_RESOLVE]);
+    vkr_vk_cmd_dispatch(command, VKR_VULKAN_VOLUME_LIGHT_GRID_CELL_COUNT, 1u,
+                        1u);
+    vkr_vk_volume_memory_barrier(command,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+  }
   if (slot->volume_clear_count) {
     vkr_vk_cmd_bind_pipeline(
         command, VK_PIPELINE_BIND_POINT_COMPUTE,

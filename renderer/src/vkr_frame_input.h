@@ -1082,7 +1082,7 @@ typedef struct VkrPlanarReflectionPayload {
 #define VKR_DYNAMIC_VOLUME_RAY_COUNT 128u
 /** Probes one frame clears at most, and lights one frame traces at most. */
 #define VKR_DYNAMIC_VOLUME_CLEAR_PROBES_MAX 16384u
-#define VKR_DYNAMIC_VOLUME_LIGHTS_MAX 128u
+#define VKR_DYNAMIC_VOLUME_LIGHTS_MAX 4096u
 #define VKR_DYNAMIC_VOLUME_RECTANGLE_LIGHTS_MAX 8u
 
 /**

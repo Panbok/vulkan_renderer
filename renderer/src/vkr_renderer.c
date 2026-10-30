@@ -1564,9 +1564,9 @@ typedef struct VkrFramePreparation {
   VkrExposureFrameInput exposure_input;
 } VkrFramePreparation;
 
-/* The probes the frame packs, and the scene frame's light rows and those
-   that differ from what the last submitted frame left in a backend's table
-   (vkr_light_table.h). */
+/* The probes the frame packs, the scene frame's light rows and those that
+   differ from what the last submitted frame left in a backend's table
+   (vkr_light_table.h), and the dynamic layer's sources and probes. */
 vkr_internal void vkr_renderer_prepare_lighting(VkrRenderer *rf,
                                                 const VkrFrameInput *packet,
                                                 VkrPreparedFrame *frame) {
@@ -1584,6 +1584,10 @@ vkr_internal void vkr_renderer_prepare_lighting(VkrRenderer *rf,
     }
     rf->light_rows_updated = frame->light_table.update_count;
   }
+  const VkrDynamicVolumeInput *volume = packet->dynamic_volume;
+  rf->volume_sources =
+      volume ? volume->point_light_count + volume->rectangle_light_count : 0u;
+  rf->volume_probes_traced = volume ? volume->trace_probe_count : 0u;
 }
 
 vkr_internal void

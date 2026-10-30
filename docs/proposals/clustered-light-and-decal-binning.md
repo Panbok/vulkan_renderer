@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-28
+updated: 2026-10-30
 authority: proposal
 ---
 # Clustered light and decal binning
@@ -137,10 +137,11 @@ afford is set by how many lights reach each pixel, not by the table size.
    2026-10-27. With the stress case, size the index pool and the item cap
    for the decal target, raise `VKR_MAX_FRAME_DECALS`, and measure again.
 6. **World grid for ray-traced consumers (W5).** A camera-centred grid with
-   cascades, built on the GPU from the same light table, with a fixed list
+   cascades, built on the GPU from a table of light rows, with a fixed list
    of lights per cell and an overflow rule that keeps the strongest lights.
    The diffuse volume's dynamic layer reads it in place of its own 128-light
-   list, and ray-traced reflections read it when they land; it may later
+   list, over its own signed rows (see the design below), and ray-traced
+   reflections read it over the light table when they land; it may later
    feed stochastic many-light sampling (reservoirs per cell). It is the
    candidate for async compute.
 7. **Build cost and async compute.** The screen build needs only the camera
@@ -298,6 +299,108 @@ on both classes.
   nearest, which needs a residency pass on camera moves.
 - Shadow view: in the row's `p3.w`, so rows stay the one source; or a
   separate per-row array, which a frame rewrites whole.
+
+## Design: world grid (item 6)
+
+Windows design (W5, 2026-10-30). Desktop only: the dynamic diffuse layer
+and its ray queries exist only on the Vulkan pipeline (ADR-119), so the
+Mac reviews but has no step.
+
+**Today.** The dynamic layer gathers its own light list on the CPU each
+frame (`vkr_dynamic_volume_select`,
+[`vkr_dynamic_volume.c`](../../runtime/src/renderer/systems/vkr_dynamic_volume.c)):
+dynamic lights (+1), changed static lights (+1) with their bake records
+(−1), and records with no light (−1). The list stops at
+`VKR_DYNAMIC_VOLUME_LIGHTS_MAX` (128) in scene order, so on a scene with
+more dynamic lights the rest add no bounce at all, whatever their power.
+`Volume.Trace` shades every ray hit with every row of the list
+(`vk_volume_direct_irradiance` and, at baked reflection probes'
+capture origins, `vk_volume_direct_luminance`,
+[`volume_trace.slang`](../../renderer/src/shaders/vulkan/slang/world/volume_trace.slang)).
+The range test skips the shadow ray of a light out of range, but each hit
+still loads and tests every row. The layer's probe budget follows the
+measured cost (1.0 ms for `Volume.Build` and `Volume.Trace`), so a longer
+list makes probes take turns more slowly rather than costing frame time.
+
+1. **Source rows.** The grid indexes the dynamic layer's signed rows, not
+   the light table. The table holds the lights that a bake already holds
+   (they would add twice), carries the camera ranking's fades, and has no
+   negative rows for lights that left the bake. Each row's sphere is its
+   range, or, for a source with no range, the reach where its irradiance
+   falls to 0.05 (32 m at most), which the selection already computes. The
+   upload stores the radius in the row's free `p3.w`. Rectangle lights (at
+   most 8) stay a loop.
+   Ray-traced reflections later build the same grid over the light table.
+2. **Capacity.** `VKR_DYNAMIC_VOLUME_LIGHTS_MAX` rises from 128 to 4,096
+   rows (256 KB of upload a frame). Past it the selection keeps the
+   sources with the most luminous power, not the first in scene order.
+   The selection's sphere list grows with it. The selection marks a brick
+   active by testing it against every sphere
+   (`dynamic_volume_box_reached`): 7,581 bricks on the café volume times
+   4,096 spheres would cost tens of milliseconds. So each sphere marks
+   the bricks inside its own bounds instead, through a CPU map from brick
+   coordinates to bricks.
+3. **Layout.** 16 × 16 × 16 cells per cascade, centred on the camera
+   and snapped to the cascade's cell size. Cascade 0 has 1 m cells (16 m
+   across), and each next cascade doubles the cell size. Six cascades
+   reach 512 m, more than Bistro. Each cell holds a count and up to 64
+   row indices in 32-bit slots, so the bin pass writes a slot without
+   packing two into a word: 6 × 4,096 × 260 bytes, about 6.4 MB, in a
+   buffer each frame slot keeps.
+4. **Build**, at the start of `Volume.Trace`, as compute dispatches before
+   the probes trace. The grid has one reader, so it needs no graph
+   resource until reflections read it.
+   - Clear the counts.
+   - Bin: one thread per row and cascade. The thread tests the cells
+     inside the row's sphere bounds against the sphere, adds 1 to each
+     touched cell's count, and writes the row index while the count is
+     below 64.
+   - Resolve: one group per cell that has rows. A cell at or below 64
+     sorts its indices, so shading sums in row order and captures stay
+     repeatable. A cell above 64 keeps its 64 strongest rows: the group
+     scans all rows, takes each one's irradiance at the cell's nearest
+     point, finds the 64th largest with a histogram in group memory, and
+     breaks ties by row index. Only this path walks every row.
+5. **Lookup.** A point takes the finest cascade whose cube holds it;
+   outside the coarsest cube no source reaches it. Both shading functions
+   walk the cell's list in place of `[0, light_count)`. The list holds every
+   row whose range reaches the cell, in row order, so the sum is the
+   current one bit for bit. Only a source with no range changes: it stops
+   at its reach.
+6. **Async compute** stays out until the build passes about 0.2 ms
+   (item 7).
+
+**Steps.** All on Windows.
+
+- **W5a** Bistro case: the café volume with the stress case's 920
+  dynamic lights (`bistro_dynamic_volume_stress_local`), capture and
+  timing variants. Record today's cost and probes traced per frame, and
+  the image with the 128-row cap. A diagnostic override
+  (`VKR_DYNAMIC_VOLUME_PROBE_BUDGET`) fixes the probe budget, which
+  otherwise follows GPU time. Even with it fixed, two runs differ: on
+  2026-10-30 the stress capture's indirect diffuse changed by 0.18 to
+  0.66 of 255 on average between runs, and only depth repeated.
+- **W5b** Grid build and lookup with the cap at 128. Parity: captures
+  with the budget fixed, on the café case and on the stress variant,
+  differ from W5a's by no more than two W5a runs differ from each other.
+- **W5c** Cap at 4,096, strongest first. The stress variant's indirect
+  diffuse gains the lights past 128. Then the cost and probe turns
+  against W5a.
+- **W5d** ADR-119 records the grid, the cap and the reach cut-off.
+
+**Open choices** (recommendation first):
+
+- Grid centre: the camera, which the reflections grid shares and which
+  gives the probes near the viewer the finest cells. Or the volume's
+  bounds, which gives every probe the same cell size but not the
+  reflections' layout.
+- Overflow: the strongest by irradiance at the cell, with a histogram
+  pass. Or the first 64 by row index, which is cheaper and repeatable but
+  drops strong lights.
+- Sphere: the range, and the reach only for a source with no range, which
+  keeps every ranged source's sum exact. Or `min(range, reach)` as the
+  selection's bricks use, which gives shorter lists but drops a dim
+  source's light past 0.05 irradiance.
 
 ## Owner decisions
 

@@ -208,6 +208,10 @@ static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
 #define VKR_VULKAN_PACKET_VOLUME_CLEAR_COMP_SPV "packet.volume_clear.comp.spv"
 #define VKR_VULKAN_PACKET_VOLUME_PROBE_RELIGHT_COMP_SPV                        \
   "packet.volume_probe_relight.comp.spv"
+#define VKR_VULKAN_PACKET_VOLUME_LIGHT_GRID_BIN_COMP_SPV                       \
+  "packet.volume_light_grid_bin.comp.spv"
+#define VKR_VULKAN_PACKET_VOLUME_LIGHT_GRID_RESOLVE_COMP_SPV                   \
+  "packet.volume_light_grid_resolve.comp.spv"
 #define VKR_VULKAN_PACKET_SUN_RAY_SHADOW_TRACE_COMP_SPV                        \
   "packet.sun_ray_shadow_trace.comp.spv"
 #define VKR_VULKAN_PACKET_SUN_RAY_SHADOW_RESOLVE_COMP_SPV                      \
@@ -3145,15 +3149,32 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanVolumeTraceRoot {
   uint64_t probe_relight;
   uint32_t ibl_probe_count;
   uint32_t reserved1;
+  /* The signed point lights' world grid: the cells' counts, then each
+     cell's VKR_VULKAN_VOLUME_LIGHT_GRID_CAPACITY rows. */
+  uint64_t light_grid;
+  uint32_t reserved2[2];
+  /* xyz: the camera, which centres the grid's cascades. */
+  Vec4 light_grid_centre;
 } VkrVulkanVolumeTraceRoot;
-_Static_assert(sizeof(VkrVulkanVolumeTraceRoot) == 272u &&
+_Static_assert(sizeof(VkrVulkanVolumeTraceRoot) == 304u &&
                    offsetof(VkrVulkanVolumeTraceRoot, origin_spacing) == 144u &&
                    offsetof(VkrVulkanVolumeTraceRoot, blend) == 176u &&
                    offsetof(VkrVulkanVolumeTraceRoot, sun_direction) == 208u &&
                    offsetof(VkrVulkanVolumeTraceRoot, sky_sh) == 240u &&
                    offsetof(VkrVulkanVolumeTraceRoot, ibl_probes) == 248u &&
-                   offsetof(VkrVulkanVolumeTraceRoot, ibl_probe_count) == 264u,
+                   offsetof(VkrVulkanVolumeTraceRoot, ibl_probe_count) ==
+                       264u &&
+                   offsetof(VkrVulkanVolumeTraceRoot, light_grid) == 272u &&
+                   offsetof(VkrVulkanVolumeTraceRoot, light_grid_centre) ==
+                       288u,
                "Vulkan volume trace root ABI drift");
+/* The signed point lights' world grid (volume_trace.slang): cascades of
+   16^3 cells centred on the camera, 1 m cells in the first and twice the
+   size in each next, each cell listing at most the capacity's rows. */
+#define VKR_VULKAN_VOLUME_LIGHT_GRID_CASCADES 6u
+#define VKR_VULKAN_VOLUME_LIGHT_GRID_CELL_COUNT                                \
+  (VKR_VULKAN_VOLUME_LIGHT_GRID_CASCADES * 4096u)
+#define VKR_VULKAN_VOLUME_LIGHT_GRID_CAPACITY 64u
 #define VKR_VULKAN_VOLUME_TRACE_GRID 1u
 /* The bake stores its lamp groups' direct light in bands, so the light a
    probe's relight measures against holds it (ADR-054). */
@@ -3164,6 +3185,8 @@ typedef enum VkrVulkanVolumePipeline {
   VKR_VULKAN_VOLUME_PIPELINE_TRACE,
   VKR_VULKAN_VOLUME_PIPELINE_CLEAR,
   VKR_VULKAN_VOLUME_PIPELINE_PROBE_RELIGHT,
+  VKR_VULKAN_VOLUME_PIPELINE_LIGHT_GRID_BIN,
+  VKR_VULKAN_VOLUME_PIPELINE_LIGHT_GRID_RESOLVE,
   /* Ray-query sun shadows (VKR_SUN_RAY_SHADOWS) trace the same TLAS. */
   VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TRACE,
   VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_RESOLVE,
@@ -3576,6 +3599,10 @@ typedef struct VkrVulkanFrameSlot {
      written after the trace and read by this frame's lighting. */
   VkrVulkanBuffer volume_probe_relight;
   uint32_t volume_relight_count;
+  /* The signed point lights' world grid, which the trace builds before it
+     shades, and the lights it bins; zero without point lights. */
+  VkrVulkanBuffer volume_light_grid;
+  uint32_t volume_light_count;
   /* Lowered once from the selected temporal consumer's predecessor. */
   Mat4 temporal_previous_view_projection;
   uint64_t temporal_previous_frame_index;

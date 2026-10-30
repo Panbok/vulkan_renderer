@@ -261,6 +261,16 @@
       "stage": "compute"
     },
     {
+      "name": "packet.volume_light_grid_bin.comp",
+      "entry": "vk_volume_light_grid_bin",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.volume_light_grid_resolve.comp",
+      "entry": "vk_volume_light_grid_resolve",
+      "stage": "compute"
+    },
+    {
       "name": "packet.sun_ray_shadow_trace.comp",
       "entry": "vk_sun_ray_shadow_trace",
       "stage": "compute"
