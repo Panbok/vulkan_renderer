@@ -157,12 +157,18 @@ vkr_harness_shadow_evsm_enabled(const VkrHarnessRendererConfig *renderer) {
   return preset.far_cascade_evsm;
 }
 
+vkr_internal bool8_t vkr_harness_tiled_display_linear_upscale_disabled(void) {
+  const char *disabled = getenv("VKR_TILED_DISPLAY_LINEAR_UPSCALE_DISABLED");
+  return disabled && disabled[0] != '\0' && !string_equals(disabled, "0");
+}
+
 bool8_t
 vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest) {
   /* Mirrors vkr_renderer_prepare_frame_data: the renderer filters
      display-linear pixels when FXAA (omitted by the tiled pipeline) or
      sharpening runs, unless the explicit "0" spelling selects the analytic
-     reference path. */
+     reference path. A tiled frame upscaled by MetalFX filters MetalFX's
+     display-linear output instead (ADR-121). */
   const VkrHarnessRendererConfig *renderer = &case_manifest->renderer;
   const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
   if ((post_cache && string_equals(post_cache, "0")) ||
@@ -171,6 +177,10 @@ vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest) {
   }
   const bool8_t tiled =
       renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
+  if (tiled && string_equals(renderer->upscaler, "metalfx") &&
+      !vkr_harness_tiled_display_linear_upscale_disabled()) {
+    return false_v;
+  }
   return (renderer->smaa_enabled && !tiled) || renderer->image_sharpness > 0.0f;
 }
 
@@ -197,6 +207,11 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
      identity. */
   if (!string_equals(renderer->upscaler, "spatial"))
     ADD("renderer.upscaler", "%s", renderer->upscaler);
+  /* MetalFX upscales the display-linear image unless the diagnostic asks
+     for the scene's HDR colour (ADR-121). */
+  if (string_equals(renderer->upscaler, "metalfx") &&
+      vkr_harness_tiled_display_linear_upscale_disabled())
+    ADD("renderer.tiled_display_linear_upscale", "%u", 0u);
   /* Preserve fingerprints for manifests authored before these default-on
      controls existed. Only non-default state changes the workload identity. */
   if (!renderer->tonemap_enabled)

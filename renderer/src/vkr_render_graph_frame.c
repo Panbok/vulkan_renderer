@@ -193,6 +193,7 @@ vkr_render_graph_prepare_tiled_passes(const VkrPreparedFrame *packet,
                                       VkrRenderGraphFrameInfo *frame) {
   frame->tiled_temporal_enabled = packet->tiled_temporal_enabled;
   frame->tiled_temporal_still = packet->tiled_temporal_still;
+  frame->tiled_temporal_display_linear = packet->tiled_temporal_display_linear;
   frame->tiled_sun_light = packet->tiled_sun_contact || packet->tiled_sun_sdf;
   frame->tiled_sun_sdf = packet->tiled_sun_sdf;
   frame->tiled_texture_demand = packet->tiled_texture_demand;

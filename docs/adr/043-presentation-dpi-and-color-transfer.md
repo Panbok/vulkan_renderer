@@ -152,7 +152,10 @@ that image, then applies the physical output scale once. Editor.Resolve follows
 the same split; Editor.Composite continues sampling its already converted Scene
 image. Diagnostic render modes and frames without SMAA or sharpening keep the
 single analytic draw; SMAA needs the intermediate, so the analytic reference
-path runs without it.
+path runs without it. Tiled frames upscaled by MetalFX prepare the
+display-linear image at the internal extent before the upscale instead, and
+their final draw filters MetalFX's output; they take no output-size
+intermediate ([ADR-121](121-tiled-temporal-upscaling.md) decision 11).
 
 The graph declares separate fullscreen and editor targets and activates only
 the current target. Each image uses `PER_IMAGE` storage with final-target

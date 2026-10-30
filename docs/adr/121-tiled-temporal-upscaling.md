@@ -101,10 +101,11 @@ like clouds and froxel fog.
    `VKR_INSTANCE_TEMPORAL_OWNER` on the first row of each temporal index, as
    Vulkan does.
 8. **Scaler.** `Tiled.Temporal` encodes one `MTL4FXTemporalScaler` from the
-   colour, resolved depth and motion into `tiled_temporal_color` (RGBA16F,
-   Scene output extent). The scaler sets reversed depth
-   ([ADR-109](109-reversed-camera-depth.md)), the jitter, a motion scale of
-   the content extent, the frame's pre-exposure and auto exposure. It sets
+   display-linear colour (decision 11), resolved depth and motion into
+   `tiled_temporal_color` (RGBA16F, Scene output extent). The scaler sets
+   reversed depth ([ADR-109](109-reversed-camera-depth.md)), the jitter and
+   a motion scale of the content extent. Its colour is already exposed, so
+   it runs without auto exposure at unit pre-exposure. It sets
    `reset` when the frame has no valid history. Scale steps and gaps in
    frame numbers do not reset it: the previous camera, transforms and
    skinned vertices are the last committed frame's either way. The windowed
@@ -131,19 +132,21 @@ like clouds and froxel fog.
     could not be used: jitter flicker changes a pixel by 10 to 40%.
     Post passes read that image on still frames and `tiled_temporal_color`
     on moving frames.
-    On still frames whose display-linear cache (ADR-043) fills the window,
-    `Tiled.Stabilize` runs after bloom and also writes the mean's
-    display-linear transform into `post_display_linear_stable`
-    (`vkr_metal_tiled_stabilize_display_linear`), and
-    `Post.DisplayLinear.Fullscreen` does not run
-    (`tiled_stable_display_linear` in
-    [vkr_rg_json.c](../../renderer/src/vkr_rg_json.c)). That image is a
-    storage image apart from the attachment moving frames render, which a
-    storage write would leave without lossless compression and so slow the
-    tonemap's reads by about 0.06 ms.
-11. **Consumers.** Tonemap, display-linear and editor resolve read the
-    upscaled image at the output extent. Exposure and bloom still read the
-    internal `hdr_scene_color`.
+11. **Display-linear input.** Exposure and bloom read the internal
+    `hdr_scene_color` after `Tiled.Blend`. `Post.DisplayLinear.Internal`
+    then applies bloom, exposure, grading and the tone curve once per
+    internal pixel into `post_display_linear_internal`, the transform of
+    ADR-043's display-linear preparation, and MetalFX upscales that image.
+    The final draw (`Post.Tonemap.Fullscreen`, or `Editor.Resolve` in the
+    editor) reads the upscaled image, or its stable mean, as its
+    display-linear source: it sharpens and applies the physical output
+    scale only. Its frames take no output-size display-linear target
+    (`post_transform_cache_enabled` is false;
+    `tiled_temporal_display_linear` in
+    [vkr_rg_json.c](../../renderer/src/vkr_rg_json.c)).
+    `VKR_TILED_DISPLAY_LINEAR_UPSCALE_DISABLED` gives MetalFX the HDR colour
+    and runs the transform after the upscale again, for diagnosis; the
+    harness adds it to the workload fingerprint.
 12. **Synchronization.** The cross-frame reads mark the previous instances
     used until this frame's submission completes, instead of placing
     write-after-read barriers. `Tiled.ObjectMotion` and `Tiled.Stabilize`
@@ -167,6 +170,11 @@ like clouds and froxel fog.
   MetalFX.
 - The HZB history requires an unchanged raster matrix, so jitter disables it.
   This costs only with a still camera.
+- MetalFX and the stable mean filter display-referred colour, so an edge
+  between a bright light and a dark surface blends as the display shows it
+  instead of stepping. MetalFX's output texture must allow shader writes,
+  which leaves it without lossless compression; the final draw reads it
+  about 0.09 ms slower than a rendered display-linear target.
 
 ## Alternatives considered
 
@@ -180,6 +188,10 @@ like clouds and froxel fog.
   Revisit if its black-box history cannot handle a later effect.
 - **Recreating the scaler on every scale step.** Rejected: each step waited
   on the GPU and reset history.
+- **`Tiled.Stabilize` writing the display-linear transform of its mean.**
+  Shipped on 2026-10-30 for still frames (1.85 to 1.69 ms of post passes)
+  and replaced the same day by decision 11, which removes the transform at
+  the output extent from moving frames too.
 
 ## Revisit when
 
@@ -190,9 +202,39 @@ like clouds and froxel fog.
 
 ## Evidence
 
+### Display-linear input
+
+Release on `4f63b43f` plus the change, M1 Pro, 2026-10-30, Bistro street view
+at 2560×1440, MetalFX 0.6, `local-offscreen-gpu-single`, p50 GPU ms of the
+post passes, two runs each, the same binary with
+`VKR_TILED_DISPLAY_LINEAR_UPSCALE_DISABLED` as the before:
+
+| Case | Before | After |
+|---|---|---|
+| Still, sharpness 0.25 | `Tiled.Stabilize` 0.73 / 0.72, `Post.DisplayLinear.Fullscreen` 0.71, tonemap 0.43 / 0.42: 1.87 / 1.85 | `Post.DisplayLinear.Internal` 0.27, `Tiled.Stabilize` 0.72 / 0.74, tonemap 0.50 / 0.51: 1.50 / 1.52 |
+| Orbit, sharpness 0.25 | 1.86 / 1.85 | 1.52 / 1.49 |
+| Orbit, sharpness 0 | `Tiled.Stabilize` 0.71 / 0.73, tonemap 0.71: 1.41 / 1.44 | `Post.DisplayLinear.Internal` 0.27, `Tiled.Stabilize` 0.72, tonemap 0.27: 1.26 / 1.26 |
+
+Against the shipped still frame of the alternative above (1.69 ms), the
+still frame saves about 0.2 ms. 2 s Metal System Traces show MetalFX's
+pre-processing encoder at 0.55 against 0.65 ms on the still camera and 0.63
+against 0.74 ms on the orbit without auto exposure; its other two encoders
+are unchanged (about 0.92 to 1.4 and 0.97 ms). Offscreen `frame.wall` p50:
+13.17 / 13.26 against 13.66 / 13.36 ms still, 13.73 / 13.72 against 14.11 /
+13.91 ms orbit; these runs are not authoritative (dirty tree, offscreen).
+
+Captures of `final_color` (`local-offscreen`, still after 60 frames and
+mid-orbit): after against before 45.3 dB still, 46.6 dB orbit and 46.6 dB in
+the editor, on 1.7 to 2.5% of the pixels, at most 95 of 255, all on edges;
+two runs of one path differ by 64 to 75 dB. The edges that differ lie
+against bright lamps and lit walls, where the HDR input gave stepped,
+partly unfiltered silhouettes and the display-linear input gives filtered
+ones.
+
 ### Stabilize with the display-linear transform
 
-Release on `ddc9817a` plus the change, M1 Pro, 2026-10-30, per-pass GPU
+Replaced by decision 11 (see Alternatives considered). Release on `ddc9817a`
+plus the change, M1 Pro, 2026-10-30, per-pass GPU
 timestamps (`local-offscreen-gpu-single`), Bistro street view at 2560×1440,
 MetalFX 0.6, image sharpness 0.25 (the shipped default, which turns the
 display-linear cache on), p50 in ms, two runs each:

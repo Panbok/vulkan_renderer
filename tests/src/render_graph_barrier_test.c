@@ -2148,6 +2148,63 @@ vkr_internal void test_tiled_graph_topology(void) {
   assert(editor_opaque < resolve && resolve < grid && grid != UINT64_MAX);
   assert(vkr_rg_compile_schedule(graph));
   vkr_rg_end_frame(graph);
+
+  /* A MetalFX frame (ADR-121): the display-linear pass prepares the scene
+     at the internal extent after exposure, MetalFX upscales that image, and
+     the final draw filters the upscaled image, or its stable mean on a still
+     frame, as its display-linear source. */
+  frame.editor_enabled = false_v;
+  frame.picking_pending = false_v;
+  frame.editor_image_available = false_v;
+  frame.editor_overlay_enabled = false_v;
+  frame.editor_selection_enabled = false_v;
+  frame.editor_grid_enabled = false_v;
+  frame.post_transform_cache_enabled = false_v;
+  frame.tiled_temporal_enabled = true_v;
+  frame.tiled_temporal_display_linear = true_v;
+  for (uint32_t still = 0u; still < 2u; ++still) {
+    frame.tiled_temporal_still = still != 0u;
+    assert(vkr_rg_begin_frame(graph, &frame));
+    assert(vkr_rg_build_from_json(graph, &json, &frame));
+    const VkrRgImageHandle display_linear =
+        vkr_rg_find_image(graph, string8_lit("post_display_linear_internal"));
+    const VkrRgImageHandle upscaled =
+        vkr_rg_find_image(graph, still ? string8_lit("tiled_stable_color")
+                                       : string8_lit("tiled_temporal_color"));
+    assert(vkr_rg_image_handle_valid(display_linear) &&
+           vkr_rg_image_handle_valid(upscaled));
+    uint64_t exposure = UINT64_MAX;
+    uint64_t prepare = UINT64_MAX;
+    uint64_t upscale = UINT64_MAX;
+    uint64_t final_draw = UINT64_MAX;
+    for (uint64_t i = 0u; i < graph->passes.length; ++i) {
+      const VkrRgPass *pass = rg_barrier_test_pass(graph, (uint32_t)i);
+      assert(pass);
+      assert(!vkr_string8_equals_cstr(&pass->desc.name,
+                                      "Post.DisplayLinear.Fullscreen"));
+      if (vkr_string8_equals_cstr(&pass->desc.name, "Post.Exposure.Resolve")) {
+        exposure = i;
+      } else if (vkr_string8_equals_cstr(&pass->desc.name,
+                                         "Post.DisplayLinear.Internal")) {
+        prepare = i;
+      } else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Temporal")) {
+        const VkrRgImageUse *source =
+            vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+        assert(source && source->image.id == display_linear.id);
+        upscale = i;
+      } else if (vkr_string8_equals_cstr(&pass->desc.name,
+                                         "Post.Tonemap.Fullscreen")) {
+        const VkrRgImageUse *source =
+            vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u);
+        assert(source && source->image.id == upscaled.id);
+        final_draw = i;
+      }
+    }
+    assert(exposure < prepare && prepare < upscale && upscale < final_draw);
+    assert(final_draw != UINT64_MAX);
+    assert(vkr_rg_compile_schedule(graph));
+    vkr_rg_end_frame(graph);
+  }
   arena_destroy(arena);
   printf("  test_tiled_graph_topology PASSED\n");
 }

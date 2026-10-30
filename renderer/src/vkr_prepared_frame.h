@@ -47,6 +47,10 @@ typedef struct VkrPreparedFrame {
   /** The upscaled frame's camera has not moved since the previous frame:
       a running mean holds MetalFX's output steady against its jitter. */
   bool8_t tiled_temporal_still;
+  /** MetalFX takes the display-linear image, which a pass prepares at the
+      internal extent, and the final draw filters and encodes its upscaled
+      output (ADR-121). */
+  bool8_t tiled_temporal_display_linear;
   /** Screen-space contact shadows for the sun on the tiled pipeline: the
       shadow payload asks for them, the sun shines and the backend's
       shading variants that write the sun's light are ready. */

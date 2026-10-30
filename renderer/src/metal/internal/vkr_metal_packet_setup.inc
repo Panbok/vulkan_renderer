@@ -157,7 +157,6 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_LIGHT_SCATTER_ROOT:
   case VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT:
   case VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT:
-  case VKR_METAL_PACKET_ABI_TILED_STABILIZE_DISPLAY_ROOT:
   case VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT:
   case VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT:
   case VKR_METAL_PACKET_ABI_TILED_SUN_SHAFTS_ROOT:
@@ -369,14 +368,6 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
             VKR_METAL_PACKET_ABI_DISPLAY_OUTPUT_PARAMS))
       return false_v;
   }
-  if (record_id == VKR_METAL_PACKET_ABI_TILED_STABILIZE_DISPLAY_ROOT &&
-      (!vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "stabilize",
-           VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT) ||
-       !vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "tonemap",
-           VKR_METAL_PACKET_ABI_TONEMAP_ROOT)))
-    return false_v;
   if ((record_id == VKR_METAL_PACKET_ABI_UI_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT) &&
       !vkr_metal_packet_validate_nested_abi(
@@ -1748,11 +1739,6 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
       renderer, fragment, "vkr_metal_tiled_stabilize",
       VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT, false_v,
       @"VKR tiled stabilize");
-  renderer->tiled_stabilize_display_linear_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_tiled_stabilize_display_linear",
-          VKR_METAL_PACKET_ABI_TILED_STABILIZE_DISPLAY_ROOT, false_v,
-          @"VKR tiled stabilize display linear");
   renderer->tiled_sun_shafts_source_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_tiled_sun_shafts_source",
@@ -1929,8 +1915,6 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->temporal_transform_pipeline,
        "temporal transform history pipeline"},
       {renderer->tiled_stabilize_pipeline, "tiled stabilize pipeline"},
-      {renderer->tiled_stabilize_display_linear_pipeline,
-       "tiled stabilize display linear pipeline"},
       {renderer->tiled_sun_shafts_source_pipeline,
        "tiled sun shafts source pipeline"},
       {renderer->tiled_sun_shafts_pipeline, "tiled sun shafts pipeline"},

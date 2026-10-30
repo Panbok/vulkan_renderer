@@ -847,7 +847,7 @@ with a four-comparison tent each, holding the set with an incumbent bonus and fa
 lights in and out over 0.25 s, and no FXAA or screen-space effects. By
 default it renders one sample per pixel at 0.6 of each axis with a Halton
 jitter, and the MetalFX temporal scaler rebuilds the Scene at its output
-extent from colour, depth, camera motion and the motion of dynamic and
+extent from tone-mapped colour, depth, camera motion and the motion of dynamic and
 skinned draws; a still camera averages its output over up to 32 frames
 ([ADR-121](adr/121-tiled-temporal-upscaling.md)). The Upscaler setting's
 spatial choice, and devices without Metal 4 MetalFX, keep 4× MSAA and a
@@ -1346,7 +1346,9 @@ temporal histories are excluded.
 When SMAA or sharpening filters the final draw, an output-size RGBA16F
 display-linear image is prepared first, so the display transform runs once per
 pixel rather than per filter sample. SMAA runs on desktop frames in the default
-render mode; the tiled pipeline draws no SMAA (ADR-087).
+render mode; the tiled pipeline draws no SMAA (ADR-087). Under MetalFX the
+tiled pipeline prepares the display-linear image at the internal extent and
+upscales it instead ([ADR-121](adr/121-tiled-temporal-upscaling.md)).
 [ADR-043](adr/043-presentation-dpi-and-color-transfer.md) records its measured
 cost.
 `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic per-sample reference path. The

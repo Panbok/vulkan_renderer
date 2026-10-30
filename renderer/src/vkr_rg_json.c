@@ -186,11 +186,18 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_TILED_OBJECT_MOTION_PENDING},
     {"tiled_temporal_still", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STILL},
     {"tiled_temporal_moving", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_MOVING},
-    {"tiled_stable_display_linear",
-     VKR_RG_JSON_CONDITION_TILED_STABLE_DISPLAY_LINEAR},
-    {"post_transform_cache_enabled && !editor_enabled && "
-     "!tiled_stable_display_linear",
-     VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_FULLSCREEN_UNSTABILIZED},
+    {"tiled_temporal_display_linear",
+     VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISPLAY_LINEAR},
+    {"!tiled_temporal_display_linear",
+     VKR_RG_JSON_CONDITION_TILED_TEMPORAL_SCENE_LINEAR},
+    {"!tiled_temporal_staged && tiled_temporal_display_linear",
+     VKR_RG_JSON_CONDITION_TILED_TEMPORAL_UNSTAGED_DISPLAY_LINEAR},
+    {"!tiled_temporal_staged && !tiled_temporal_display_linear",
+     VKR_RG_JSON_CONDITION_TILED_TEMPORAL_UNSTAGED_SCENE_LINEAR},
+    {"tiled_temporal_display_linear && tiled_temporal_moving",
+     VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISPLAY_LINEAR_MOVING},
+    {"tiled_temporal_display_linear && tiled_temporal_still",
+     VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISPLAY_LINEAR_STILL},
 };
 
 vkr_internal bool8_t vkr_rg_json_error(VkrRgJsonParseContext *ctx,
@@ -2116,19 +2123,6 @@ bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
   return true_v;
 }
 
-/* Still frames whose display-linear cache fills the window take it from
-   Tiled.Stabilize, which writes the stable mean and its display-linear
-   transform in one pass (ADR-138); Post.DisplayLinear.Fullscreen then does
-   not run. The two images share an extent only when the scene output fills
-   the window. */
-vkr_internal bool8_t
-vkr_rg_json_tiled_stable_display_linear(const VkrRenderGraphFrameInfo *frame) {
-  return frame->tiled_temporal_still && frame->post_transform_cache_enabled &&
-         !frame->editor_enabled &&
-         frame->scene_output_width == frame->window_width &&
-         frame->scene_output_height == frame->window_height;
-}
-
 vkr_internal bool8_t vkr_rg_json_condition_enabled(
     const VkrRgJsonCondition *condition, const VkrRenderGraphFrameInfo *frame) {
   if (condition && condition->requires_scene_rendering &&
@@ -2378,11 +2372,20 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->tiled_temporal_still;
   case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_MOVING:
     return frame->tiled_temporal_enabled && !frame->tiled_temporal_still;
-  case VKR_RG_JSON_CONDITION_TILED_STABLE_DISPLAY_LINEAR:
-    return vkr_rg_json_tiled_stable_display_linear(frame);
-  case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_FULLSCREEN_UNSTABILIZED:
-    return frame->post_transform_cache_enabled && !frame->editor_enabled &&
-           !vkr_rg_json_tiled_stable_display_linear(frame);
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISPLAY_LINEAR:
+    return frame->tiled_temporal_display_linear;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_SCENE_LINEAR:
+    return !frame->tiled_temporal_display_linear;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_UNSTAGED_DISPLAY_LINEAR:
+    return !frame->tiled_temporal_staged &&
+           frame->tiled_temporal_display_linear;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_UNSTAGED_SCENE_LINEAR:
+    return !frame->tiled_temporal_staged &&
+           !frame->tiled_temporal_display_linear;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISPLAY_LINEAR_MOVING:
+    return frame->tiled_temporal_display_linear && !frame->tiled_temporal_still;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISPLAY_LINEAR_STILL:
+    return frame->tiled_temporal_display_linear && frame->tiled_temporal_still;
   default:
     return false_v;
   }

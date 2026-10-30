@@ -969,6 +969,48 @@ vkr_renderer_get_asset_publisher(VkrRenderer *renderer) {
   return renderer ? &renderer->asset_publisher : NULL;
 }
 
+/* The environment variables that override settings for a matched capture or
+   select a diagnostic path, read once at creation. */
+vkr_internal void
+vkr_renderer_read_environment_overrides(VkrRenderer *renderer) {
+  /* Ray-query sun shadows follow the Ray traced shadows settings; "0", "1"
+     (half rate) or "2" (full rate) overrides them for a matched capture. An
+     unset variable reads empty. */
+  char sun_ray_shadows[8];
+  renderer->sun_ray_shadow_forced =
+      vkr_platform_environment_variable("VKR_SUN_RAY_SHADOWS", sun_ray_shadows,
+                                        sizeof(sun_ray_shadows)) &&
+      sun_ray_shadows[0] != '\0';
+  renderer->sun_ray_full_rate_forced_on =
+      renderer->sun_ray_shadow_forced && string_equals(sun_ray_shadows, "2");
+  renderer->sun_ray_shadow_forced_on = renderer->sun_ray_shadow_forced &&
+                                       (string_equals(sun_ray_shadows, "1") ||
+                                        renderer->sun_ray_full_rate_forced_on);
+  /* Desktop sun contact shadows follow the shadow settings, as the tiled
+     pipeline's do; "0" or "1" overrides them for a matched capture. */
+  char sun_contact_shadows[8];
+  renderer->sun_contact_forced =
+      vkr_platform_environment_variable("VKR_SUN_CONTACT_SHADOWS",
+                                        sun_contact_shadows,
+                                        sizeof(sun_contact_shadows)) &&
+      sun_contact_shadows[0] != '\0';
+  renderer->sun_contact_forced_on =
+      renderer->sun_contact_forced && string_equals(sun_contact_shadows, "1");
+  /* Filtering display-linear pixels is the default (ADR-043); only the explicit
+     "0" spelling keeps the analytic per-tap transform as a reference. */
+  char post_transform_cache[8];
+  renderer->post_transform_cache_enabled =
+      !vkr_platform_environment_variable("VKR_POST_TRANSFORM_CACHE",
+                                         post_transform_cache,
+                                         sizeof(post_transform_cache)) ||
+      !string_equals(post_transform_cache, "0");
+  renderer->tiled_display_linear_upscale_disabled =
+      vkr_platform_environment_flag(
+          "VKR_TILED_DISPLAY_LINEAR_UPSCALE_DISABLED");
+  renderer->gtao_forced_disabled =
+      vkr_platform_environment_flag("VKR_GTAO_DISABLED");
+}
+
 bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
                                  VkrRendererBackendType backend_type,
                                  const VkrNativeSurface *surface,
@@ -1139,39 +1181,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   /* SMAA 4x is opt-in: on the Bistro street view it cost 2.7 ms at
      2560 x 1440 for about 9 % less edge shimmer in motion (ADR-037). */
   renderer->msaa_enabled = vkr_platform_environment_flag("VKR_MSAA_ENABLED");
-  /* Ray-query sun shadows follow the Ray traced shadows settings; "0", "1"
-     (half rate) or "2" (full rate) overrides them for a matched capture. An
-     unset variable reads empty. */
-  char sun_ray_shadows[8];
-  renderer->sun_ray_shadow_forced =
-      vkr_platform_environment_variable("VKR_SUN_RAY_SHADOWS", sun_ray_shadows,
-                                        sizeof(sun_ray_shadows)) &&
-      sun_ray_shadows[0] != '\0';
-  renderer->sun_ray_full_rate_forced_on =
-      renderer->sun_ray_shadow_forced && string_equals(sun_ray_shadows, "2");
-  renderer->sun_ray_shadow_forced_on = renderer->sun_ray_shadow_forced &&
-                                       (string_equals(sun_ray_shadows, "1") ||
-                                        renderer->sun_ray_full_rate_forced_on);
-  /* Desktop sun contact shadows follow the shadow settings, as the tiled
-     pipeline's do; "0" or "1" overrides them for a matched capture. */
-  char sun_contact_shadows[8];
-  renderer->sun_contact_forced =
-      vkr_platform_environment_variable("VKR_SUN_CONTACT_SHADOWS",
-                                        sun_contact_shadows,
-                                        sizeof(sun_contact_shadows)) &&
-      sun_contact_shadows[0] != '\0';
-  renderer->sun_contact_forced_on =
-      renderer->sun_contact_forced && string_equals(sun_contact_shadows, "1");
-  /* Filtering display-linear pixels is the default (ADR-043); only the explicit
-     "0" spelling keeps the analytic per-tap transform as a reference. */
-  char post_transform_cache[8];
-  renderer->post_transform_cache_enabled =
-      !vkr_platform_environment_variable("VKR_POST_TRANSFORM_CACHE",
-                                         post_transform_cache,
-                                         sizeof(post_transform_cache)) ||
-      !string_equals(post_transform_cache, "0");
-  renderer->gtao_forced_disabled =
-      vkr_platform_environment_flag("VKR_GTAO_DISABLED");
+  vkr_renderer_read_environment_overrides(renderer);
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
   renderer->boot_metrics = (VkrRendererBootMetrics){0};
   renderer->frame_number = 0;
@@ -1558,6 +1568,25 @@ vkr_internal void vkr_renderer_prepare_tiled_temporal(VkrRenderer *rf,
                  &frame->temporal.previous_view_projection, sizeof(Mat4)) == 0;
 }
 
+/* Where the frame takes its display-linear image (ADR-043): MetalFX upscales
+   one prepared at the internal extent (ADR-121), so its final draw filters
+   that output and needs no display-linear target of its own; other frames
+   prepare one at the output extent only when the final pass filters. */
+vkr_internal void
+vkr_renderer_prepare_display_linear(const VkrRenderer *rf,
+                                    const VkrFrameInput *packet,
+                                    VkrPreparedFrame *frame) {
+  frame->tiled_temporal_display_linear =
+      frame->tiled_temporal_enabled &&
+      !rf->tiled_display_linear_upscale_disabled;
+  const bool8_t output_filtered =
+      frame->smaa_enabled || packet->globals.image_sharpness > 0.0f;
+  frame->post_transform_cache_enabled =
+      rf->post_transform_cache_enabled && output_filtered &&
+      frame->scene_rendering && !frame->tiled_temporal_display_linear &&
+      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
+}
+
 typedef struct VkrFramePreparation {
   VkrPreparedFrame frame;
   VkrTemporalFrameInput temporal_input;
@@ -1654,13 +1683,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       (rf->temporal_enabled && !tiled && !orthographic &&
        (prepared->frame.smaa_enabled || prepared->frame.fsr31_enabled ||
         temporal_view));
-  /* The display-linear target only pays off when the final pass filters. */
-  const bool8_t output_filtered =
-      prepared->frame.smaa_enabled || packet->globals.image_sharpness > 0.0f;
-  prepared->frame.post_transform_cache_enabled =
-      rf->post_transform_cache_enabled && output_filtered &&
-      prepared->frame.scene_rendering &&
-      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
+  vkr_renderer_prepare_display_linear(rf, packet, &prepared->frame);
   vkr_renderer_prepare_editor_image(rf, packet, &prepared->frame);
   if (!prepared->frame.scene_rendering) {
     if (!packet->animation_preview) {

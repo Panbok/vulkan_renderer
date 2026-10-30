@@ -879,16 +879,6 @@ vkr_global const VkrMetalPacketAbiField vkr_tiled_stabilize_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, reserved, "reserved", 56),
 };
 
-vkr_global const VkrMetalPacketAbiField
-    vkr_tiled_stabilize_display_root_fields[] = {
-        VKR_ABI_FIELD(VkrMetalTiledStabilizeDisplayRoot, stabilize, "stabilize",
-                      0),
-        VKR_ABI_FIELD(VkrMetalTiledStabilizeDisplayRoot, tonemap_root,
-                      "tonemap", 64),
-        VKR_ABI_FIELD(VkrMetalTiledStabilizeDisplayRoot,
-                      display_linear_texture_id, "display_linear", 72),
-};
-
 vkr_global const VkrMetalPacketAbiField vkr_exposure_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketExposureRoot, histogram, "histogram", 0),
     VKR_ABI_FIELD(VkrMetalPacketExposureRoot, state, "state", 8),
@@ -1131,10 +1121,6 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT] = VKR_ABI_RECORD(
             VkrMetalTiledStabilizeRoot, "VkrMetalTiledStabilizeRoot", 64, 16,
             vkr_tiled_stabilize_root_fields),
-        [VKR_METAL_PACKET_ABI_TILED_STABILIZE_DISPLAY_ROOT] =
-            VKR_ABI_RECORD(VkrMetalTiledStabilizeDisplayRoot,
-                           "VkrMetalTiledStabilizeDisplayRoot", 80, 16,
-                           vkr_tiled_stabilize_display_root_fields),
         [VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketTemporalTransformRoot,
                            "VkrMetalPacketTemporalTransformRoot", 32, 16,

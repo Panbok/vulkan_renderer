@@ -247,6 +247,9 @@ struct VkrRenderer {
   /* False only for the analytic reference path; a frame uses the display-linear
      target when its final pass filters (vkr_renderer_prepare_frame_data). */
   bool8_t post_transform_cache_enabled;
+  /* MetalFX upscales the scene's HDR colour instead of the display-linear
+     image, a diagnostic (VKR_TILED_DISPLAY_LINEAR_UPSCALE_DISABLED). */
+  bool8_t tiled_display_linear_upscale_disabled;
 
   // Per-frame render statistics for UI/debug use.
   VkrRendererFrameMetrics frame_metrics;

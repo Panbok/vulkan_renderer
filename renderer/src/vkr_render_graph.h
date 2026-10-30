@@ -757,6 +757,8 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t tiled_object_motion_pending;
   /** The upscaled frame's camera is still (VkrPreparedFrame). */
   bool8_t tiled_temporal_still;
+  /** MetalFX upscales the display-linear image (VkrPreparedFrame). */
+  bool8_t tiled_temporal_display_linear;
   /** The tiled opaque pass writes the sun's light and its cascade
       visibility to `tiled_sun_light`, and the atmosphere draw corrects the
       sun's light by sun contact shadows, SDF sun shadows or both

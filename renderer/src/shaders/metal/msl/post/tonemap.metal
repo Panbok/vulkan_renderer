@@ -45,13 +45,13 @@ static float3 vkr_metal_packet_aces_fitted(float3 color) {
                1.0);
 }
 
-// The post transform of the scene value `hdr` at `uv`: bloom, exposure,
-// grading and the tone curve as `flags` select them.
-static float4 vkr_metal_packet_post_color(float4 hdr, sampler source_sampler,
-                                          float2 uv, float exposure, uint flags,
-                                          VkrColorGrading grading,
-                                          VkrDisplayOutputParams display_output,
-                                          VkrMetalPacketTonemapBloom bloom) {
+static float4
+vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
+                             sampler source_sampler, float2 uv, float exposure,
+                             uint flags, VkrColorGrading grading,
+                             VkrDisplayOutputParams display_output,
+                             VkrMetalPacketTonemapBloom bloom) {
+  float4 hdr = source.sample(source_sampler, uv);
   // The editor Scene composite samples presentation-linear pixels from the
   // retained scene image. They already carry the physical-output scale, so a
   // second grade or SDR clamp would destroy extended-linear highlights.
@@ -91,18 +91,8 @@ static float4 vkr_metal_packet_post_color(float4 hdr, sampler source_sampler,
   return hdr;
 }
 
-static float4 vkr_metal_packet_post_sample(
-    texture2d<float, access::sample> source, sampler source_sampler, float2 uv,
-    float exposure, uint flags, VkrColorGrading grading,
-    VkrDisplayOutputParams display_output, VkrMetalPacketTonemapBloom bloom) {
-  return vkr_metal_packet_post_color(source.sample(source_sampler, uv),
-                                     source_sampler, uv, exposure, flags,
-                                     grading, display_output, bloom);
-}
-
-static float4
-vkr_metal_packet_finish_output(float4 color, uint flags,
-                               VkrDisplayOutputParams display_output) {
+static float4 vkr_metal_packet_finish_output(
+    float4 color, uint flags, VkrDisplayOutputParams display_output) {
   if ((flags & (VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED |
                 VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR)) == 0u) {
     color.rgb = vkr_display_output_scale(color.rgb, display_output);
@@ -171,41 +161,3 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
 
 static_assert(sizeof(VkrMetalPacketTonemapRoot) == 64,
               "Tonemap root ABI must remain 64 bytes");
-
-// Tiled.Stabilize on still frames whose display-linear cache fills the
-// window (ADR-138): it writes the stable mean, the next frame's history, and
-// the mean's display-linear transform, which Post.DisplayLinear.Fullscreen
-// would otherwise take from the mean in a second full-window pass. The
-// transform is the one `tonemap` gives that pass.
-struct VkrMetalTiledStabilizeDisplayRoot {
-  VkrMetalTiledStabilizeRoot stabilize;
-  constant VkrMetalPacketTonemapRoot *tonemap;
-  texture2d<float, access::write> display_linear;
-};
-
-kernel void vkr_metal_tiled_stabilize_display_linear(
-    constant VkrMetalTiledStabilizeDisplayRoot &root [[buffer(0)]],
-    uint2 pixel [[thread_position_in_grid]]) {
-  if (any(pixel >= root.stabilize.extent))
-    return;
-  const float4 stable = vkr_metal_tiled_stable_color(root.stabilize, pixel);
-  root.stabilize.output.write(stable, pixel);
-  constant VkrMetalPacketTonemapRoot *tonemap = root.tonemap;
-  constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge,
-                                   filter::linear);
-  const float2 uv = (float2(pixel) + 0.5f) / float2(root.stabilize.extent);
-  const float exposure = tonemap->exposure_state->exposure_multiplier *
-                         tonemap->inverse_pre_exposure;
-  const VkrMetalPacketTonemapBloom bloom = {tonemap->bloom,
-                                            tonemap->bloom_intensity};
-  const VkrDisplayOutputParams display_output = *tonemap->display_output;
-  const float4 color = vkr_metal_packet_post_color(
-      stable, source_sampler, uv, exposure, tonemap->flags,
-      *tonemap->color_grading, display_output, bloom);
-  root.display_linear.write(
-      vkr_metal_packet_finish_output(color, tonemap->flags, display_output),
-      pixel);
-}
-
-static_assert(sizeof(VkrMetalTiledStabilizeDisplayRoot) == 80,
-              "Metal tiled stabilize display root ABI drift");

@@ -1301,8 +1301,6 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> temporal_transform_pipeline;
   /* The still-camera running mean over MetalFX's output. */
   id<MTLComputePipelineState> tiled_stabilize_pipeline;
-  /* The same mean with its display-linear transform (ADR-138). */
-  id<MTLComputePipelineState> tiled_stabilize_display_linear_pipeline;
   /* The sun shafts' source and their march toward the sun (ADR-132). */
   id<MTLComputePipelineState> tiled_sun_shafts_source_pipeline;
   id<MTLComputePipelineState> tiled_sun_shafts_pipeline;
@@ -1332,6 +1330,8 @@ struct VkrMetalPacketRenderer {
   uint32_t tiled_temporal_input_height;
   uint32_t tiled_temporal_width;
   uint32_t tiled_temporal_height;
+  /* The scaler takes display-linear colour, without auto exposure. */
+  bool8_t tiled_temporal_display_linear;
   /* A scaler creation failed: later frames take the spatial upscale. */
   bool8_t tiled_temporal_unsupported;
   id<MTLRenderPipelineState> ui_pipeline;
