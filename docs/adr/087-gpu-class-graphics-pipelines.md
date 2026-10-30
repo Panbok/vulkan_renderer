@@ -461,7 +461,15 @@ pipeline rather than a backend mechanism.
     (`bistro_clustered_stress_tiled_timing`) 19.80 ms before and 31.83 ms
     at 64. With the kernel running and no light walked it took 9.47 ms, so
     the light loop, not the binning, holds the cost; owner decision
-    2026-10-28 set 64. A shadowed
+    2026-10-28 set 64. The 64 lights are a budget, not a binning limit
+    (owner decision, 2026-10-30). On the 20,000-light street
+    (`bistro_clustered_m3_tiled_timing`, same machine and profile),
+    `Tiled.Opaque` p50 took 14.70, 15.66, 17.33 and 20.94 ms with 64, 128,
+    256 and 512 lights, and 4.53 and 6.31 ms at 64 and 512 with the kernel
+    running and no light walked: the light loop costs about 10.2 ms at 64,
+    about 0.010 ms for each further light, and the kernel's walk of the
+    table about 0.004 ms a light. A coarse GPU pre-bin would bound only the
+    walk, so the tiled class builds none while the cap holds. A shadowed
     light takes four bilinear comparisons of its local shadow map half a
     texel apart, a 3x3 tent kept a texel inside its face
     (`vkr_metal_packet_local_shadow_sample<false, false, true>` in

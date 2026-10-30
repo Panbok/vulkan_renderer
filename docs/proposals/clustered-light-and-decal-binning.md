@@ -45,8 +45,10 @@ clustered culling. What decals write stays in
 - **Tiled pipeline.** Since 2026-10-28 (M5 lights) a tile kernel at the
   start of `Tiled.Opaque` and `Tiled.Blend` lists each 32x16 tile's lights
   in threadgroup memory, and fragments walk their depth bin's part of it;
-  the class draws the 64 dynamic lights nearest the camera, about 0.7 ms
-  per extra light reaching each pixel at 1280x720 on the M1 Pro. The same
+  the class draws the 64 dynamic lights nearest the camera, a budget
+  (owner decision, 2026-10-30): on the 20,000-light street at 1280x720 on
+  the M1 Pro the light loop costs about 10.2 ms of `Tiled.Opaque` at 64
+  lights and about 0.010 ms for each further light. The same
   kernel lists the 64 nearest decals per tile in table order
   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision 11).
 - **Measured on Vulkan** (orbit, `Lighting.Deferred` p50, shader-only
@@ -107,12 +109,15 @@ afford is set by how many lights reach each pixel, not by the table size.
    `Tiled.Opaque` tests the candidate lights against each tile's screen
    frustum and writes their 16-bit indices to threadgroup memory; the
    tile's fragment shading walks only that list, with each light's depth
-   range tested per pixel (depth bins), since no tile depth bounds exist. A coarse GPU pass
-   first bins the lights into large screen cells (for example 128 px), so
-   a tile tests a few hundred candidates, not the whole table. Decals take
-   the same path in table order. This replaces the CPU light and decal
-   grids and the 16-light policy (ADR-087 decision 11), which the tiled
-   class's ADR revises when it lands.
+   range tested per pixel (depth bins), since no tile depth bounds exist.
+   Decals take the same path in table order. This landed on 2026-10-28 in
+   place of the CPU light and decal grids, with the 64 nearest lights
+   (ADR-087 decision 11). The coarse GPU pass that would first bin the
+   lights into large screen cells (for example 128 px) is not built: on
+   the 20,000-light street the tile kernel's walk of the table costs about
+   0.004 ms a light, but the per-pixel light loop costs about 10.2 ms at
+   64 lights and 0.010 ms for each further light, so the 64 lights stay a
+   budget on the M1 Pro (owner decision, 2026-10-30; ADR-087 decision 11).
 3. **Desktop lights past the bitfields (W4c).** The per-tile bitfields stay
    while the table is small: their loop walks every word of the table, so
    at tens of thousands of lights they cost about 8 KB a tile and a long
@@ -529,7 +534,8 @@ revised were changed on 2026-10-27 or 2026-10-28.
    dynamic diffuse layer and future ray-traced reflections shade hit points
    off the screen.
 2. **Build method** (revised). Two levels: a coarse GPU pre-bin, then a
-   fine per-tile test; on the tiled class the fine test is a tile shader.
+   fine per-tile test; on the tiled class the fine test is a tile shader,
+   which builds no coarse pass while its 64-light budget holds (item 2).
    A compute rasterizer of light volumes only if the coarse pass exceeds
    its budget.
 3. **Depth** (revised). No 3D cluster bitfields: one per cluster costs
