@@ -490,7 +490,18 @@ words, the light head. Two limits follow:
   Forward and transmission switch to the lists. Bitfields remain for
   deferred lighting. The capture parity follows the W2 oracle: G-buffer
   and depth bytes, HDR within the run-to-run spread. Timing of
-  `Lighting.Clusters` at 392, 920 and 20,072 rows.
+  `Lighting.Clusters` at 392, 920 and 20,072 rows. Done 2026-10-30:
+  - On `bistro_clustered_capture`, the G-buffer and depth match byte for
+    byte. Final colour differs by an MAE of 0.09/255.
+  - The lamp HDR differs from the earlier kernels on 0.006 % of pixels,
+    at most 0.001, while two runs of the same kernels differ on 3.3 %.
+  - All eight deferred lighting kernels keep their register counts. The
+    layered no-rectangle kernel spilled 19.6 KB until the extracted
+    per-light body was force-inlined.
+  - `Lighting.Clusters` takes 0.060 ms at 392 rows and 0.102 ms at
+    20,072, with the cap still on. `Lighting.Deferred`, its layered pass
+    and transmission match the earlier kernels within 0.004 ms.
+  - The bitfields and the cap stay until W4c-2.
 - **W4c-2** `Lighting.Lists` with tile depth bounds and the `opaque`
   lists. Deferred lighting and `Shadow.LocalMask` switch over; the
   bitfields and the row cap retire. `lighting.point.unshaded` reads 0 on

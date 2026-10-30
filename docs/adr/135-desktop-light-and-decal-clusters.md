@@ -65,16 +65,29 @@ than depth culling saves.
    decal.
 3. **Build.** `vkr_vk_prepare_light_clusters`
    ([`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c))
-   fills the frame's `VkrVulkanLightClusters` record and queues two
+   fills the frame's `VkrVulkanLightClusters` record and queues three
    dispatches
    ([`light_clusters.slang`](../../renderer/src/shaders/vulkan/slang/world/light_clusters.slang)).
-   The prepare dispatch, one thread per light and decal, bounds each by a
-   world sphere (a light's range, or the sphere around a narrow spot cone;
-   a decal's box) and a box of clusters. The bin dispatch gives each tile
-   one workgroup: it marks the items whose box covers the tile and whose
-   sphere reaches the tile's four side planes, writes the tile's
-   `ceil(light count / 32)` light words, then lets one thread per slice
-   keep the decals whose slice range holds it. A light without a finite
+   - The prepare dispatch, one thread per light and decal, bounds each by
+     a world sphere (a light's range, or the sphere around a narrow spot
+     cone; a decal's box) and a box of clusters.
+   - Since 2026-10-30 (proposal W4c-1), the cells dispatch writes a light
+     bitfield per coarse cell of 4 × 4 tiles: the rows whose box overlaps
+     the cell. Each thread writes its own word, so the result does not
+     depend on thread order.
+   - The bin dispatch gives each tile one workgroup. It tests its cell's
+     lights, and every decal, against the tile's box and four side planes.
+     It writes the tile's `ceil(light count / 32)` light words, and the
+     same rows as a list in row order in the index pool. The list header
+     (first, count) sits in the header buffer after the light words. One
+     thread per slice then keeps the decals whose slice range holds it.
+   - Deferred lighting and `Shadow.LocalMask` walk the words. Forward
+     blend and transmission walk the list of the tile they project to: a
+     wave takes the lowest next row of any lane, and each lane shades only
+     its own rows, in row order, as with the words.
+   - The lists share the index pool with the decal lists. A pool too
+     small keeps a list's lowest rows (the head first) and counts the
+     rest in the state buffer's fourth word. A light without a finite
    range reaches every tile. One build marks at most 4096 lights and
    decals together. Since 2026-10-30 the desktop shades the light rows
    `[0, min(count, 4096 - decals))`

@@ -293,6 +293,15 @@ struct VkrVulkanLightClusters
     uint light_words;
     // Per screen tile, `light_words` words; bit i marks light row i.
     uint *light_tiles;
+    // Per screen tile, its run of light rows in `indices`, in row order: x
+    // the first index, y the count (W4c).
+    uint2 *light_lists;
+    // Per coarse cell of 4 x 4 tiles, `light_words` words: bit i marks
+    // light row i whose box of tiles overlaps the cell.
+    uint *light_cells;
+    // Coarse cell columns and rows.
+    uint2 cell_dimensions;
+    uint2 reserved;
 };
 
 struct VkrVulkanPacketFrameRoot

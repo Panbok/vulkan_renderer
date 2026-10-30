@@ -1678,6 +1678,40 @@ bool8_t vkr_vk_prepare_light_scatter(VkrVulkanRenderer *renderer,
    dispatch, one thread per light and decal, then the bin dispatch, one
    workgroup per tile. A view that does not project keeps one cluster that
    lists every light and decal. */
+/* Where Lighting.Clusters' header buffer places each part, in bytes. */
+typedef struct VkrVulkanLightClusterLayout {
+  uint64_t light_tiles;
+  uint64_t light_lists;
+  uint64_t light_cells;
+  uint64_t bytes;
+  uint32_t cell_columns;
+  uint32_t cell_rows;
+} VkrVulkanLightClusterLayout;
+
+/* The clusters, then from 16 bytes each tile's light words, from 8 each
+   tile's list header, from 16 each coarse cell's light words. */
+vkr_internal VkrVulkanLightClusterLayout
+vkr_vk_light_cluster_layout(uint32_t tile_columns, uint32_t tile_rows,
+                            uint32_t slices, uint32_t light_words) {
+  const uint64_t tiles = (uint64_t)tile_columns * tile_rows;
+  VkrVulkanLightClusterLayout layout = {
+      .cell_columns =
+          vkr_ceil_div_u32(tile_columns, VKR_VULKAN_LIGHT_CLUSTER_CELL_TILES),
+      .cell_rows =
+          vkr_ceil_div_u32(tile_rows, VKR_VULKAN_LIGHT_CLUSTER_CELL_TILES),
+  };
+  layout.light_tiles =
+      AlignPow2(tiles * slices * sizeof(VkrVulkanLightCluster), 16u);
+  layout.light_lists = AlignPow2(
+      layout.light_tiles + tiles * light_words * sizeof(uint32_t), 8u);
+  layout.light_cells =
+      AlignPow2(layout.light_lists + tiles * 2u * sizeof(uint32_t), 16u);
+  layout.bytes = layout.light_cells + (uint64_t)layout.cell_columns *
+                                          layout.cell_rows * light_words *
+                                          sizeof(uint32_t);
+  return layout;
+}
+
 bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
                                       VkrVulkanPreparedCompute *prepared,
                                       const VkrRgPass *pass) {
@@ -1714,21 +1748,22 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
           vkr_vulkan_shaded_point_light_limit(decal_count));
   const uint32_t light_words = vkr_ceil_div_u32(light_count, 32u);
   /* The header buffer holds VKR_VULKAN_LIGHT_CLUSTER_HEADER_BYTES_PER_PIXEL
-     bytes per render pixel: the clusters, then each tile's light words. An
-     extent of a few pixels, as a window that is still opening reports, rounds
-     up to more whole tiles than that holds and keeps the single cluster
-     too. */
-  const uint64_t tile_count =
-      (uint64_t)vkr_ceil_div_u32(width, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE) *
+     bytes per render pixel: the clusters, each tile's light words, each
+     tile's list header and each coarse cell's light words. An extent of a
+     few pixels, as a window that is still opening reports, rounds up to more
+     whole tiles than that holds and keeps the single cluster too. */
+  const uint32_t tile_columns =
+      vkr_ceil_div_u32(width, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE);
+  const uint32_t tile_rows =
       vkr_ceil_div_u32(height, VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE);
-  const uint64_t tile_bytes =
-      AlignPow2(tile_count * VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT *
-                    sizeof(VkrVulkanLightCluster),
-                16u) +
-      tile_count * light_words * sizeof(uint32_t);
+  const VkrVulkanLightClusterLayout projected_layout =
+      vkr_vk_light_cluster_layout(tile_columns, tile_rows,
+                                  VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT,
+                                  light_words);
   const bool8_t projects = width != 0u && height != 0u &&
                            vkr_is_finite_f32(near_w) && near_w > 0.0f &&
-                           far_w > near_w && tile_bytes <= headers->buffer.size;
+                           far_w > near_w &&
+                           projected_layout.bytes <= headers->buffer.size;
   uint32_t dimensions[4] = {1u, 1u, 1u, 0u};
   Vec4 grid_scale = {0};
   if (projects) {
@@ -1744,15 +1779,12 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
     grid_scale = (Vec4){(float32_t)width / tile, (float32_t)height / tile,
                         slice_scale, -vkr_log2_f32(near_w) * slice_scale};
   }
-  /* The light words start 16-byte aligned after the clusters. A buffer below
-     one cluster and its light words leaves the record's empty cluster, which
-     shades no punctual light and no decal, for a frame too small to see. */
-  const uint64_t light_tiles_offset =
-      AlignPow2((uint64_t)dimensions[0] * dimensions[1] * dimensions[2] *
-                    sizeof(VkrVulkanLightCluster),
-                16u);
-  if (light_tiles_offset + (uint64_t)light_words * sizeof(uint32_t) >
-      headers->buffer.size)
+  /* A buffer below one cluster, its light words, list and cell leaves the
+     record's empty cluster, which shades no punctual light and no decal, for
+     a frame too small to see. */
+  const VkrVulkanLightClusterLayout layout = vkr_vk_light_cluster_layout(
+      dimensions[0], dimensions[1], dimensions[2], light_words);
+  if (layout.bytes > headers->buffer.size)
     return true_v;
 
   /* The packet tables keep both row addresses valid without rows. */
@@ -1775,7 +1807,10 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
       .indices = indices->buffer.address,
       .near_w = near_w,
       .light_words = light_words,
-      .light_tiles = headers->buffer.address + light_tiles_offset,
+      .light_tiles = headers->buffer.address + layout.light_tiles,
+      .light_lists = headers->buffer.address + layout.light_lists,
+      .light_cells = headers->buffer.address + layout.light_cells,
+      .cell_dimensions = {layout.cell_columns, layout.cell_rows},
   };
   const VkrVulkanLightClusterBuildRoot root = {
       .clusters = slot->light_clusters,
@@ -1797,6 +1832,16 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
           [VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_PREPARE];
   prepared->groups[prepared->dispatch_count][0] =
       Max(vkr_ceil_div_u32(item_count, 64u), 1u);
+  prepared->groups[prepared->dispatch_count][1] = 1u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines
+          [VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_CELLS];
+  prepared->groups[prepared->dispatch_count][0] =
+      Max(vkr_ceil_div_u32(layout.cell_columns * layout.cell_rows * light_words,
+                           64u),
+          1u);
   prepared->groups[prepared->dispatch_count][1] = 1u;
   prepared->groups[prepared->dispatch_count][2] = 1u;
   prepared->dispatch_count++;

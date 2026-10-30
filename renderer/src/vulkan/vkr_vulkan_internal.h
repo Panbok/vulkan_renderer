@@ -255,6 +255,8 @@ static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
   "packet.light_cluster_prepare.comp.spv"
 #define VKR_VULKAN_PACKET_LIGHT_CLUSTER_BIN_COMP_SPV                           \
   "packet.light_cluster_bin.comp.spv"
+#define VKR_VULKAN_PACKET_LIGHT_CLUSTER_CELLS_COMP_SPV                         \
+  "packet.light_cluster_cells.comp.spv"
 #define VKR_VULKAN_PACKET_LIGHT_TABLE_SCATTER_COMP_SPV                         \
   "packet.light_table_scatter.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
@@ -557,6 +559,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_PREFIX,
   VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_PREPARE,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_CELLS,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_CLUSTER_BIN,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHT_TABLE_SCATTER,
   VKR_VULKAN_DEFERRED_PIPELINE_SKINNING,
@@ -1236,13 +1239,28 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightClusters {
   /* Per screen tile, `light_words` words in the header buffer after the
      clusters; bit i marks light row i. */
   uint64_t light_tiles;
+  /* Per screen tile, uint2: its run of light rows in `indices`, in row
+     order (first, count), in the header buffer after the light words. */
+  uint64_t light_lists;
+  /* Per coarse cell of VKR_VULKAN_LIGHT_CLUSTER_CELL_TILES squared tiles,
+     `light_words` words after the lists: bit i marks light row i whose box
+     of tiles overlaps the cell. */
+  uint64_t light_cells;
+  uint32_t cell_dimensions[2];
+  uint32_t reserved[2];
 } VkrVulkanLightClusters;
-_Static_assert(sizeof(VkrVulkanLightClusters) == 128u &&
+_Static_assert(sizeof(VkrVulkanLightClusters) == 160u &&
                    offsetof(VkrVulkanLightClusters, grid_scale) == 64u &&
                    offsetof(VkrVulkanLightClusters, headers) == 96u &&
                    offsetof(VkrVulkanLightClusters, near_w) == 112u &&
-                   offsetof(VkrVulkanLightClusters, light_tiles) == 120u,
+                   offsetof(VkrVulkanLightClusters, light_tiles) == 120u &&
+                   offsetof(VkrVulkanLightClusters, light_lists) == 128u &&
+                   offsetof(VkrVulkanLightClusters, light_cells) == 136u &&
+                   offsetof(VkrVulkanLightClusters, cell_dimensions) == 144u,
                "Light cluster ABI drift");
+/* Tiles per side of a coarse cell, which marks the light rows whose box
+   covers it, so a tile tests its cell's lights rather than all of them. */
+#define VKR_VULKAN_LIGHT_CLUSTER_CELL_TILES 4u
 
 /* Lighting.Clusters' prepare and bin dispatches. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanLightClusterBuildRoot {
@@ -1251,8 +1269,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightClusterBuildRoot {
   uint64_t decals;
   /* Per light, then per decal: uint2, its box of clusters. */
   uint64_t boxes;
-  /* uint4: indices allocated, references dropped past the pool, the longest
-     list; the prepare dispatch clears it. */
+  /* uint4: indices allocated, decal references dropped past the pool, the
+     longest decal list, light rows dropped from tile lists past the pool;
+     the prepare dispatch clears it. */
   uint64_t counters;
   uint32_t light_count;
   uint32_t decal_count;

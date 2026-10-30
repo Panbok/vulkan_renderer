@@ -1204,6 +1204,136 @@ float3 packet_local_shadow_mask<let Fallback : bool>(
     return 1.0f;
 }
 
+// One punctual light `light_index`, wave-uniform, for the lanes whose tile
+// marks it (`lane_has`); the others skip it after the wave's box test.
+// packet_punctual_layered describes the parameters.
+// Inlined by force: as a call, vk_deferred_lighting_layered_no_rectangles
+// went from 256 registers without spill to 19,632 bytes of scratch
+// (RX 6700 XT, 2026-10-30, VKR_HARNESS_SHADER_STATISTICS).
+[ForceInline]
+void packet_punctual_light<let UseMask : bool, let MaskFallback : bool>(
+    VkrVulkanPacketFrameRoot *frame, uint light_index, bool lane_has,
+    float3 world_position, float3 normal, float3 view, float3 albedo,
+    float metallic, float roughness, float3 f0, VkrGgxMaterialEnergy energy,
+    bool diffuse_enabled, bool coat_active, VkrClearcoatLayer coat,
+    bool sheen_active, VkrSheenLayer sheen, float sheen_normalization,
+    uint mask_texture, uint2 mask_texel, inout uint mask_slot,
+    float3 bounds_min, float3 bounds_max, uint *light_contribution,
+    inout VkrVulkanDirectResult result, inout float3 coat_sum,
+    inout float3 sheen_sum)
+{
+    VkrGpuPointLightRow light = frame.point_light_data[light_index];
+    float4 p0 = light.p0;
+    float4 p1 = light.p1;
+    float4 p2 = light.p2;
+    float4 p3 = light.p3;
+    // Deferred lighting skips, for the whole wave, a ranged light
+    // that misses the box of its pixels: no pixel could pass the
+    // range test below. The tile bounds lights only on the screen.
+    if (UseMask && p2.w >= 0.5f && p2.z > 0.0f)
+    {
+        float3 gap = p0.xyz - clamp(p0.xyz, bounds_min, bounds_max);
+        if (dot(gap, gap) >= p2.z * p2.z)
+            return;
+    }
+    if (!lane_has)
+        return;
+    VkrPunctualLightTerm term =
+        vkr_punctual_light_term(p0, p1, p2, p3, world_position);
+    if (!term.in_range || term.cone <= 0.0f)
+        return;
+    uint kind = term.kind;
+    float3 light_direction = term.direction;
+    float attenuation = term.attenuation * term.cone;
+    // Rows carry intensity before exposure (ADR-019); the product
+    // matches the one the host formed when rows were pre-exposed.
+    float intensity = p2.x * frame.pre_exposure;
+    // `light_index` is wave-uniform, so the wave adds its pixels'
+    // unshadowed contribution with one atomic. Shadowing never
+    // changes the measure, so selection cannot feed back on itself.
+    // Only the light head's rows are measured (ADR-135).
+    if (UseMask && light_contribution != nullptr &&
+        light_index < VKR_LIGHT_CLUSTER_HEAD_COUNT)
+    {
+        float wave_lit = WaveActiveSum(vkr_local_light_contribution(
+            p1.rgb, p2.x, attenuation, dot(normal, light_direction),
+            frame.pre_exposure));
+        if (WaveIsFirstLane())
+        {
+            uint ignored;
+            InterlockedAdd(light_contribution[light_index],
+                           uint(wave_lit *
+                                    float(VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE) +
+                                0.5f),
+                           ignored);
+        }
+    }
+    float3 shadow_normal =
+        vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy);
+    // Deferred lighting skips lights below the contribution cutoff,
+    // as Shadow.LocalMask gave them no slot.
+    if (UseMask &&
+        vkr_local_light_contribution(
+            p1.rgb, p2.x, attenuation,
+            dot(shadow_normal, light_direction), frame.pre_exposure) <
+            VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
+        return;
+    // The base lobes are zero for a light behind the shadow normal, so
+    // its visibility is never looked up; deferred lighting's mask gave
+    // it no slot either.
+    float3 visibility = 0.0f;
+    if (vkr_local_shadow_light_faces(shadow_normal, light_direction))
+    {
+        if (UseMask)
+            visibility = packet_local_shadow_mask<MaskFallback>(
+                frame, light, light_index, kind, world_position,
+                shadow_normal, mask_texture, mask_texel, mask_slot);
+        else
+            visibility = packet_local_shadow(
+                frame, light, kind, world_position, shadow_normal,
+                float2(1.0f, 0.0f), VKR_LOCAL_SHADOW_INLINE_TAP_COUNT);
+    }
+    if (diffuse_enabled)
+    {
+        VkrVulkanDirectResult direct = packet_direct(
+            normal, view, light_direction,
+            p1.rgb * intensity * attenuation * visibility,
+            albedo, metallic, roughness, f0, energy);
+        result.irradiance += direct.irradiance;
+        result.diffuse += direct.diffuse;
+        result.specular += direct.specular;
+    }
+    else
+    {
+        result.specular += packet_direct_specular(
+            normal, view, light_direction,
+            p1.rgb * intensity * attenuation * visibility,
+            roughness, f0, energy);
+    }
+    // Sheen shares the front base normal. Backlit sheet visibility is
+    // irrelevant to its zero response; an independent coat keeps its bias.
+    if (coat_active)
+    {
+        float3 coat_visibility = visibility;
+        if (any(coat.normal != shadow_normal))
+        {
+            coat_visibility = packet_local_shadow(
+                frame, light, kind, world_position, coat.normal);
+        }
+        coat_sum += packet_direct_specular(
+            coat.normal, view, light_direction,
+            p1.rgb * intensity * attenuation * coat_visibility,
+            coat.roughness, float3(VKR_CLEARCOAT_F0), coat.energy);
+    }
+    if (sheen_active)
+    {
+        sheen_sum += packet_sheen_direct(
+            normal, view, light_direction,
+            p1.rgb * intensity * attenuation * visibility,
+            sheen, sheen_normalization);
+    }
+}
+
 // UseMask selects the base visibility source at compile time: forward and
 // transmission shading filter the shadow maps inline, while deferred lighting
 // reads the mask at `mask_texel` from `mask_texture`, with MaskFallback as
@@ -1235,143 +1365,73 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
     result.specular = 0.0f;
     float3 coat_sum = 0.0f;
     float3 sheen_sum = 0.0f;
-    // Deferred lighting knows its render pixel, so its tile needs no
-    // projection.
     VkrVulkanLightClusters *clusters = frame.light_clusters;
-    uint *tile_words =
-        UseMask ? vkr_vk_light_tile_words_at_pixel(clusters, pixel)
-                : vkr_vk_light_tile_words(clusters, world_position);
-    uint light_words = clusters.light_words;
     uint point_count = frame.point_light_count;
     uint mask_slot = mask_first_slot;
-    for (uint word = 0u; word < light_words; ++word)
+    if (UseMask)
     {
-        // The word comes from the pixel's screen tile, which marks the light
-        // rows whose bounds reach it (ADR-135), so lanes in different tiles
-        // carry different words and the wave already pays for the union of
-        // their set bits. Iterating that union explicitly makes `light_index`
-        // wave-uniform, which lets the light rows load as scalars instead of
-        // per-lane vectors. Each lane still accumulates only its own bits, so
-        // the summation order and result are unchanged.
-        uint lane_word = tile_words[word];
-        uint remaining = WaveActiveBitOr(lane_word);
-        while (remaining != 0u)
+        // Deferred lighting knows its render pixel, so its tile needs no
+        // projection.
+        uint *tile_words = vkr_vk_light_tile_words_at_pixel(clusters, pixel);
+        uint light_words = clusters.light_words;
+        for (uint word = 0u; word < light_words; ++word)
         {
-            uint bit = uint(firstbitlow(remaining));
-            remaining &= remaining - 1u;
-            uint light_index = word * 32u + bit;
+            // The word comes from the pixel's screen tile, which marks the
+            // light rows whose bounds reach it (ADR-135), so lanes in
+            // different tiles carry different words and the wave already
+            // pays for the union of their set bits. Iterating that union
+            // explicitly makes `light_index` wave-uniform, which lets the
+            // light rows load as scalars instead of per-lane vectors. Each
+            // lane still accumulates only its own bits, so the summation
+            // order and result are unchanged.
+            uint lane_word = tile_words[word];
+            uint remaining = WaveActiveBitOr(lane_word);
+            while (remaining != 0u)
+            {
+                uint bit = uint(firstbitlow(remaining));
+                remaining &= remaining - 1u;
+                uint light_index = word * 32u + bit;
+                if (light_index >= point_count)
+                    continue;
+                packet_punctual_light<UseMask, MaskFallback>(
+                    frame, light_index, (lane_word & (1u << bit)) != 0u,
+                    world_position, normal, view, albedo, metallic,
+                    roughness, f0, energy, diffuse_enabled, coat_active,
+                    coat, sheen_active, sheen, sheen_normalization,
+                    mask_texture, mask_texel, mask_slot, bounds_min,
+                    bounds_max, light_contribution, result, coat_sum,
+                    sheen_sum);
+            }
+        }
+    }
+    else
+    {
+        // Forward and transmission shading project the position to its
+        // tile's list of light rows, in row order (W4c). Lanes in different
+        // tiles hold different lists: the wave takes the lowest next row of
+        // any lane, so `light_index` stays wave-uniform, and each lane shades
+        // only its own rows, in row order, as the tile words did.
+        uint2 list = vkr_vk_light_tile_list(clusters, world_position);
+        uint cursor = list.x;
+        uint end = list.x + list.y;
+        for (;;)
+        {
+            uint lane_next = cursor < end ? clusters.indices[cursor]
+                                          : VKR_LIGHT_CLUSTER_LIST_END;
+            uint light_index = WaveActiveMin(lane_next);
+            if (light_index == VKR_LIGHT_CLUSTER_LIST_END)
+                break;
+            bool lane_has = lane_next == light_index;
+            if (lane_has)
+                ++cursor;
             if (light_index >= point_count)
                 continue;
-            VkrGpuPointLightRow light = frame.point_light_data[light_index];
-            float4 p0 = light.p0;
-            float4 p1 = light.p1;
-            float4 p2 = light.p2;
-            float4 p3 = light.p3;
-            // Deferred lighting skips, for the whole wave, a ranged light
-            // that misses the box of its pixels: no pixel could pass the
-            // range test below. The tile bounds lights only on the screen.
-            if (UseMask && p2.w >= 0.5f && p2.z > 0.0f)
-            {
-                float3 gap = p0.xyz - clamp(p0.xyz, bounds_min, bounds_max);
-                if (dot(gap, gap) >= p2.z * p2.z)
-                    continue;
-            }
-            if ((lane_word & (1u << bit)) == 0u)
-                continue;
-            VkrPunctualLightTerm term =
-                vkr_punctual_light_term(p0, p1, p2, p3, world_position);
-            if (!term.in_range || term.cone <= 0.0f)
-                continue;
-            uint kind = term.kind;
-            float3 light_direction = term.direction;
-            float attenuation = term.attenuation * term.cone;
-            // Rows carry intensity before exposure (ADR-019); the product
-            // matches the one the host formed when rows were pre-exposed.
-            float intensity = p2.x * frame.pre_exposure;
-            // `light_index` is wave-uniform, so the wave adds its pixels'
-            // unshadowed contribution with one atomic. Shadowing never
-            // changes the measure, so selection cannot feed back on itself.
-            // Only the light head's rows are measured (ADR-135).
-            if (UseMask && light_contribution != nullptr &&
-                light_index < VKR_LIGHT_CLUSTER_HEAD_COUNT)
-            {
-                float wave_lit = WaveActiveSum(vkr_local_light_contribution(
-                    p1.rgb, p2.x, attenuation, dot(normal, light_direction),
-                    frame.pre_exposure));
-                if (WaveIsFirstLane())
-                {
-                    uint ignored;
-                    InterlockedAdd(light_contribution[light_index],
-                                   uint(wave_lit *
-                                            float(VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE) +
-                                        0.5f),
-                                   ignored);
-                }
-            }
-            float3 shadow_normal =
-                vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy);
-            // Deferred lighting skips lights below the contribution cutoff,
-            // as Shadow.LocalMask gave them no slot.
-            if (UseMask &&
-                vkr_local_light_contribution(
-                    p1.rgb, p2.x, attenuation,
-                    dot(shadow_normal, light_direction), frame.pre_exposure) <
-                    VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
-                continue;
-            // The base lobes are zero for a light behind the shadow normal, so
-            // its visibility is never looked up; deferred lighting's mask gave
-            // it no slot either.
-            float3 visibility = 0.0f;
-            if (vkr_local_shadow_light_faces(shadow_normal, light_direction))
-            {
-                if (UseMask)
-                    visibility = packet_local_shadow_mask<MaskFallback>(
-                        frame, light, light_index, kind, world_position,
-                        shadow_normal, mask_texture, mask_texel, mask_slot);
-                else
-                    visibility = packet_local_shadow(
-                        frame, light, kind, world_position, shadow_normal,
-                        float2(1.0f, 0.0f), VKR_LOCAL_SHADOW_INLINE_TAP_COUNT);
-            }
-            if (diffuse_enabled)
-            {
-                VkrVulkanDirectResult direct = packet_direct(
-                    normal, view, light_direction,
-                    p1.rgb * intensity * attenuation * visibility,
-                    albedo, metallic, roughness, f0, energy);
-                result.irradiance += direct.irradiance;
-                result.diffuse += direct.diffuse;
-                result.specular += direct.specular;
-            }
-            else
-            {
-                result.specular += packet_direct_specular(
-                    normal, view, light_direction,
-                    p1.rgb * intensity * attenuation * visibility,
-                    roughness, f0, energy);
-            }
-            // Sheen shares the front base normal. Backlit sheet visibility is
-            // irrelevant to its zero response; an independent coat keeps its bias.
-            if (coat_active)
-            {
-                float3 coat_visibility = visibility;
-                if (any(coat.normal != shadow_normal))
-                {
-                    coat_visibility = packet_local_shadow(
-                        frame, light, kind, world_position, coat.normal);
-                }
-                coat_sum += packet_direct_specular(
-                    coat.normal, view, light_direction,
-                    p1.rgb * intensity * attenuation * coat_visibility,
-                    coat.roughness, float3(VKR_CLEARCOAT_F0), coat.energy);
-            }
-            if (sheen_active)
-            {
-                sheen_sum += packet_sheen_direct(
-                    normal, view, light_direction,
-                    p1.rgb * intensity * attenuation * visibility,
-                    sheen, sheen_normalization);
-            }
+            packet_punctual_light<UseMask, MaskFallback>(
+                frame, light_index, lane_has, world_position, normal, view,
+                albedo, metallic, roughness, f0, energy, diffuse_enabled,
+                coat_active, coat, sheen_active, sheen, sheen_normalization,
+                mask_texture, mask_texel, mask_slot, bounds_min, bounds_max,
+                light_contribution, result, coat_sum, sheen_sum);
         }
     }
     if (coat_active)

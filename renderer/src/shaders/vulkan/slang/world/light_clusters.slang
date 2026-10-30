@@ -7,11 +7,13 @@
 // its lanes' lists with WaveActiveMin and load each row once.
 //
 // The prepare dispatch bounds each light and decal by a sphere and a box of
-// clusters and clears the counters; the bin dispatch then gives each tile
-// one workgroup, which marks the items whose box covers the tile and whose
-// sphere reaches its side planes, writes the tile's light words, and lets
-// one thread per slice test the decals against its depth range and write
-// that cluster's list.
+// clusters and clears the counters. The cells dispatch marks, per coarse
+// cell of 4 x 4 tiles, the light rows whose box covers it (W4c). The bin
+// dispatch then gives each tile one workgroup, which marks its cell's lights
+// and every decal whose box covers the tile and whose sphere reaches its
+// side planes, writes the tile's light words and its list of light rows in
+// row order, and lets one thread per slice test the decals against its
+// depth range and write that cluster's list.
 
 // Threads of a bin workgroup; at least the slice count, which the host
 // keeps at most 64 (VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT).
@@ -34,8 +36,9 @@ struct VkrVkLightClusterBuildRoot
     VkrVulkanDecalRow *decals;
     // Per light, then per decal: the packed box of clusters it reaches.
     uint2 *boxes;
-    // x: indices allocated, y: references dropped past the pool, z: the
-    // longest list; one uint4 that the prepare dispatch clears.
+    // x: indices allocated, y: decal references dropped past the pool, z:
+    // the longest decal list, w: light rows dropped from tile lists past the
+    // pool; one uint4 that the prepare dispatch clears.
     uint4 *counters;
     uint light_count;
     uint decal_count;
@@ -134,6 +137,31 @@ uint *vkr_vk_light_tile_words(VkrVulkanLightClusters *clusters,
     }
     return clusters.light_tiles + tile * clusters.light_words;
 }
+
+// The run of light rows, in row order, of the screen tile that holds the
+// projection of `world_position`: x the first index, y the count.
+uint2 vkr_vk_light_tile_list(VkrVulkanLightClusters *clusters,
+                             float3 world_position)
+{
+    uint tile = 0u;
+    if (clusters.dimensions.w != 0u)
+    {
+        float4 clip =
+            mul(clusters.view_projection, float4(world_position, 1.0f));
+        float2 uv = clip.xy / max(clip.w, 1.0e-6f) * 0.5f + 0.5f;
+        float2 last = float2(clusters.dimensions.xy - 1u);
+        uint2 cell =
+            uint2(clamp(floor(uv * clusters.grid_scale.xy), 0.0f, last));
+        // A non-finite position converts to any index; the tile count
+        // bounds it.
+        tile = min(cell.x + clusters.dimensions.x * cell.y,
+                   clusters.dimensions.x * clusters.dimensions.y - 1u);
+    }
+    return clusters.light_lists[tile];
+}
+
+// Tiles per side of a coarse cell (VKR_VULKAN_LIGHT_CLUSTER_CELL_TILES).
+#define VKR_LIGHT_CLUSTER_CELL_TILES 4u
 
 // The light head, VKR_POINT_LIGHT_GRID_LIGHT_MAX: only these first rows of
 // the light table can be shadowed or have their contribution counted.
@@ -332,7 +360,85 @@ void vk_light_table_scatter(uint3 thread_id : SV_DispatchThreadID)
         root.table[row] = root.updates[update].value;
 }
 
+// One thread per coarse cell and light word: the word's light rows whose
+// box of tiles overlaps the cell's 4 x 4 tiles. Each thread writes its own
+// word, so the result does not depend on the order threads run in.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_light_cluster_cells(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkLightClusterBuildRoot root =
+        vkr_vk_uniform_root(*g_light_cluster_push.root);
+    VkrVulkanLightClusters *clusters = root.clusters;
+    uint light_words = clusters.light_words;
+    uint cell_count = clusters.cell_dimensions.x * clusters.cell_dimensions.y;
+    if (thread_id.x >= cell_count * light_words)
+        return;
+    uint cell = thread_id.x / light_words;
+    uint word = thread_id.x % light_words;
+    uint2 first_tile = uint2(cell % clusters.cell_dimensions.x,
+                             cell / clusters.cell_dimensions.x) *
+                       VKR_LIGHT_CLUSTER_CELL_TILES;
+    uint2 last_tile = first_tile + (VKR_LIGHT_CLUSTER_CELL_TILES - 1u);
+    uint bits = 0u;
+    for (uint bit = 0u; bit < 32u; ++bit)
+    {
+        uint item = word * 32u + bit;
+        if (item >= root.light_count)
+            break;
+        uint2 box = root.boxes[item];
+        if (box.x == VKR_LIGHT_CLUSTER_EMPTY_BOX.x)
+            continue;
+        uint3 low = vkr_vk_light_cluster_unpack(box.x);
+        uint3 high = vkr_vk_light_cluster_unpack(box.y);
+        if (all(low.xy <= last_tile) && all(high.xy >= first_tile))
+            bits |= 1u << bit;
+    }
+    clusters.light_cells[cell * light_words + word] = bits;
+}
+
 groupshared uint g_light_cluster_items[VKR_LIGHT_CLUSTER_ITEM_WORDS];
+
+// Whether light `item`'s box covers `tile` and its sphere reaches the
+// tile's four side planes.
+bool vkr_vk_light_cluster_tile_reaches(VkrVkLightClusterBuildRoot root,
+                                       uint item, uint2 tile,
+                                       float4 planes[4])
+{
+    uint2 box = root.boxes[item];
+    uint3 low = vkr_vk_light_cluster_unpack(box.x);
+    uint3 high = vkr_vk_light_cluster_unpack(box.y);
+    if (box.x == VKR_LIGHT_CLUSTER_EMPTY_BOX.x || any(tile < low.xy) ||
+        any(tile > high.xy))
+        return false;
+    uint sphere_slot = VKR_LIGHT_CLUSTER_ITEM_MAX + item * 2u;
+    float4 sphere = float4(asfloat(root.boxes[sphere_slot]),
+                           asfloat(root.boxes[sphere_slot + 1u]));
+    if (sphere.w < 0.0f)
+        return true;
+    bool reaches = true;
+    [unroll]
+    for (uint side = 0u; side < 4u; ++side)
+        reaches = reaches && dot(planes[side].xyz, sphere.xyz) +
+                                     planes[side].w >=
+                                 -sphere.w;
+    return reaches;
+}
+
+// The marked light rows of the bin workgroup's item word `word`.
+uint vkr_vk_light_cluster_light_bits(VkrVkLightClusterBuildRoot root,
+                                     uint word)
+{
+    uint bits = g_light_cluster_items[word];
+    uint past = root.light_count - word * 32u;
+    if (past < 32u)
+        bits &= (1u << past) - 1u;
+    return bits;
+}
+
+groupshared uint g_light_cluster_list_counts[VKR_LIGHT_CLUSTER_BIN_THREADS];
+groupshared uint g_light_cluster_list_first;
+groupshared uint g_light_cluster_list_kept;
 
 [shader("compute")]
 [numthreads(VKR_LIGHT_CLUSTER_BIN_THREADS, 1, 1)]
@@ -366,11 +472,36 @@ void vk_light_cluster_bin(uint3 group_id : SV_GroupID,
     for (uint side = 0u; side < 4u; ++side)
         planes[side] /= length(planes[side].xyz);
 
-    // Mark the items whose box covers this tile and whose sphere reaches the
-    // tile's side planes.
-    for (uint item = thread_index; item < item_count;
-         item += VKR_LIGHT_CLUSTER_BIN_THREADS)
+    // Mark the lights of the tile's coarse cell, and the decals whose box
+    // covers this tile, whose sphere reaches the tile's side planes.
+    uint light_words = clusters.light_words;
+    uint cell = tile.x / VKR_LIGHT_CLUSTER_CELL_TILES +
+                clusters.cell_dimensions.x *
+                    (tile.y / VKR_LIGHT_CLUSTER_CELL_TILES);
+    // One light word a thread: its cell's set bits.
+    for (uint word = thread_index; word < light_words;
+         word += VKR_LIGHT_CLUSTER_BIN_THREADS)
     {
+        uint remaining = clusters.light_cells[cell * light_words + word];
+        uint marked = 0u;
+        while (remaining != 0u)
+        {
+            uint bit = uint(firstbitlow(remaining));
+            remaining &= remaining - 1u;
+            if (vkr_vk_light_cluster_tile_reaches(root, word * 32u + bit,
+                                                  tile, planes))
+                marked |= 1u << bit;
+        }
+        if (marked != 0u)
+        {
+            uint ignored;
+            InterlockedOr(g_light_cluster_items[word], marked, ignored);
+        }
+    }
+    for (uint decal = thread_index; decal < root.decal_count;
+         decal += VKR_LIGHT_CLUSTER_BIN_THREADS)
+    {
+        uint item = root.light_count + decal;
         uint2 box = root.boxes[item];
         uint3 low = vkr_vk_light_cluster_unpack(box.x);
         uint3 high = vkr_vk_light_cluster_unpack(box.y);
@@ -400,16 +531,63 @@ void vk_light_cluster_bin(uint3 group_id : SV_GroupID,
 
     // The tile's light bitfield: the marked items below the light count, in
     // light row order.
-    uint light_words = clusters.light_words;
     uint *tile_words = clusters.light_tiles + group_id.x * light_words;
     for (uint word = thread_index; word < light_words;
          word += VKR_LIGHT_CLUSTER_BIN_THREADS)
+        tile_words[word] = vkr_vk_light_cluster_light_bits(root, word);
+
+    // The tile's list of the same rows, in row order: each thread counts a
+    // contiguous run of words, one thread sums the runs and takes the list's
+    // place in the index pool, then each thread writes its run at its
+    // offset. A pool too small keeps the list's lowest rows, the head first,
+    // and counts the rest.
+    uint run = (light_words + VKR_LIGHT_CLUSTER_BIN_THREADS - 1u) /
+               VKR_LIGHT_CLUSTER_BIN_THREADS;
+    uint run_first = thread_index * run;
+    uint run_end = min(run_first + run, light_words);
+    uint run_count = 0u;
+    for (uint word = run_first; word < run_end; ++word)
+        run_count += countbits(vkr_vk_light_cluster_light_bits(root, word));
+    g_light_cluster_list_counts[thread_index] = run_count;
+    GroupMemoryBarrierWithGroupSync();
+    if (thread_index == 0u)
     {
-        uint bits = g_light_cluster_items[word];
-        uint past = root.light_count - word * 32u;
-        if (past < 32u)
-            bits &= (1u << past) - 1u;
-        tile_words[word] = bits;
+        uint total = 0u;
+        for (uint i = 0u; i < VKR_LIGHT_CLUSTER_BIN_THREADS; ++i)
+        {
+            uint count = g_light_cluster_list_counts[i];
+            g_light_cluster_list_counts[i] = total;
+            total += count;
+        }
+        uint first = 0u;
+        if (total != 0u)
+            InterlockedAdd(root.counters[0].x, total, first);
+        uint kept = first < root.index_capacity
+                        ? min(total, root.index_capacity - first)
+                        : 0u;
+        if (kept < total)
+        {
+            uint ignored;
+            InterlockedAdd(root.counters[0].w, total - kept, ignored);
+        }
+        g_light_cluster_list_first = first;
+        g_light_cluster_list_kept = kept;
+        clusters.light_lists[group_id.x] = uint2(first, kept);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint list_first = g_light_cluster_list_first;
+    uint list_kept = g_light_cluster_list_kept;
+    uint place = g_light_cluster_list_counts[thread_index];
+    for (uint word = run_first; word < run_end && place < list_kept; ++word)
+    {
+        uint remaining = vkr_vk_light_cluster_light_bits(root, word);
+        while (remaining != 0u && place < list_kept)
+        {
+            uint bit = uint(firstbitlow(remaining));
+            remaining &= remaining - 1u;
+            clusters.indices[list_first + place] = word * 32u + bit;
+            ++place;
+        }
     }
 
     // One thread per slice: count the slice's decals, take their run of the

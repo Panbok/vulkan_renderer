@@ -161,6 +161,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.light_cluster_cells.comp",
+      "entry": "vk_light_cluster_cells",
+      "stage": "compute"
+    },
+    {
       "name": "packet.light_cluster_bin.comp",
       "entry": "vk_light_cluster_bin",
       "stage": "compute"
