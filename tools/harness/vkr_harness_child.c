@@ -1289,6 +1289,95 @@ vkr_internal bool8_t vkr_harness_child_write_texture_residency(
   return true_v;
 }
 
+typedef struct VkrHarnessShaderStatisticsWrite {
+  VkrJsonWriter *writer;
+  bool8_t ok;
+} VkrHarnessShaderStatisticsWrite;
+
+/* One pipeline registry entry as a `pipelines` row; runs under the
+   registry's lock. */
+vkr_internal void vkr_harness_child_write_pipeline(void *context,
+                                                   uint32_t index,
+                                                   const VkrPipelineInfo *info,
+                                                   const VkrPipelineStat *stats,
+                                                   uint32_t stat_count) {
+  VkrHarnessShaderStatisticsWrite *write = context;
+  VkrJsonWriter *writer = write->writer;
+  vkr_local_persist const char *const kinds[VKR_PIPELINE_KIND_COUNT] = {
+      "render", "compute", "tile"};
+  const char *kind =
+      (uint32_t)info->kind < ArrayCount(kinds) ? kinds[info->kind] : "";
+  bool8_t ok =
+      write->ok && vkr_json_writer_begin_object(writer) &&
+      vkr_harness_json_emit_u64(writer, "index", index) &&
+      vkr_harness_json_emit_string(writer, "name", info->name) &&
+      vkr_harness_json_emit_string(writer, "kind", kind) &&
+      vkr_harness_json_emit_f64(writer, "compile_ms", info->compile_ms) &&
+      vkr_harness_json_emit_u64(writer, "registers", info->registers) &&
+      vkr_harness_json_emit_u64(writer, "spill_bytes", info->spill_bytes) &&
+      vkr_harness_json_emit_u64(writer, "threadgroup_memory",
+                                info->threadgroup_memory) &&
+      vkr_harness_json_emit_u64(writer, "instructions", info->instructions) &&
+      vkr_harness_json_emit_name(writer, "statistics") &&
+      vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0u; ok && i < stat_count; ++i) {
+    ok = vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_string(writer, "name", stats[i].name) &&
+         vkr_harness_json_emit_f64(writer, "value", stats[i].value) &&
+         vkr_json_writer_end_object(writer);
+  }
+  write->ok = ok && vkr_json_writer_end_array(writer) &&
+              vkr_json_writer_end_object(writer);
+}
+
+/* Writes `shader-statistics.json` to the run directory under
+   VKR_HARNESS_SHADER_STATISTICS: every pipeline the renderer created, in
+   creation order, with the driver's executable statistics (AMD:
+   numUsedVgprs, numUsedSgprs, ldsUsageSizeInBytes, scratchMemUsageInBytes)
+   and the registry's summary of them (ADR-130). `captured` is false on a
+   device without VK_KHR_pipeline_executable_properties, whose rows carry
+   compile times only. */
+vkr_internal bool8_t vkr_harness_child_write_shader_statistics(
+    const VkrHarnessChildContext *child, VkrStandardSceneRuntime *application) {
+  Arena *device_arena = arena_create(KB(16), KB(16));
+  if (!device_arena) {
+    return false_v;
+  }
+  VkrDeviceInformation device = {0};
+  vkr_renderer_get_device_information(&application->renderer, &device,
+                                      device_arena);
+  const bool8_t captured = device.shader_statistics_captured;
+  arena_destroy(device_arena);
+
+  char path[VKR_HARNESS_PATH_MAX];
+  string_format(path, sizeof(path), "%s/shader-statistics.json",
+                child->run_dir);
+  VkrJsonFileWriter file = {0};
+  if (!vkr_json_file_writer_begin(
+          &file, string8_create_from_cstr((const uint8_t *)path,
+                                          string_length(path)))) {
+    return false_v;
+  }
+  VkrHarnessShaderStatisticsWrite write = {.writer = &file.writer};
+  write.ok = vkr_json_writer_begin_object(write.writer) &&
+             vkr_harness_json_emit_u64(write.writer, "schema_version", 1u) &&
+             vkr_harness_json_emit_bool(write.writer, "captured", captured) &&
+             vkr_harness_json_emit_name(write.writer, "pipelines") &&
+             vkr_json_writer_begin_array(write.writer);
+  if (write.ok) {
+    (void)vkr_pipeline_registry_visit(
+        vkr_renderer_pipeline_registry(&application->renderer), 0u,
+        vkr_harness_child_write_pipeline, &write);
+  }
+  const bool8_t ok = write.ok && vkr_json_writer_end_array(write.writer) &&
+                     vkr_json_writer_end_object(write.writer);
+  if (!ok || !vkr_json_file_writer_commit(&file)) {
+    vkr_json_file_writer_abort(&file);
+    return false_v;
+  }
+  return true_v;
+}
+
 /* Bootstrap only: the number the next frame will get, exact once the frame
    the render thread holds has finished. The measured phase never waits. */
 vkr_internal uint64_t
@@ -1742,6 +1831,7 @@ vkr_internal VkrStandardSceneRuntimeConfig vkr_harness_child_application_config(
               : VKR_TILED_UPSCALER_SPATIAL,
       .texture_max_load_dimension =
           case_manifest->renderer.texture_max_load_dimension,
+      .capture_shader_statistics = vkr_harness_shader_statistics_requested(),
       .dynamic_resolution =
           {
               .min_scale = case_manifest->renderer.dynamic_resolution_min_scale,
@@ -2820,6 +2910,11 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       vkr_harness_child_write_texture_residency(&child, application,
                                                 texture_residency_path,
                                                 sizeof(texture_residency_path));
+  if (!prewarm && !child.failed && vkr_harness_shader_statistics_requested() &&
+      !vkr_harness_child_write_shader_statistics(&child, application)) {
+    vkr_harness_stderr("Unable to write the shader statistics\n");
+    child.failed = true_v;
+  }
 
   vkr_harness_child_device_provenance(application, &case_manifest, &provenance);
   vkr_harness_timestamp_utc(provenance.ended_at);

@@ -1031,6 +1031,11 @@ vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest);
  */
 bool8_t
 vkr_harness_shadow_evsm_enabled(const VkrHarnessRendererConfig *renderer);
+/** Whether VKR_HARNESS_SHADER_STATISTICS is "1", a cold process option every
+ * child inherits: children create their pipelines with the driver's
+ * executable statistics and write them to `shader-statistics.json`
+ * (ADR-130), and a profile run loses authority. */
+bool8_t vkr_harness_shader_statistics_requested(void);
 bool8_t vkr_harness_case_fingerprints(
     const char *repo_root, VkrHarnessTool tool,
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,

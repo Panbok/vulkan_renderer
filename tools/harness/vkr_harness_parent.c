@@ -735,6 +735,11 @@ vkr_harness_add_setup_authority_reasons(VkrHarnessReport *report,
   if (record == VKR_HARNESS_RECORD_ZONES) {
     vkr_harness_report_add_authority_reason(report, "recording.zones");
   }
+  /* Its pipelines compile with other create flags and cache keys. */
+  if (vkr_harness_shader_statistics_requested()) {
+    vkr_harness_report_add_authority_reason(report,
+                                            "shader_statistics.captured");
+  }
 }
 
 /** Records every completed repetition's artifacts, and its recording when

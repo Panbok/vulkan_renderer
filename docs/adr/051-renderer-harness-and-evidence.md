@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-22
+updated: 2026-10-30
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -46,6 +46,17 @@ group only; passes no pattern matches form `unassigned`. A group's optional
 less the measured p95, negative over it. The file loads before any child
 runs, and neither it nor a target enters a fingerprint or verdict
 ([desktop budget lines](../../tools/budgets/desktop.pass_groups.json)).
+`VKR_HARNESS_SHADER_STATISTICS=1`, a cold process option every child
+inherits, creates the children's pipelines with the driver's executable
+statistics ([ADR-130](130-performance-window-tabs.md)) and has each measured
+repetition write `shader-statistics.json` to its run directory: every
+pipeline the renderer created, in creation order, with its registers, spill
+bytes, threadgroup memory, compile time and each executable's statistics
+(AMD: `numUsedVgprs`, `numUsedSgprs`, `ldsUsageSizeInBytes`,
+`scratchMemUsageInBytes` and the wave size, `subgroupSize`), and `captured`
+false on a device without them. Its pipelines compile with other create
+flags, so a profile run gains the authority reason
+`shader_statistics.captured`.
 Every run, auxiliary run and report carries `diagnostic_counts`:
 GPU error, validation and log counters summed over warmup and measured frames,
 and validation text found in the child's output; a GPU error costs the

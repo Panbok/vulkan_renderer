@@ -2345,6 +2345,15 @@ vkr_internal uint32_t vkr_vk_capture_pipeline_statistics(
         stat->value = value;
       }
     }
+    /* The wave size the executable runs at, which with its registers sets
+       how many waves a SIMD holds (AMD: 32 or 64). */
+    if (executables[executable].subgroupSize != 0u &&
+        stat_count < stat_capacity) {
+      VkrPipelineStat *stat = &stats[stat_count++];
+      string_format(stat->name, sizeof(stat->name), "%s: subgroupSize",
+                    executables[executable].name);
+      stat->value = (float64_t)executables[executable].subgroupSize;
+    }
   }
   return stat_count;
 }
@@ -3189,6 +3198,27 @@ vkr_vk_create_atmosphere_pipelines(VkrVulkanRenderer *renderer) {
   return true_v;
 }
 
+/* The variant of a module named "packet.<stem>.<variant>.comp.spv", or NULL
+   for "packet.<stem>.comp.spv". */
+vkr_internal const char *vkr_vk_module_variant(const char *path,
+                                               uint32_t *out_length) {
+  const char *variant = NULL;
+  uint32_t dots = 0u;
+  *out_length = 0u;
+  for (const char *c = path; *c != '\0'; ++c) {
+    if (*c != '.') {
+      continue;
+    }
+    ++dots;
+    if (dots == 2u) {
+      variant = c + 1;
+    } else if (dots == 3u) {
+      *out_length = (uint32_t)(c - variant);
+    }
+  }
+  return dots == 4u && *out_length > 0u ? variant : NULL;
+}
+
 vkr_internal bool8_t
 vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
   vkr_local_persist const char *const paths[] = {
@@ -3396,7 +3426,24 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
         .stage = stage,
         .layout = renderer->pipeline_layout,
     };
-    if (vkr_vk_create_compute_pipeline(renderer, &info, entries[i],
+
+    /* Modules that share an entry, the G-buffer resolve variants, add their
+       variant to the pipeline's debug and registry name. */
+    const bool8_t shared_entry =
+        (i > 0u && string_equals(entries[i - 1u], entries[i])) ||
+        (i + 1u < VKR_VULKAN_DEFERRED_PIPELINE_COUNT &&
+         string_equals(entries[i + 1u], entries[i]));
+    uint32_t variant_length = 0u;
+    const char *variant =
+        shared_entry ? vkr_vk_module_variant(paths[i], &variant_length) : NULL;
+    char name[VKR_PIPELINE_NAME_MAX + 1u];
+    if (variant) {
+      string_format(name, sizeof(name), "%s.%.*s", entries[i],
+                    (int32_t)variant_length, variant);
+    } else {
+      string_format(name, sizeof(name), "%s", entries[i]);
+    }
+    if (vkr_vk_create_compute_pipeline(renderer, &info, name,
                                        &renderer->deferred_pipelines[i]) !=
         VK_SUCCESS)
       return false_v;

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-20
+updated: 2026-10-30
 authority: adr
 ---
 
@@ -136,7 +136,11 @@ needed a live editor, a GPU capture or a debugger.
    `scratchMemUsageInBytes`, `ldsUsageSizeInBytes`; its
    `ldsSizePerLocalWorkGroup` is the limit and is left out). The HW tab
    adds an SGPRs column from the statistics whose name holds `sgpr`
-   (`numUsedSgprs`), which needs no recording field. `VkrDeviceInformation` gains the GPU
+   (`numUsedSgprs`), which needs no recording field. Each executable's
+   wave size joins its statistics as `subgroupSize` (AMD runs every compute
+   pipeline at 64), and modules that share an entry, the G-buffer resolve
+   variants, name their pipeline with the variant
+   (`vk_gbuffer_resolve.detail_emissive`). `VkrDeviceInformation` gains the GPU
    architecture (Metal) or driver name (Vulkan), unified memory, the
    working set, threadgroup memory and thread limits and the SIMD width. A
    Tier 1 recording writes the device's facts once (`hardware`, with the

@@ -70,6 +70,11 @@ vkr_harness_renderer_backend_resolve(const VkrHarnessRendererConfig *renderer,
   return false_v;
 }
 
+bool8_t vkr_harness_shader_statistics_requested(void) {
+  const char *value = getenv("VKR_HARNESS_SHADER_STATISTICS");
+  return value && string_equals(value, "1");
+}
+
 /**
  * @return True when `metric` belongs to `subsystem`'s own family, spelled
  *         either `<subsystem>.*` or `draw.<subsystem>.*`.
