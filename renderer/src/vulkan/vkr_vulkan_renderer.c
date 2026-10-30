@@ -640,8 +640,10 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   }
   renderer->frame_wait_ns = 0u;
   uint64_t completed = vkr_vk_refresh_completed(renderer);
-  if (!vkr_vk_collect_captures(renderer, completed))
+  if (!vkr_vk_collect_captures(renderer, completed)) {
+    log_error("Vulkan frame preparation failed: capture collection");
     return false_v;
+  }
   vkr_vk_collect_retired_targets(renderer, completed);
   vkr_vk_collect_retired_window_targets(renderer, completed);
   vkr_vk_collect_asset_publications(renderer, completed);
@@ -666,8 +668,10 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   if (renderer->target_dirty &&
       !vkr_vk_recreate_window_target(renderer, renderer->config.width,
                                      renderer->config.height,
-                                     renderer->config.image_count))
+                                     renderer->config.image_count)) {
+    log_error("Vulkan frame preparation failed: window target recreation");
     return false_v;
+  }
   completed = vkr_vk_refresh_completed(renderer);
   const uint32_t slot_index = renderer->command_ring.next_slot;
   VkrVulkanFrameSlot *slot = &renderer->frame_slots[slot_index];
@@ -675,8 +679,11 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
 #if VKR_METRICS_ENABLED
     const float64_t slot_wait_start = vkr_platform_get_absolute_time();
 #endif
-    if (vkr_vk_wait_timeline(renderer, slot->retire_value,
-                             "frame-slot reuse") != VK_SUCCESS) {
+    const VkResult slot_wait =
+        vkr_vk_wait_timeline(renderer, slot->retire_value, "frame-slot reuse");
+    if (slot_wait != VK_SUCCESS) {
+      log_error("Vulkan frame preparation failed: frame-slot wait (%d)",
+                (int32_t)slot_wait);
       return false_v;
     }
 #if VKR_METRICS_ENABLED
@@ -684,27 +691,42 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
 #endif
     renderer->command_slot_wait_count++;
     completed = vkr_vk_refresh_completed(renderer);
-    if (!vkr_vk_collect_captures(renderer, completed))
+    if (!vkr_vk_collect_captures(renderer, completed)) {
+      log_error("Vulkan frame preparation failed: capture collection after "
+                "the slot wait");
       return false_v;
+    }
     vkr_vk_collect_retired_targets(renderer, completed);
     vkr_vk_collect_asset_publications(renderer, completed);
   }
   vkr_vk_collect_picking_result(renderer, slot);
   if (slot->retire_value && slot->retire_value <= completed &&
-      !slot->timing_collected && !vkr_vk_collect_slot_timings(renderer, slot))
+      !slot->timing_collected && !vkr_vk_collect_slot_timings(renderer, slot)) {
+    log_error("Vulkan frame preparation failed: slot timing collection");
     return false_v;
+  }
   vkr_vk_preserve_slot_result(renderer, slot);
-  if (!vkr_vk_stage_next_publication_batch(renderer))
+  if (!vkr_vk_stage_next_publication_batch(renderer)) {
+    log_error("Vulkan frame preparation failed: publication staging");
     return false_v;
-  if (vkResetCommandPool(vkr_vk_renderer_device(renderer), slot->command_pool,
-                         0u) != VK_SUCCESS) {
+  }
+  const VkResult pool_reset =
+      vkr_vk_observe_result(renderer,
+                            vkResetCommandPool(vkr_vk_renderer_device(renderer),
+                                               slot->command_pool, 0u),
+                            "command pool reset");
+  if (pool_reset != VK_SUCCESS) {
+    log_error("Vulkan frame preparation failed: command pool reset (%d)",
+              (int32_t)pool_reset);
     return false_v;
   }
   if (vkr_gpu_submit_ring_acquire(&renderer->command_ring, 1u, completed,
                                   &renderer->active_command_slice) !=
           VKR_GPU_SUBMIT_RING_STATUS_OK ||
-      renderer->active_command_slice.slot_index != slot_index)
+      renderer->active_command_slice.slot_index != slot_index) {
+    log_error("Vulkan frame preparation failed: command ring acquisition");
     return false_v;
+  }
   renderer->active_frame_slot = slot_index;
   renderer->frame_active = true_v;
   slot->sh_coefficients_clear_recorded = false_v;
@@ -738,6 +760,8 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
       return false_v;
     }
     if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
+      log_error("Vulkan frame preparation failed: image acquire (%d)",
+                (int32_t)acquire_result);
       vkr_vulkan_renderer_cancel_frame(renderer);
       return false_v;
     }
@@ -760,6 +784,8 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
       if (present_wait != VK_SUCCESS ||
           vkResetFences(vkr_vk_renderer_device(renderer), 1u, present_fence) !=
               VK_SUCCESS) {
+        log_error("Vulkan frame preparation failed: present fence (%d)",
+                  (int32_t)present_wait);
         vkr_vulkan_renderer_cancel_frame(renderer);
         return false_v;
       }
@@ -768,8 +794,11 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
     const uint64_t image_submit =
         renderer->window_target.image_last_submit_value[image_index];
     if (image_submit > completed) {
-      if (vkr_vk_wait_timeline(renderer, image_submit,
-                               "swapchain image reuse") != VK_SUCCESS) {
+      const VkResult image_wait =
+          vkr_vk_wait_timeline(renderer, image_submit, "swapchain image reuse");
+      if (image_wait != VK_SUCCESS) {
+        log_error("Vulkan frame preparation failed: swapchain image wait (%d)",
+                  (int32_t)image_wait);
         vkr_vulkan_renderer_cancel_frame(renderer);
         return false_v;
       }
