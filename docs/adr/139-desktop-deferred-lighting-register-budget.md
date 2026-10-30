@@ -149,6 +149,31 @@ RX 6700 XT, AMD driver 26.10.1, Windows 10 19045, Release, Bistro
   loss. With `probe_relight` alone non-null a snapshot still lost the device.
   With all three tables non-null, 5 of 5 snapshots with the variant and 3 of
   3 without it passed. The transmission kernels, which read the rectangle
-  rows, compile to identical SPIR-V with and without the variant, so the
-  table the variant's code read ahead of its test is the cloud chain, null
-  on frames where `Clouds.SkyLight` returns before patching it.
+  rows, compile to identical SPIR-V with and without the variant; of the
+  three tables only the cloud chain, null on frames where `Clouds.SkyLight`
+  returns before patching it, is read by the variant's kernels behind a
+  count. The cause is not established: the following authoritative profile
+  of the orbit without the variant failed its third repetition with a
+  frame preparation failure that reported no device loss. That failure and
+  the second loss came after the first loss in one driver session without
+  a reboot; every binary with a failure also carried `5dcc6178` (the
+  65,535-row light table and its 4 MB `light_table`). Frame preparation
+  now logs the step and result of each failure. After a reboot the
+  authoritative runs below, 40 child processes on the hardened build with
+  the variant off and on, passed without a failure.
+- Authoritative before and after, same binary (`467e1f55`, clean tree),
+  `performance-windowed-gpu` with the desktop pass groups, 5 repetitions
+  each, `VKR_DEFERRED_NO_RECTANGLES_DISABLED=1` then unset; `perf-compare`
+  verdict faster, authoritative, no warnings:
+
+  | Case | `Lighting.Deferred.Fullscreen` p50 / p95 ms | `frame.wall` p50 ms | Reports |
+  |---|---|---|---|
+  | orbit, without | 3.643 / 3.802 | 13.29 | `sha256:687680a2…` |
+  | orbit, with | 3.019 / 3.150 | 12.67 (−4.6%) | `sha256:2a5bec36…` |
+  | street walk, without | 3.714 / 3.874 | 13.63 | `sha256:711c75d7…` |
+  | street walk, with | 3.072 / 3.219 | 13.00 (−4.7%) | `sha256:265828c2…` |
+
+  The pass falls 0.624 and 0.642 ms; `GBuffer.Resolve.Fullscreen` (1.31 and
+  1.37 ms) and every other pass move by under 0.006 ms. The Lighting line's
+  p95 falls from 3.80 to 3.15 ms (orbit) and 3.87 to 3.22 ms (walk), within
+  its 4.0 ms target before and after.
