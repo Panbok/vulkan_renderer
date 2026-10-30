@@ -253,7 +253,8 @@ the GPU between frames.
 **Steps.** Each step keeps both backends working.
 
 - **2a** Exposure out of the rows (item 2): Metal on the Mac, Vulkan on
-  Windows, image parity on both classes.
+  Windows, image parity on both classes (landed 2026-10-28: Vulkan
+  ee41ebfd, Metal 745c50ec).
 - **2b, phase 1** (landed 2026-10-28): the renderer packs each frame's rows
   and lists those that differ from the last submitted frame
   (`vkr_light_table.h`, ADR-019). Today's selection already keeps rows in
@@ -268,7 +269,7 @@ the GPU between frames.
 - **2c** Metal table and scatter pass (Mac, landed 2026-10-30). **2d**
   Vulkan table and scatter pass (Windows, landed 2026-10-29).
 
-**Status of 2a and 2d (2026-10-28).** Vulkan's half of 2a landed in
+**Status of 2a and 2d (2026-10-29).** Vulkan's half of 2a landed in
 ee41ebfd. The Vulkan table and scatter pass build on 2b. The table
 is not imported: it is `light_table`, a retained graph buffer (ADR-029,
 which now covers buffers), so the graph itself carries the table's access

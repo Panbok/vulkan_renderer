@@ -100,7 +100,7 @@ than depth culling saves.
    one decal row, zero when the frame has none, so no shader reads through
    a null table address (the AMD driver may hoist such a load above its
    guard).
-8. **Light table.** Since 2026-10-28 the light rows live in `light_table`,
+8. **Light table.** Since 2026-10-29 the light rows live in `light_table`,
    a retained graph buffer of 65536 bytes (1024 rows; ADR-029).
    `Lighting.Scatter` (`pass.light_scatter`) runs before
    `Lighting.Clusters` and writes the frame's updates into it, one thread

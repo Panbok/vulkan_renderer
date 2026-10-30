@@ -42,11 +42,11 @@ resources do not wait at this boundary. This also covers editor viewport changes
 that leave the window target unchanged.
 
 The production `shadow_map` uses `RETAINED, PER_IMAGE, RESIZABLE` on both
-backends. The desktop `light_table` is a retained buffer: `Lighting.Scatter`
-writes the frame's light row updates into it and every pass that shades
-lights declares a read, so its first write in a frame waits for the previous
-frame's last read (ADR-135). Since 2026-10-30 Metal installs the buffer hooks
-too (`vkr_metal_packet_retained_buffer_read` and `_commit`, the state kept on
+backends. The `light_table` is a retained buffer on both backends:
+`Lighting.Scatter` writes the frame's light row updates into it and every
+pass that shades lights declares a read, so its first write in a frame waits
+for the previous frame's last read (ADR-135, ADR-019). Vulkan installs the
+buffer hooks since 2026-10-29 and Metal since 2026-10-30 (`vkr_metal_packet_retained_buffer_read` and `_commit`, the state kept on
 the buffer's one instance, so a reallocated one is invalid) and the tiled
 graph declares the same `light_table` and `Lighting.Scatter` (ADR-019). Omitted cascade passes consume previously submitted layers under
 ADR-041. `PERSISTENT` only relaxes a diagnostic; it is not this content proof.
