@@ -311,8 +311,9 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
         renderer, encoder, renderer->cloud_sky_light_pipeline);
     [encoder setArgumentTable:renderer->argument_table];
     vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
-    [encoder dispatchThreads:MTLSizeMake(extent, extent, 6u)
-        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    /* One SIMD-group of 32 threads marches each texel's steps. */
+    [encoder dispatchThreads:MTLSizeMake(32u * extent, extent, 6u)
+        threadsPerThreadgroup:MTLSizeMake(32u, 2u, 1u)];
     vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageDispatch

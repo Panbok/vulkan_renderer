@@ -990,7 +990,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketCloudTraceRoot {
   uint32_t history_valid;
   /** Converts history radiance to this frame's pre-exposure. */
   float32_t history_pre_exposure_scale;
-  uint32_t reserved[3];
+  /** The 8x8 tile of each 16x16 block that traces this frame, 0 to 3. */
+  uint32_t trace_phase;
+  uint32_t reserved[2];
 } VkrMetalPacketCloudTraceRoot;
 
 _Static_assert(sizeof(VkrMetalPacketCloudTraceRoot) == 144u,

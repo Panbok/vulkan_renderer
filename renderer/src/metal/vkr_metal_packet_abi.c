@@ -348,6 +348,8 @@ vkr_global const VkrMetalPacketAbiField vkr_cloud_trace_root_fields[] = {
                   124),
     VKR_ABI_FIELD(VkrMetalPacketCloudTraceRoot, history_pre_exposure_scale,
                   "history_pre_exposure_scale", 128),
+    VKR_ABI_FIELD(VkrMetalPacketCloudTraceRoot, trace_phase, "trace_phase",
+                  132),
 };
 
 vkr_global const VkrMetalPacketAbiField

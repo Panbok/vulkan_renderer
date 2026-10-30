@@ -1071,6 +1071,9 @@ struct VkrMetalPacketRenderer {
   uint32_t history_instance_count;
   uint32_t history_output_index;
   uint32_t selected_cloud_history_instance;
+  /* Advances once per prepared cloud trace: the 8x8 tile of each 16x16
+     block that traces (vkr_metal_packet_cloud_trace). */
+  uint32_t cloud_trace_phase;
   VkrMetalPacketCloudHistoryState
       cloud_history[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX];
   uint32_t next_command_slot;

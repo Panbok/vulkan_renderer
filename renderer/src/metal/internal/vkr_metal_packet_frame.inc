@@ -1848,6 +1848,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_trace(
                        renderer->prepared_frame.viewport_height},
       .frame_index = (uint32_t)packet->input.frame.frame_index,
       .history_valid = history_valid ? 1u : 0u,
+      .trace_phase = renderer->cloud_trace_phase++ & 3u,
   };
   prepared->cloud_trace.dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->cloud_trace_pipeline,

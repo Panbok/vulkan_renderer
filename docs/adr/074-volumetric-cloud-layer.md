@@ -144,6 +144,13 @@ Metal the trace waits on the queue for earlier dispatches when the producer
 was not known complete. Accumulation therefore never depends on GPU timing,
 and consecutive frames continue one chain, through all eight jitter phases
 on the desktop pipeline.
+On the tiled pipeline a sky texel whose history resolves traces one frame in
+four: the 8x8 tiles of each 16x16 block take turns, so a SIMD-group marches
+all its lanes or none, and the other texels write their reprojected history.
+A traced texel blends `1 - 0.9^4` of its trace, the share four frames of the
+10% blend would give. Texels without usable history trace every frame. The
+threadgroup reads the depth pixels its texels' 4x4 sky windows cover once,
+into threadgroup memory.
 The harness resets the wind clock with its other phase clocks, so bootstrap
 duration does not move the layer in captures.
 
@@ -165,7 +172,11 @@ Every pass that evaluates the sun declares a read of `cloud_shadow` at binding
 of the published sky source's 16-texel mip it marches the layer from the
 camera along the texel's direction with 24 primary steps, a fixed mid-step
 offset and no aerial perspective (the volume covers only the view), and
-stores the in-scatter `S` and transmittance `T` in a frame-upload chain. `S`
+stores the in-scatter `S` and transmittance `T` in a frame-upload chain. On
+the tiled pipeline one SIMD-group marches each texel, one lane per step; a
+prefix product of the steps' transmittance gives each lane the light before
+it, and the lanes keep exactly the steps the serial march takes before it
+stops below 1% transmittance. `S`
 is pre-exposed, so it is brought into the source's `2^radiance_stops` scale.
 A second dispatch projects `L_clear * T + S` with the source's own deringing,
 through the same projection loop as the revision bake, into a per-frame-slot
@@ -318,3 +329,24 @@ against the build before the change, which also predates the opaque pass's
 register work in ADR-087: final colour 71.9 dB PSNR on both, at most 3 and
 8 of 255 in 4 and 113 of 921,600 pixels, depth identical. Vulkan does not
 run this path.
+
+Tiled trace turns, shared sky test and parallel sky light march, 2026-10-30
+(M1 Pro, Release, `local-offscreen-gpu-single`, 2560×1440, MetalFX at 0.6,
+p50 GPU ms, local and not authoritative). On the Bistro street view the trace
+spent about 0.14 ms in its sky test, 0.11 ms resolving history and only about
+0.09 ms marching:
+
+| View | `Clouds.Trace` before | after | `Clouds.SkyLight` before | after |
+|---|---|---|---|---|
+| Street | 0.327 | 0.256 to 0.269 | 0.114 | 0.051 |
+| Orbit of the street | 0.224 | 0.200 | 0.114 | 0.051 |
+| Sky, pitch 25 degrees | 0.576 with the shared sky test, every texel tracing | 0.370 | 0.114 to 0.115 | 0.051 |
+
+Captures of `final_color` after 60 frames against tracing every frame: 63.1 dB
+on the sky view and 66.9 dB mid-orbit, at most 8 of 255, against 66.4 dB
+between two runs of one build; the parallel sky light march against the serial
+one 62.7 dB, at most 7 of 255. Turns between the texels of each 2x2 block saved
+nothing (0.318 and 0.329 ms on the street): a SIMD-group still marched for
+its one tracing lane in four. The serial march
+keeps its step body inline; calling the step function the parallel march
+uses made `Clouds.Trace` 0.405 against 0.370 ms on the sky view.

@@ -120,6 +120,8 @@ struct alignas(16) VkrMetalPacketCloudTraceRoot {
   uint history_valid;
   // Converts history radiance to this frame's pre-exposure.
   float history_pre_exposure_scale;
+  // The 8x8 tile of each 16x16 block that traces this frame, 0 to 3.
+  uint trace_phase;
 };
 
 static_assert(sizeof(VkrMetalPacketCloudTraceRoot) == 144u,
@@ -159,6 +161,87 @@ vkr_metal_cloud_clear_ambient(constant VkrMetalPacketSky &sky,
   return max(vkr_sh_l2_average(frame->sh_coefficients[sky.clear_sh_slot]),
              float3(0.0f)) *
          frame->ibl_controls.x * frame->ibl_controls.y;
+}
+
+// The lights of a march through the layer along `direction`: the sun, the
+// moon while it is the key light (a sun below the observer's horizon may
+// still light the layer above, at twilight), their phase angles and the clear
+// sky's ambient.
+struct VkrMetalCloudMarchLights {
+  float3 sun;
+  float3 moon;
+  float cosine;
+  float moon_cosine;
+  bool sun_lights;
+  bool moon_lights;
+  float3 ambient;
+};
+
+static VkrMetalCloudMarchLights
+vkr_metal_cloud_march_lights(constant VkrMetalPacketSky &sky,
+                             constant VkrMetalPacketFrameRoot *frame,
+                             float3 direction) {
+  VkrSkyParams params = sky.params;
+  VkrMetalCloudMarchLights lights;
+  lights.sun = params.atmosphere.sun.xyz;
+  lights.moon = params.atmosphere.moon.xyz;
+  lights.cosine = dot(direction, lights.sun);
+  lights.moon_cosine = dot(direction, lights.moon);
+  lights.sun_lights = !vkr_atmosphere_light_dark(params.atmosphere.solar);
+  lights.moon_lights = params.key_light.w > 0.0f &&
+                       !vkr_atmosphere_light_dark(params.atmosphere.lunar);
+  lights.ambient = vkr_metal_cloud_clear_ambient(sky, frame);
+  return lights;
+}
+
+// One primary step of a march at `position`, `distance` km along it: the
+// light it scatters toward the camera per unit extinction, and its
+// extinction per km, zero where the layer is empty. The serial march below
+// keeps the same body inline: calling this from it made Clouds.Trace slower
+// (0.405 against 0.370 ms on a Bistro view of the sky, M1 Pro).
+static float4 vkr_metal_cloud_step(constant VkrMetalPacketSky &sky,
+                                   VkrMetalCloudMarchLights lights,
+                                   float3 position, float distance) {
+  VkrSkyParams params = sky.params;
+  VkrCloudParams clouds = params.clouds;
+  float radius = length(position);
+  VkrCloudSample sample = vkr_cloud_sample(params, position.xz, radius);
+  float shape = vkr_metal_cloud_shape(sky, clouds, sample);
+  if (shape <= 0.0f)
+    return float4(0.0f);
+  float detail =
+      sky.cloud_detail_noise
+          .sample(vkr_metal_cloud_noise_sampler, sample.detail_uvw)
+          .r;
+  float density =
+      vkr_cloud_eroded_density(shape, detail, sample.height_fraction) *
+      vkr_cloud_distance_fade(clouds, distance);
+  if (density <= 0.0f)
+    return float4(0.0f);
+  // An occluded light contributes nothing, so its light march is skipped.
+  float3 source = float3(0.0f);
+  if (lights.sun_lights &&
+      !vkr_atmosphere_sun_occluded(params.atmosphere, position, lights.sun)) {
+    float3 sun_irradiance =
+        params.atmosphere.solar.rgb *
+        vkr_metal_atmosphere_lookup_transmittance(
+            sky.transmittance, params.atmosphere, position, lights.sun);
+    source = vkr_cloud_sun_scattering(
+        sun_irradiance, lights.cosine,
+        vkr_metal_cloud_light_depth(sky, params, position, lights.sun));
+  }
+  if (lights.moon_lights &&
+      !vkr_atmosphere_sun_occluded(params.atmosphere, position, lights.moon)) {
+    float3 moon_irradiance =
+        params.atmosphere.lunar.rgb *
+        vkr_metal_atmosphere_lookup_transmittance(
+            sky.transmittance, params.atmosphere, position, lights.moon);
+    source += vkr_cloud_sun_scattering(
+        moon_irradiance, lights.moon_cosine,
+        vkr_metal_cloud_light_depth(sky, params, position, lights.moon));
+  }
+  source += vkr_cloud_ambient(lights.ambient, sample.height_fraction);
+  return float4(source, density * clouds.layer.z);
 }
 
 // Cloud in-scatter, with aerial perspective at the layer's apparent depth when
@@ -250,29 +333,65 @@ static float4 vkr_metal_cloud_march(constant VkrMetalPacketSky *sky_record,
   return float4(radiance, state.transmittance);
 }
 
+// The trace's threadgroup edge in cloud texels, and the edge of the depth
+// pixels its texels' 4x4 windows cover: 8 texels of a depth image at most
+// twice the cloud grid's size, plus the window (vkr_cloud_depth_window_origin).
+constant uint VKR_METAL_CLOUD_TRACE_GROUP = 8u;
+constant uint VKR_METAL_CLOUD_SKY_TILE = 2u * VKR_METAL_CLOUD_TRACE_GROUP + 4u;
+
+// The share of a fresh trace in a tile that traces one frame in four: the
+// share four frames of VKR_CLOUD_HISTORY_CURRENT_WEIGHT would give, so the
+// history follows wind and light as fast as a trace every frame would.
+constant float VKR_METAL_CLOUD_QUARTER_CURRENT_WEIGHT =
+    1.0f - (1.0f - VKR_CLOUD_HISTORY_CURRENT_WEIGHT) *
+               (1.0f - VKR_CLOUD_HISTORY_CURRENT_WEIGHT) *
+               (1.0f - VKR_CLOUD_HISTORY_CURRENT_WEIGHT) *
+               (1.0f - VKR_CLOUD_HISTORY_CURRENT_WEIGHT);
+
 // One thread per half-resolution texel. Composition bilinearly samples texels
 // up to one full-resolution pixel beyond each 2x2 footprint, so a texel traces
 // when any pixel of its 4x4 neighbourhood shows sky; others write the
-// untraced marker.
+// untraced marker. A sky texel with usable history traces one frame in four,
+// in turn with the other 8x8 tiles of its 16x16 block (ADR-074), and
+// otherwise carries its reprojected history. Whole tiles, the dispatch's
+// threadgroups, take turns, so a SIMD-group marches all its lanes or none.
 kernel void vkr_metal_packet_cloud_trace(
     constant VkrMetalPacketCloudTraceRoot &root [[buffer(0)]],
-    uint2 texel [[thread_position_in_grid]]) {
+    uint2 texel [[thread_position_in_grid]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 group_size [[threads_per_threadgroup]],
+    uint local_index [[thread_index_in_threadgroup]]) {
+  // The group's texels read their 4x4 windows from one shared copy of the
+  // depth pixels those windows cover, each pixel read once.
+  threadgroup uchar sky_tile[VKR_METAL_CLOUD_SKY_TILE *
+                             VKR_METAL_CLOUD_SKY_TILE];
+  int2 tile_origin = vkr_cloud_depth_window_origin(
+      group * VKR_METAL_CLOUD_TRACE_GROUP, root.extent, root.depth_extent);
+  int2 limit = int2(root.depth_extent) - 1;
+  for (uint index = local_index;
+       index < VKR_METAL_CLOUD_SKY_TILE * VKR_METAL_CLOUD_SKY_TILE;
+       index += group_size.x * group_size.y) {
+    int2 offset = int2(index % VKR_METAL_CLOUD_SKY_TILE,
+                       index / VKR_METAL_CLOUD_SKY_TILE);
+    uint2 pixel = uint2(clamp(tile_origin + offset, int2(0), limit));
+    // Reversed depth 0 is the far plane: the pixel shows sky.
+    sky_tile[index] = root.depth.read(pixel).x <= 0.0f ? 1u : 0u;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
   if (any(texel >= root.extent))
     return;
-  int2 origin =
-      vkr_cloud_depth_window_origin(texel, root.extent, root.depth_extent);
-  int2 limit = int2(root.depth_extent) - 1;
-  bool sky_visible = false;
-  for (int y = 0; y < 4 && !sky_visible; ++y) {
+  int2 window =
+      vkr_cloud_depth_window_origin(texel, root.extent, root.depth_extent) -
+      tile_origin;
+  uint sky_count = 0u;
+  for (int y = 0; y < 4; ++y) {
     for (int x = 0; x < 4; ++x) {
-      uint2 pixel = uint2(clamp(origin + int2(x, y), int2(0), limit));
-      // Reversed depth 0 is the far plane: the pixel shows sky.
-      if (root.depth.read(pixel).x <= 0.0f) {
-        sky_visible = true;
-        break;
-      }
+      sky_count +=
+          sky_tile[(window.y + y) * int(VKR_METAL_CLOUD_SKY_TILE) + window.x +
+                   x];
     }
   }
+  bool sky_visible = sky_count != 0u;
   if (!sky_visible) {
     root.output.write(float4(0.0f, 0.0f, 0.0f, VKR_CLOUD_UNTRACED_ALPHA),
                       texel);
@@ -282,15 +401,7 @@ kernel void vkr_metal_packet_cloud_trace(
   VkrSkyParams params = root.sky->params;
   float2 texel_size = 1.0f / float2(root.extent);
   float2 centre_uv = (float2(texel) + 0.5f) * texel_size;
-  // The tiled pipeline has no temporal resolve (ADR-087), so each ray runs
-  // through its texel's centre and the march's start noise keeps one phase:
-  // per-frame offsets left the history's slow blend wobbling at their rate,
-  // which read as jittering clouds. The fixed march noise stays as a still
-  // fine grain.
   float3 direction = vkr_cloud_view_direction(params, centre_uv);
-  float4 current = vkr_metal_cloud_march(
-      root.sky, root.frame, direction, VKR_CLOUD_PRIMARY_STEPS,
-      vkr_cloud_march_offset(texel, 0u), true);
 
   // Clouds lie kilometres away, so the previous camera saw this texel's
   // centre along the same direction.
@@ -300,7 +411,7 @@ kernel void vkr_metal_packet_cloud_trace(
       previous_clip.xy / max(previous_clip.w, 1e-6f) * 0.5f + 0.5f;
   bool history_valid = root.history_valid != 0u && previous_clip.w > 0.0f &&
                        all(previous_uv >= 0.0f) && all(previous_uv <= 1.0f);
-  float4 history = current;
+  float4 history = float4(0.0f, 0.0f, 0.0f, VKR_CLOUD_UNTRACED_ALPHA);
   if (history_valid) {
     VkrCloudHistoryFootprint footprint = vkr_cloud_history_footprint(
         previous_uv,
@@ -317,8 +428,64 @@ kernel void vkr_metal_packet_cloud_trace(
         footprint.blend);
     history.rgb *= root.history_pre_exposure_scale;
   }
-  root.output.write(vkr_cloud_history_blend(current, history, history_valid),
-                    texel);
+  bool history_usable =
+      history_valid && history.a <= VKR_CLOUD_TRACED_ALPHA_MAX;
+  uint block_tile = ((texel.x >> 3u) & 1u) | (((texel.y >> 3u) & 1u) << 1u);
+  if (history_usable && block_tile != root.trace_phase) {
+    root.output.write(history, texel);
+    return;
+  }
+
+  // The tiled pipeline has no temporal resolve (ADR-087), so each ray runs
+  // through its texel's centre and the march's start noise keeps one phase:
+  // per-frame offsets left the history's slow blend wobbling at their rate,
+  // which read as jittering clouds. The fixed march noise stays as a still
+  // fine grain.
+  float4 current = vkr_metal_cloud_march(
+      root.sky, root.frame, direction, VKR_CLOUD_PRIMARY_STEPS,
+      vkr_cloud_march_offset(texel, 0u), true);
+  root.output.write(
+      history_usable
+          ? mix(history, current, VKR_METAL_CLOUD_QUARTER_CURRENT_WEIGHT)
+          : current,
+      texel);
+}
+
+// vkr_metal_cloud_march without aerial perspective, its `steps` (at most a
+// SIMD-group's width) taken by one lane each of a SIMD-group that marches one
+// direction. A step runs in the serial march while the transmittance before
+// it is at least VKR_CLOUD_TRANSMITTANCE_CUTOFF, so the lanes keep exactly
+// those steps; each removes its share of the light before it.
+static_assert(VKR_CLOUD_SKY_LIGHT_PRIMARY_STEPS <= 32u,
+              "The sky light's steps fit one SIMD-group");
+
+static float4 vkr_metal_cloud_march_simd(constant VkrMetalPacketSky *sky_record,
+                                         constant VkrMetalPacketFrameRoot *frame,
+                                         float3 direction, uint steps,
+                                         float offset, uint lane) {
+  constant VkrMetalPacketSky &sky = *sky_record;
+  VkrSkyParams params = sky.params;
+  VkrCloudSegment segment = vkr_cloud_segment(params, direction);
+  if (segment.end_km <= segment.start_km)
+    return float4(0.0f, 0.0f, 0.0f, 1.0f);
+
+  float camera_radius = params.atmosphere.planet.x + params.atmosphere.planet.z;
+  float3 origin = float3(0.0f, camera_radius, 0.0f);
+  VkrMetalCloudMarchLights lights =
+      vkr_metal_cloud_march_lights(sky, frame, direction);
+  float step_km = (segment.end_km - segment.start_km) / float(steps);
+  float4 step = float4(0.0f);
+  if (lane < steps) {
+    float distance = segment.start_km + (float(lane) + offset) * step_km;
+    step = vkr_metal_cloud_step(sky, lights, origin + direction * distance,
+                                distance);
+  }
+  float step_transmittance = step.w > 0.0f ? exp(-step.w * step_km) : 1.0f;
+  float before = simd_prefix_exclusive_product(step_transmittance);
+  bool runs = step.w > 0.0f && before >= VKR_CLOUD_TRANSMITTANCE_CUTOFF;
+  float removed = runs ? before * (1.0f - step_transmittance) : 0.0f;
+  return float4(simd_sum(step.rgb * removed),
+                simd_min(runs ? before * step_transmittance : 1.0f));
 }
 
 // ADR-074 cloud-lit sky light, shared by its march, projection and chain
@@ -346,23 +513,28 @@ struct alignas(16) VkrMetalPacketCloudSkyLightRoot {
 static_assert(sizeof(VkrMetalPacketCloudSkyLightRoot) == 80u,
               "VkrMetalPacketCloudSkyLightRoot ABI drift");
 
-// One thread per texel of the clear sky source's 16-texel mip: the layer
+// One SIMD-group per texel of the clear sky source's 16-texel mip: the layer
 // along the texel's direction from the camera, in the source's scale, as the
 // chain's first level (ADR-074).
 kernel void vkr_metal_packet_cloud_sky_light(
     constant VkrMetalPacketCloudSkyLightRoot &root [[buffer(0)]],
-    uint3 id [[thread_position_in_grid]]) {
+    uint3 id [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  // One SIMD-group of 32 threads along x per texel.
+  uint2 texel = uint2(id.x >> 5u, id.y);
   uint extent = root.face_size;
-  if (any(id.xy >= uint2(extent)) || id.z >= 6u)
+  if (any(texel >= uint2(extent)) || id.z >= 6u)
     return;
-  float2 uv = (float2(id.xy) + 0.5f) / float(extent);
+  float2 uv = (float2(texel) + 0.5f) / float(extent);
   float3 direction = normalize(vkr_metal_packet_cube_direction(id.z, uv));
-  float4 cloud = vkr_metal_cloud_march(
+  float4 cloud = vkr_metal_cloud_march_simd(
       root.sky, root.frame, direction, VKR_CLOUD_SKY_LIGHT_PRIMARY_STEPS,
-      VKR_CLOUD_SKY_LIGHT_MARCH_OFFSET, false);
+      VKR_CLOUD_SKY_LIGHT_MARCH_OFFSET, lane);
+  if (lane != 0u)
+    return;
   const float4 value = float4(cloud.rgb * root.cloud_to_source_scale, cloud.a);
-  root.radiance[vkr_cloud_sky_light_index(extent, 0u, id.z, id.xy)] = value;
-  root.chain.write(value, id.xy, id.z, 0u);
+  root.radiance[vkr_cloud_sky_light_index(extent, 0u, id.z, texel)] = value;
+  root.chain.write(value, texel, id.z, 0u);
 }
 
 // Projects the clear texels seen through the layer into this frame slot's
