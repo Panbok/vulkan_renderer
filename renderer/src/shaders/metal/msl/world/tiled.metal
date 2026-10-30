@@ -831,9 +831,12 @@ vkr_metal_tiled_atmosphere(constant VkrMetalPacketFrameRoot *frame,
 // One surface's light under the shared material model, split into the lobes
 // transmission composes separately (vkr_transmission_compose).
 struct VkrMetalTiledSurfaceLight {
-  float3 diffuse;
-  float3 specular;
-  float3 emissive;
+  // The surface's light by lobe, in half precision as the colour target
+  // stores it: the totals stay live from the sun's light to the end of the
+  // shading, and as floats they held three more registers each.
+  half3 diffuse;
+  half3 specular;
+  half3 emissive;
   // In frames that correct the sun's light: its light without the cascades,
   // and the cascades' visibility, packed (vkr_metal_tiled_pack_sun).
   uint sun;
@@ -1086,13 +1089,13 @@ static void vkr_metal_tiled_light_sun(
           (vkr_tiled_sun_output ? visibility.y : visibility.x * visibility.y),
       base, metallic, roughness, f0, energy);
   if (vkr_tiled_sun_output) {
-    light.diffuse += direct.diffuse * visibility.x;
-    light.specular += direct.specular * visibility.x;
-    light.sun =
-        vkr_metal_tiled_pack_sun(direct.diffuse + direct.specular, visibility.x);
+    light.diffuse += half3(direct.diffuse * visibility.x);
+    light.specular += half3(direct.specular * visibility.x);
+    light.sun = vkr_metal_tiled_pack_sun(direct.diffuse + direct.specular,
+                                         visibility.x);
   } else {
-    light.diffuse += direct.diffuse;
-    light.specular += direct.specular;
+    light.diffuse += half3(direct.diffuse);
+    light.specular += half3(direct.specular);
   }
 }
 
@@ -1163,9 +1166,9 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                                               base * (1.0f - metallic));
   }
   VkrMetalTiledSurfaceLight light;
-  light.diffuse = float3(0.0f);
-  light.specular = float3(0.0f);
-  light.emissive = emissive;
+  light.diffuse = half3(0.0h);
+  light.specular = half3(0.0h);
+  light.emissive = half3(emissive);
   light.sun = 0u;
   light.base = base;
   light.reflectance = energy.reflectance;
@@ -1209,8 +1212,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
               frame, input.world_position, normal, view, base, metallic,
               roughness, f0, energy, false, no_coat, false, no_sheen,
               coat_unused, sheen_unused);
-      light.diffuse += rectangles.diffuse;
-      light.specular += rectangles.specular;
+      light.diffuse += half3(rectangles.diffuse);
+      light.specular += half3(rectangles.specular);
     }
   }
 
@@ -1321,8 +1324,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     float specular_visibility =
         horizon * horizon *
         vkr_specular_occlusion(ao * baked_occlusion, no_v, alpha);
-    light.specular += incoming * energy.primary_reflectance *
-                      specular_visibility * specular_gain;
+    light.specular += half3(incoming * energy.primary_reflectance *
+                            specular_visibility * specular_gain);
     // The dual lobe (ADR-113) reads the same environment at its roughness,
     // about its own dominant direction.
     if (energy.dual_opacity > 0.0f) {
@@ -1359,15 +1362,15 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
               vkr_sh_l2_sky_visibility(baked_sky, environment_response));
       }
       light.specular +=
-          dual_incoming * energy.dual_reflectance * horizon * horizon *
-          vkr_specular_occlusion(ao * baked_occlusion, no_v, dual_alpha) *
-          specular_gain;
+          half3(dual_incoming * energy.dual_reflectance * horizon * horizon *
+                vkr_specular_occlusion(ao * baked_occlusion, no_v, dual_alpha) *
+                specular_gain);
     }
   } else if (environment_diffuse) {
     diffuse_light = frame->ambient_color.rgb;
   }
-  light.diffuse +=
-      energy.diffuse_weight * (1.0f - metallic) * base * diffuse_light * ao;
+  light.diffuse += half3(energy.diffuse_weight * (1.0f - metallic) * base *
+                         diffuse_light * ao);
   return light;
 }
 
@@ -1748,11 +1751,12 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, surface, front_facing, probe,
       visible.instance_index, light_tile, sun_visibility);
-  return {float4(light.diffuse + light.specular + light.emissive, coverage),
-          vkr_metal_tiled_unpack_sun(light.sun),
-          Coverage || !vkr_tiled_demand_output
-              ? early_demand
-              : vkr_metal_tiled_demand_word(input, frame, visible)};
+  return {
+      float4(float3(light.diffuse + light.specular + light.emissive), coverage),
+      vkr_metal_tiled_unpack_sun(light.sun),
+      Coverage || !vkr_tiled_demand_output
+          ? early_demand
+          : vkr_metal_tiled_demand_word(input, frame, visible)};
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_fragment(
@@ -2579,10 +2583,9 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   bool refracted = false;
   float3 refracted_light = float3(0.0f);
   if (transmission > 0.0f) {
-    VkrTransmissionLobes lobes = {light.diffuse, light.specular,
-                                  light.emissive};
-    VkrTransmissionLobes no_lobes = {float3(0.0f), float3(0.0f),
-                                     float3(0.0f)};
+    VkrTransmissionLobes lobes = {float3(light.diffuse), float3(light.specular),
+                                  float3(light.emissive)};
+    VkrTransmissionLobes no_lobes = {float3(0.0f), float3(0.0f), float3(0.0f)};
     output.color = float4(vkr_transmission_compose(
                               lobes, float3(0.0f), light.base,
                               light.reflectance, transmission, light.metallic),
@@ -2624,8 +2627,8 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
                                light.reflectance, transmission, light.metallic),
                            1.0f);
   } else {
-    output.color =
-        float4((light.diffuse + light.specular + light.emissive) * alpha, 0.0f);
+    output.color = float4(
+        float3(light.diffuse + light.specular + light.emissive) * alpha, 0.0f);
     output.behind = float4(1.0f - alpha);
   }
   output.color.rgb = vkr_metal_tiled_atmosphere(

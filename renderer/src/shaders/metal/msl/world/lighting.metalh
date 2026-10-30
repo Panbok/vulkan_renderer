@@ -478,15 +478,17 @@ static uint vkr_metal_tiled_light_first(
 //
 // LocalShadow supplies the base visibility of one shadowed light. It is called
 // once per in-range light in traversal order and may keep per-pixel state.
-template <bool EvaluateDiffuse, typename LocalShadow>
+// Sum is the type of the diffuse and specular totals: the tiled forward
+// shading keeps them in half precision, as its colour target stores them, so
+// they hold half the registers through the rest of its shading.
+template <bool EvaluateDiffuse, typename LocalShadow, typename Sum = float3>
 void vkr_metal_packet_punctual_layered(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position,
-    float3 normal, float3 view, float3 albedo, float metallic,
-    float roughness, float3 f0, VkrGgxMaterialEnergy energy,
-    bool coat_active, VkrClearcoatLayer coat, bool sheen_active,
-    VkrSheenLayer sheen, float sheen_normalization,
-    thread float3 &irradiance_sum, thread float3 &diffuse_sum,
-    thread float3 &specular_sum, thread float3 &coat_sum,
+    float3 normal, float3 view, float3 albedo, float metallic, float roughness,
+    float3 f0, VkrGgxMaterialEnergy energy, bool coat_active,
+    VkrClearcoatLayer coat, bool sheen_active, VkrSheenLayer sheen,
+    float sheen_normalization, thread float3 &irradiance_sum,
+    thread Sum &diffuse_sum, thread Sum &specular_sum, thread float3 &coat_sum,
     thread float3 &sheen_sum, LocalShadow local_shadow,
     threadgroup const VkrMetalTiledLightTile &light_tile) {
   /* The tile's lights without a range, then those of the fragments' depth
@@ -555,12 +557,12 @@ void vkr_metal_packet_punctual_layered(
           normal, view, light_direction, p1.rgb * intensity * base_attenuation,
           albedo, metallic, roughness, f0, energy);
       irradiance_sum += direct.irradiance;
-      diffuse_sum += direct.diffuse;
-      specular_sum += direct.specular;
+      diffuse_sum += Sum(direct.diffuse);
+      specular_sum += Sum(direct.specular);
     } else {
-      specular_sum += vkr_metal_packet_direct_specular(
+      specular_sum += Sum(vkr_metal_packet_direct_specular(
           normal, view, light_direction, p1.rgb * intensity * base_attenuation,
-          roughness, f0, energy);
+          roughness, f0, energy));
     }
     if (coat_active)
       coat_sum += vkr_metal_packet_clearcoat_direct(

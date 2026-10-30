@@ -1498,6 +1498,7 @@ System Traces (M1 Pro, Release, local and not authoritative):
 | The cloud chain sampled from a cube (ADR-074) | 2.29 ms, 20.9% | 5.90 ms, 19.9% |
 | A shadowed light's normal offset from its first view, without a second face's view; lights below `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` skipped, as in the desktop pipeline | 2.28 ms | 5.64 ms |
 | A shadowed light's face projected from its offset along the face's axes, without the face's matrix (the shadowed loop's registers 88 → 80); frames whose scene binds no diffuse volume take a variant without its lookup (`VKR_METAL_TILED_NO_VOLUME_VARIANT`, the general forward variants 92 → 76 registers) | 2.10 ms | 5.64 ms |
+| The surface's diffuse, specular and emissive totals in half precision, as the colour target stores them (every forward variant 4 registers fewer) | 1.97 ms, 25.5% (2.10 to 2.12 ms, 22.9% before; one pair of runs measured both at 2.28 ms) | 5.64 / 5.65 ms, within the spread |
 
 The early lookup gates on the geometric normal facing the sun in place of
 the normal-mapped one; a surface whose geometric normal faces away lies in
@@ -1510,6 +1511,18 @@ the same binary's with `VKR_TILED_NO_VOLUME_DISABLED`; the face projection
 moves 6 pixels of Bistro with dynamic lamps by at most 7 of 255 (76.4 dB),
 from rounding at shadow edges. Its timing on that scene, 5.64 against 5.78
 and 5.79 ms off, is within this machine's spread.
+The half-precision totals move both captures by at most 2 of 255 (65 to
+67 dB), from rounding.
+
+Sharing the sun's cascade filter across each 2×2 quad of fragments, each
+reading the quarter of the 16 grid taps and 8 PCSS blocker taps toward its
+own corner and taking the quad's sum, was built and measured on 2026-10-30
+and not kept: each fragment read 6 taps instead of 24, but the opaque pass
+took 1.96 to 2.26 ms on the lightmapped Bistro against 1.97 to 2.28 ms for
+the same build without it, and 5.62 against 5.64 to 5.65 ms with dynamic
+lamps, inside the spread. Sampled before the material is read, the taps no
+longer set the register count, so they cost little, and sharing them would
+have made the penumbra constant across each quad.
 
 Deferring the dynamic lights to a full-screen draw at the end of each opaque
 pass, which would read the surface from four memoryless targets the forward
