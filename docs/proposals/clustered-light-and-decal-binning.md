@@ -433,7 +433,12 @@ revised were changed on 2026-10-27 or 2026-10-28.
   short-range lights and thousands of decals (M3), and a scaled variant
   with tens of thousands of small lights, in timing and capture variants
   for both classes; the existing `bistro_clustered_*` cases cover 392
-  lights and 176 decals. Never Sponza (AGENTS.md).
+  lights and 176 decals. Never Sponza (AGENTS.md). The scaled scene is
+  `bistro_clustered_m3_local.scene.json`: 20,000 lights of 0.75 to 1.5 m
+  range (1,024 on movers) and 2,000 decals on the clustered street, which
+  [`gen_clustered_scene.py`](../../tools/gen_clustered_scene.py) writes
+  deterministically from the Bistro lights glTF (`m3`; `clustered` writes
+  the 320-light fixture).
 - Tiled class: Metal timing of tile-shader culling against the 16-light
   path on the scoped and stress cases (M1 Pro), and its captures.
 - Desktop: lists against bitfields on the stress cases, to set W4c's
