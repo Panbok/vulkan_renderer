@@ -859,9 +859,10 @@ static void level_lint_connections(LevelGrid *grid, LevelIssues *issues) {
    ranks the enabled ones by camera distance and keeps
    VKR_MAX_SCENE_POINT_LIGHTS (ADR-019), so a dense level drops lights
    that may light the view. Of those, only the
-   VKR_POINT_LIGHT_GRID_LIGHT_MAX nearest cast shadows. Mirrors the runtime's
-   count: a static light leaves the table once the scene's lightmaps hold its
-   lamp groups. Additive scenes' lights compete too and are not counted here. */
+   VKR_POINT_LIGHT_GRID_LIGHT_MAX nearest shadow casters cast shadows. Mirrors
+   the runtime's count: a static light leaves the table once the scene's
+   lightmaps hold its lamp groups. Additive scenes' lights compete too and are
+   not counted here. */
 static void level_lint_lights(LevelGrid *grid, LevelIssues *issues) {
   const VkrScene *scene = grid->scene;
   const bool8_t static_baked = scene->lightmaps &&

@@ -23,10 +23,10 @@ typedef enum VkrPointLightKind {
  * pipeline shades every row from its light tiles (ADR-135); the tiled
  * pipeline draws its 64 nearest from tile lists (ADR-087, decision 11). */
 #define VKR_MAX_SCENE_POINT_LIGHTS 1024u
-/* The light head: the table's first min(count,
- * VKR_POINT_LIGHT_GRID_LIGHT_MAX) rows hold its highest-ranked lights. Only
- * head rows cast local shadows and take contribution counters, and a
- * VkrPointLightMask names the head's rows. */
+/* The light head: the highest-ranked shadow casters, which lie in the
+ * table's first min(count, VKR_POINT_LIGHT_GRID_LIGHT_MAX) rows beside other
+ * lights. Only those rows cast local shadows and take contribution counters,
+ * and a VkrPointLightMask names them. */
 #define VKR_POINT_LIGHT_GRID_LIGHT_MAX 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
 

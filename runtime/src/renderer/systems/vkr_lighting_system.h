@@ -23,6 +23,9 @@ typedef struct VkrPointLightLimitEntry {
   /** The light was in the table's head; it ranks for the head with the
    * bonus. */
   bool8_t head;
+  /** The light's row in the scene table plus one, zero when it drew no row:
+   * the row it keeps in the next frame's table. */
+  uint32_t row;
 } VkrPointLightLimitEntry;
 
 /** Lights a selection's state records: the selected lights and the drawn
@@ -76,6 +79,9 @@ typedef struct VkrPointLightRanking {
   bool8_t selected[VKR_POINT_LIGHT_CANDIDATE_MAX];
   /** The light is in the table's head. */
   bool8_t head[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  /** The light's row in the scene table plus one; zero for a light not
+   * drawn and in the tiled limit. */
+  uint32_t rows[VKR_POINT_LIGHT_CANDIDATE_MAX];
   /** Intensity scale; zero for a light not drawn. */
   float32_t weights[VKR_POINT_LIGHT_CANDIDATE_MAX];
   VkrPointLightSortRecord records[VKR_POINT_LIGHT_CANDIDATE_MAX];
@@ -121,10 +127,11 @@ typedef struct VkrLightingSystem {
   } directional;
 
   /* The scene table: the point lights nearest the camera, each scaled by
-     its selection fade (ADR-019). Its head, the first
-     min(count, VKR_POINT_LIGHT_GRID_LIGHT_MAX) rows, holds the best ranked;
-     only head rows cast shadows. Head and rest are each in render id order,
-     so a light changes row only when it enters or leaves the head. */
+     its selection fade (ADR-019). Its head, the shadow casters ranked best,
+     lies in the first VKR_POINT_LIGHT_GRID_LIGHT_MAX rows, which can also
+     hold lights outside it; only head lights cast shadows. A light keeps its
+     row from frame to frame while it stays in the table, so a backend's
+     light table changes only where lights do (vkr_light_table.h). */
   VkrPointLight point_lights[VKR_MAX_SCENE_POINT_LIGHTS];
   /* Each table light's intensity before its fades, which sizes its local
      shadow: a light fading out keeps its shadow's size while it shows. */
@@ -237,11 +244,15 @@ void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
  * over VKR_POINT_LIGHT_LIMIT_FADE_SECONDS once a slot is free and a light no
  * longer selected fades out in its slot, keeping its shadow; without
  * competition every offered light shows at full intensity, as new content
- * does. The VKR_POINT_LIGHT_GRID_LIGHT_MAX drawn lights ranked best, a light
- * in the previous frame's head with the incumbent bonus, form the head;
- * lights past it lose their shadow. Head and rest each keep render id order.
- * Calling it again in the same frame selects again from the same previous
- * state. */
+ * does. The VKR_POINT_LIGHT_GRID_LIGHT_MAX drawn shadow casters ranked best,
+ * a caster in the previous frame's head with the incumbent bonus, form the
+ * head; casters past it lose their shadow. A drawn light keeps its row from
+ * the previous frame while the row lies in the table and, for a head light,
+ * among the head rows. A light entering the head takes a free head row or
+ * the row of a light outside the head, which moves. Lights without a row
+ * take the free rows lowest first in render id order, leaving enough head
+ * rows for the head. Calling it again in the same frame selects again from
+ * the same previous state. */
 void vkr_lighting_system_select_point_lights(VkrLightingSystem *system);
 
 /** A white Lambertian surface lit head-on by a directional light of

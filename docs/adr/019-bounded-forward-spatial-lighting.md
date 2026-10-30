@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-28
+updated: 2026-10-30
 authority: adr
 ---
 
@@ -56,11 +56,19 @@ per draw causes large meshes to inherit the wrong local environment.
 
 ## Decision
 
-Use a table of up to 1024 punctual lights (128 until 2026-10-28), its rows
-in render-id order, whose first 128 rows, the head, alone can cast shadows,
-and, on the tiled pipeline, a conservative 384-cell fragment-local bitmask
-grid of the head's rows. CPU scene synchronization
-owns membership; shaders perform exact range and spot-cone rejection.
+Use a table of up to 1024 punctual lights (128 until 2026-10-28). Its head,
+the at most 128 drawn shadow casters ranked best, alone casts shadows and
+lies in the first 128 rows, which can also hold lights outside it. Since
+2026-10-30 a light keeps its row while it stays in the table: a new light
+takes a free row, a removal moves only the last row into the hole, and a
+caster that enters the head takes a free head row or swaps with a light
+outside the head, while lights that cast no shadow are not ranked for it
+([`vkr_lighting_system_select_point_lights`](../../runtime/src/renderer/systems/vkr_lighting_system.h);
+before, head and rest were each in render-id order and the head held the
+best-ranked drawn lights, casters or not). The tiled lamp, clustered,
+stress, dense and street captures stayed byte-identical. CPU scene
+synchronization owns membership; shaders perform exact range and spot-cone
+rejection.
 Four-vector, 64-byte light rows share position/range, direction/cone,
 color/intensity and type semantics across Metal and Vulkan shading paths.
 Since 2026-10-28 the rows carry intensity before exposure on both backends,
