@@ -203,6 +203,9 @@ typedef struct VkrMetalPacketPreparedPass {
       uint32_t lighting;
       /* VKR_METAL_TILED_SUN_VARIANT in sun contact frames, else zero. */
       uint32_t sun;
+      /* VKR_METAL_TILED_NO_VOLUME_VARIANT in frames that shade without the
+         diffuse volume's lookup, else zero. */
+      uint32_t no_volume;
       /* The overdraw view: every draw adds a layer without a depth test,
          and no sky is drawn (ADR-127). */
       bool8_t overdraw;

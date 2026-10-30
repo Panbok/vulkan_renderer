@@ -1497,6 +1497,7 @@ System Traces (M1 Pro, Release, local and not authoritative):
 | The sun's cascades sampled before the material is read (`vkr_metal_tiled_early_sun_visibility`); each diffuse-volume probe's SH evaluated at the normal as read | 3.52 ms, 21.7% | 7.28 ms, 19.8% |
 | The cloud chain sampled from a cube (ADR-074) | 2.29 ms, 20.9% | 5.90 ms, 19.9% |
 | A shadowed light's normal offset from its first view, without a second face's view; lights below `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` skipped, as in the desktop pipeline | 2.28 ms | 5.64 ms |
+| A shadowed light's face projected from its offset along the face's axes, without the face's matrix (the shadowed loop's registers 88 → 80); frames whose scene binds no diffuse volume take a variant without its lookup (`VKR_METAL_TILED_NO_VOLUME_VARIANT`, the general forward variants 92 → 76 registers) | 2.10 ms | 5.64 ms |
 
 The early lookup gates on the geometric normal facing the sun in place of
 the normal-mapped one; a surface whose geometric normal faces away lies in
@@ -1504,7 +1505,11 @@ its own shadow in the cascades. Moving the diffuse and environment light
 ahead of the direct light raised the counts by 4, and a SIMD-uniform light
 index did not change them. Captures of the last row against the build
 before it: the lightmapped Bistro identical, Bistro with dynamic lamps at
-most 1 of 255 (`tiled_bistro_capture`, `tiled_bistro_baked_capture`).
+most 1 of 255 (`tiled_bistro_capture`, `tiled_bistro_baked_capture`). The no-volume variant's captures equal
+the same binary's with `VKR_TILED_NO_VOLUME_DISABLED`; the face projection
+moves 6 pixels of Bistro with dynamic lamps by at most 7 of 255 (76.4 dB),
+from rounding at shadow edges. Its timing on that scene, 5.64 against 5.78
+and 5.79 ms off, is within this machine's spread.
 
 Deferring the dynamic lights to a full-screen draw at the end of each opaque
 pass, which would read the surface from four memoryless targets the forward

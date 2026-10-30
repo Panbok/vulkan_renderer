@@ -636,7 +636,8 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
       for (uint32_t plane = 0u;
            draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
            ++plane) {
-        const uint32_t variant = plane | pass->tiled.sun | pass->tiled.demand;
+        const uint32_t variant = plane | pass->tiled.sun | pass->tiled.demand |
+                                 pass->tiled.no_volume;
         for (uint32_t slot = 0u; slot < VKR_METAL_COMPACTION_SLOTS; ++slot) {
           if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
             continue;

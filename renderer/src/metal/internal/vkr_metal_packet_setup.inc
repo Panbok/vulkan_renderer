@@ -1399,16 +1399,48 @@ vkr_internal void vkr_metal_packet_build_tiled_demand_pipelines(
 }
 
 /* This frame's shading variant bits past the BRDF variant: the sun
-   variant in sun contact frames and the demand variant in texture demand
-   frames. Every pipeline the opaque passes bind and every ready mask they
-   draw by takes them. */
+   variant in sun contact frames, the demand variant in texture demand frames
+   and the no-volume variant in frames whose scene binds no diffuse volume.
+   Every pipeline the opaque passes bind and every ready mask they draw by
+   takes them. */
 vkr_internal uint32_t
 vkr_metal_packet_tiled_frame_variant(const VkrMetalPacketRenderer *renderer) {
   return (renderer->prepared_frame.tiled_sun_light ? VKR_METAL_TILED_SUN_VARIANT
                                                    : 0u) |
          (renderer->prepared_frame.tiled_texture_demand
               ? VKR_METAL_TILED_DEMAND_VARIANT
-              : 0u);
+              : 0u) |
+         (renderer->tiled_no_volume ? VKR_METAL_TILED_NO_VOLUME_VARIANT : 0u);
+}
+
+/* Creates the no-volume variants of both BRDF variants' shading pipelines in
+   sun and demand variant `rest` (bit 0 sun, bit 1 demand), then publishes
+   READY or FAILED. The pass's other pipelines do not depend on the volume.
+   Runs as a background build (vkr_metal_packet_custom.inc). */
+vkr_internal void vkr_metal_packet_build_tiled_no_volume_pipelines(
+    VkrMetalPacketRenderer *renderer, uint32_t rest)
+    API_AVAILABLE(macos(26.0)) {
+  @autoreleasepool {
+    const float64_t start = vkr_platform_get_absolute_time();
+    const uint32_t bits = ((rest & 1u) ? VKR_METAL_TILED_SUN_VARIANT : 0u) |
+                          ((rest & 2u) ? VKR_METAL_TILED_DEMAND_VARIANT : 0u) |
+                          VKR_METAL_TILED_NO_VOLUME_VARIANT;
+    bool8_t ok = true_v;
+    for (uint32_t brdf = 0u; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf)
+      ok &= vkr_metal_packet_create_tiled_shading_pipelines(
+          renderer, renderer->fragment_library, brdf | bits);
+    if (ok)
+      log_info("Metal: tiled no-volume pipelines (variant %u) ready in %.1f ms",
+               bits, (vkr_platform_get_absolute_time() - start) * 1.0e3);
+    else
+      log_warn("Metal: tiled no-volume pipelines (variant %u) failed; frames "
+               "without a diffuse volume keep the volume's lookup",
+               bits);
+    vkr_atomic_uint32_store(&renderer->tiled_no_volume_state[rest],
+                            ok ? VKR_METAL_CUSTOM_GRAPH_READY
+                               : VKR_METAL_CUSTOM_GRAPH_FAILED,
+                            VKR_MEMORY_ORDER_RELEASE);
+  }
 }
 
 /* Whether this frame buckets its extended Standard draws for the tiled
@@ -1441,10 +1473,13 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     const bool8_t extension = (variant & 1u) != 0u;
     const bool8_t sun = (variant & VKR_METAL_TILED_SUN_VARIANT) != 0u;
     const bool8_t demand = (variant & VKR_METAL_TILED_DEMAND_VARIANT) != 0u;
+    const bool8_t no_volume =
+        (variant & VKR_METAL_TILED_NO_VOLUME_VARIANT) != 0u;
     MTLFunctionConstantValues *constants = [MTLFunctionConstantValues new];
     [constants setConstantValue:&extension type:MTLDataTypeBool atIndex:0];
     [constants setConstantValue:&sun type:MTLDataTypeBool atIndex:1];
     [constants setConstantValue:&demand type:MTLDataTypeBool atIndex:5];
+    [constants setConstantValue:&no_volume type:MTLDataTypeBool atIndex:8];
     renderer->tiled_shading_constants[variant] = constants;
   }
   vkr_metal_packet_create_tiled_shading_pipelines(renderer, fragment, 0u);

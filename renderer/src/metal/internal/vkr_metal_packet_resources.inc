@@ -2656,6 +2656,11 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
        Standard draws (ADR-113). */
     renderer->tiled_brdf_draws =
         vkr_metal_packet_tiled_brdf_frame(renderer, packet);
+    /* Frames whose scene binds no diffuse volume shade without its lookup
+       once those pipelines are ready; every variant the frame takes below
+       follows. */
+    renderer->tiled_no_volume =
+        vkr_metal_packet_tiled_no_volume_frame(renderer, packet);
     /* The Standard kinds take their ranges there too (ADR-129), the detail
        kinds while the scene has a material with detail maps (ADR-136). */
     const VkrWorldPassPayload *world = packet->input.world;

@@ -2888,6 +2888,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   prepared->tiled.lighting = lighting;
   prepared->tiled.sun = sun & VKR_METAL_TILED_SUN_VARIANT;
   prepared->tiled.demand = demand ? VKR_METAL_TILED_DEMAND_VARIANT : 0u;
+  prepared->tiled.no_volume = sun & VKR_METAL_TILED_NO_VOLUME_VARIANT;
   prepared->tiled.overdraw = overdraw;
   prepared->tiled.finish = finish;
   prepared->active = true_v;

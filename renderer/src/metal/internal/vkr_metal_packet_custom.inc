@@ -287,6 +287,8 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
     const bool8_t extension = (variant & 1u) != 0u;
     const bool8_t sun = (variant & VKR_METAL_TILED_SUN_VARIANT) != 0u;
     const bool8_t demand = (variant & VKR_METAL_TILED_DEMAND_VARIANT) != 0u;
+    const bool8_t no_volume =
+        (variant & VKR_METAL_TILED_NO_VOLUME_VARIANT) != 0u;
     const bool8_t no_lightmap = kind != VKR_METAL_STANDARD_KIND_DETAIL;
     const bool8_t no_terrain = kind != VKR_METAL_STANDARD_KIND_TERRAIN;
     const bool8_t detail = kind == VKR_METAL_STANDARD_KIND_DETAIL ||
@@ -299,6 +301,7 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
     [constants setConstantValue:&no_terrain type:MTLDataTypeBool atIndex:3];
     [constants setConstantValue:&demand type:MTLDataTypeBool atIndex:5];
     [constants setConstantValue:&detail type:MTLDataTypeBool atIndex:6];
+    [constants setConstantValue:&no_volume type:MTLDataTypeBool atIndex:8];
     static NSString *const labels[VKR_METAL_STANDARD_KIND_COUNT] = {
         @"VKR tiled forward, unlightmapped kind",
         @"VKR tiled forward, unlightmapped terrain kind",
@@ -355,8 +358,10 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
 /* One background pipeline creation: Custom graph `slot` in shading variant
    `variant`; Standard kind `slot - VKR_METAL_CUSTOM_GRAPH_SLOTS` past the
    Custom slots; or when `slot` is 0 the tiled BRDF extension variant
-   (variant 1), the tiled sun variants (VKR_METAL_TILED_SUN_VARIANT) or the
-   tiled demand variants of a sun variant (VKR_METAL_TILED_DEMAND_VARIANT). */
+   (variant 1), the tiled sun variants (VKR_METAL_TILED_SUN_VARIANT), the
+   tiled demand variants of a sun variant (VKR_METAL_TILED_DEMAND_VARIANT) or
+   the no-volume variants of a sun and demand variant
+   (VKR_METAL_TILED_NO_VOLUME_VARIANT). */
 typedef struct VkrMetalBackgroundBuild {
   VkrMetalPacketRenderer *renderer;
   uint32_t slot;
@@ -379,6 +384,13 @@ vkr_metal_packet_background_run(const VkrMetalBackgroundBuild *build)
     vkr_metal_packet_custom_create(renderer, build->slot, build->variant);
     subject = renderer->custom_graphs[build->slot].function;
     state = &renderer->custom_graphs[build->slot].state[build->variant];
+  } else if (build->variant & VKR_METAL_TILED_NO_VOLUME_VARIANT) {
+    const uint32_t rest =
+        ((build->variant & VKR_METAL_TILED_SUN_VARIANT) != 0u ? 1u : 0u) |
+        ((build->variant & VKR_METAL_TILED_DEMAND_VARIANT) != 0u ? 2u : 0u);
+    vkr_metal_packet_build_tiled_no_volume_pipelines(renderer, rest);
+    subject = "tiled.no_volume";
+    state = &renderer->tiled_no_volume_state[rest];
   } else if (build->variant & VKR_METAL_TILED_DEMAND_VARIANT) {
     const uint32_t sun =
         (build->variant & VKR_METAL_TILED_SUN_VARIANT) != 0u ? 1u : 0u;
@@ -465,6 +477,9 @@ vkr_metal_packet_background_wait(VkrMetalPacketRenderer *renderer)
   (void)vkr_job_wait(renderer->job_system, renderer->tiled_sun_job);
   for (uint32_t sun = 0u; sun < 2u; ++sun)
     (void)vkr_job_wait(renderer->job_system, renderer->tiled_demand_jobs[sun]);
+  for (uint32_t rest = 0u; rest < 4u; ++rest)
+    (void)vkr_job_wait(renderer->job_system,
+                       renderer->tiled_no_volume_jobs[rest]);
   (void)vkr_job_wait(renderer->job_system, renderer->custom_compile_job);
 }
 
@@ -538,6 +553,65 @@ vkr_metal_packet_custom_request_variant(VkrMetalPacketRenderer *renderer,
                           VKR_METAL_CUSTOM_GRAPH_PENDING,
                           VKR_MEMORY_ORDER_RELEASE);
   vkr_metal_packet_custom_build(renderer, slot, variant);
+}
+
+/* Whether this frame shades with its no-volume variant: its scene binds no
+   diffuse volume (the frame root then names none, so the lookup finds none)
+   and the variant's Standard pipelines are READY. The first frame without a
+   volume in a sun and demand variant starts creating them in the
+   background and asks each Custom graph for its own; until they are ready
+   the frame keeps the pipelines with the lookup. The
+   VKR_TILED_NO_VOLUME_DISABLED diagnostic keeps every frame on them. */
+vkr_internal bool8_t vkr_metal_packet_tiled_no_volume_frame(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet)
+    API_AVAILABLE(macos(26.0)) {
+  static int32_t disabled = -1;
+  if (disabled < 0)
+    disabled =
+        vkr_platform_environment_flag("VKR_TILED_NO_VOLUME_DISABLED") ? 1 : 0;
+  if (disabled == 1 || !renderer->fragment_library)
+    return false_v;
+  if (packet->input.lighting) {
+    const VkrDiffuseVolumeBinding *volume =
+        &packet->input.lighting->diffuse_volume;
+    if (volume->indirection.id != 0u &&
+        volume->indirection.generation != VKR_INVALID_ID)
+      return false_v;
+  }
+  const uint32_t rest =
+      (renderer->prepared_frame.tiled_sun_light ? 1u : 0u) |
+      (renderer->prepared_frame.tiled_texture_demand ? 2u : 0u);
+  VkrAtomicUint32 *state = &renderer->tiled_no_volume_state[rest];
+  if (vkr_atomic_uint32_load(state, VKR_MEMORY_ORDER_ACQUIRE) ==
+      VKR_METAL_CUSTOM_GRAPH_EMPTY) {
+    vkr_atomic_uint32_store(state, VKR_METAL_CUSTOM_GRAPH_PENDING,
+                            VKR_MEMORY_ORDER_RELAXED);
+    log_info("Metal: creating the tiled no-volume pipelines");
+    vkr_metal_packet_background_build(
+        renderer, 0u,
+        ((rest & 1u) ? VKR_METAL_TILED_SUN_VARIANT : 0u) |
+            ((rest & 2u) ? VKR_METAL_TILED_DEMAND_VARIANT : 0u) |
+            VKR_METAL_TILED_NO_VOLUME_VARIANT,
+        &renderer->tiled_no_volume_jobs[rest]);
+  }
+  if (vkr_atomic_uint32_load(state, VKR_MEMORY_ORDER_ACQUIRE) !=
+      VKR_METAL_CUSTOM_GRAPH_READY)
+    return false_v;
+  const uint32_t variant = ((rest & 1u) ? VKR_METAL_TILED_SUN_VARIANT : 0u) |
+                           ((rest & 2u) ? VKR_METAL_TILED_DEMAND_VARIANT : 0u) |
+                           VKR_METAL_TILED_NO_VOLUME_VARIANT;
+  for (uint32_t slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+    for (uint32_t brdf = 0u; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT;
+         ++brdf) {
+      if (vkr_atomic_uint32_load(
+              &renderer->custom_graphs[slot]
+                   .state[brdf |
+                          (variant & ~VKR_METAL_TILED_NO_VOLUME_VARIANT)],
+              VKR_MEMORY_ORDER_ACQUIRE) != VKR_METAL_CUSTOM_GRAPH_EMPTY)
+        vkr_metal_packet_custom_request_variant(renderer, slot, brdf | variant);
+    }
+  }
+  return true_v;
 }
 
 /* Starts creating slot `slot`'s sun variants of the BRDF variants it has

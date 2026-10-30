@@ -57,6 +57,17 @@ constant bool vkr_tiled_detail =
     is_function_constant_defined(vkr_tiled_detail_constant) &&
     vkr_tiled_detail_constant;
 
+// Frames whose scene binds no diffuse volume take the opaque pass's variants
+// with this constant set (VKR_METAL_TILED_NO_VOLUME_VARIANT): their draws
+// that cannot be lightmapped take the environment's diffuse light without the
+// volume's lookup, as the lookup finds no volume. Its code lowered the
+// forward variants' occupancy even where it never ran. Pipelines that leave
+// it undefined keep the lookup.
+constant bool vkr_tiled_no_volume_constant [[function_constant(8)]];
+constant bool vkr_tiled_no_volume =
+    is_function_constant_defined(vkr_tiled_no_volume_constant) &&
+    vkr_tiled_no_volume_constant;
+
 // The opaque pass's outputs: the lit colour and, in sun contact frames, the
 // sun's light within it, after its cascades and cloud shadow.
 // Texture demand (ADR-024) leaves the opaque pass as a colour target, a
@@ -1235,6 +1246,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                                   geometric_normal) /
                                   M_PI_F,
                           float3(0.0f));
+  } else if (vkr_tiled_no_volume) {
+    environment_diffuse = true;
   } else {
     float sky_luminance;
     float4 volume =

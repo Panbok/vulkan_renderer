@@ -820,7 +820,12 @@ typedef enum VkrMetalTiledLighting {
    their demand words to a third target; created in the background when a
    frame first asks for them, by sun variant. */
 #define VKR_METAL_TILED_DEMAND_VARIANT 4u
-#define VKR_METAL_TILED_SHADING_VARIANT_COUNT 8u
+/* Plus VKR_METAL_TILED_NO_VOLUME_VARIANT in frames whose scene binds no
+   diffuse volume, whose entries compile out the volume's lookup
+   (vkr_tiled_no_volume); created in the background when a frame first runs
+   without a volume, by sun and demand variant. */
+#define VKR_METAL_TILED_NO_VOLUME_VARIANT 8u
+#define VKR_METAL_TILED_SHADING_VARIANT_COUNT 16u
 /* The sun light target: the unshadowed light and the cascade visibility. */
 #define VKR_METAL_TILED_SUN_LIGHT_FORMAT MTLPixelFormatRGBA16Float
 /* The tiled opaque pass's texture demand words (ADR-024), a memoryless
@@ -1153,6 +1158,14 @@ struct VkrMetalPacketRenderer {
   VkrAtomicUint32 tiled_demand_state[2];
   VkrJobHandle tiled_demand_jobs[2];
   bool8_t tiled_demand_requested[2];
+  /* The same for the no-volume variants of both BRDF variants, by sun and
+     texture demand variant (bit 0 sun, bit 1 demand): EMPTY until a frame
+     first runs without a diffuse volume in that variant. */
+  VkrAtomicUint32 tiled_no_volume_state[4];
+  VkrJobHandle tiled_no_volume_jobs[4];
+  /* Whether this frame shades with its no-volume variant: its scene binds
+     no diffuse volume and that variant's Standard pipelines are READY. */
+  bool8_t tiled_no_volume;
   id<MTLRenderPipelineState> tiled_text_pipeline;
   /* Custom material graphs (ADR-096): the project library, each slot's
      pipelines (slot 0 stays empty) and the jobs creating them. */

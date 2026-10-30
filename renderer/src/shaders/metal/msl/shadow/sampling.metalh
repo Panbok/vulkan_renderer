@@ -371,6 +371,41 @@ static float vkr_metal_local_shadow_blocker_forward(
              view.light_position_near.w);
 }
 
+// A point light's cube face's forward, right and up axes, as mat4_look_at
+// builds them along s_face_direction with +y up, or +z up for the faces along
+// y (vkr_local_shadow_write_views): each is a signed world axis.
+static void vkr_metal_local_shadow_face_axes(uint face, thread float3 &forward,
+                                             thread float3 &right,
+                                             thread float3 &up) {
+  forward = vkr_local_shadow_forward(face);
+  switch (face) {
+  case 0u:
+    right = float3(0.0f, 0.0f, 1.0f);
+    up = float3(0.0f, 1.0f, 0.0f);
+    break;
+  case 1u:
+    right = float3(0.0f, 0.0f, -1.0f);
+    up = float3(0.0f, 1.0f, 0.0f);
+    break;
+  case 2u:
+    right = float3(1.0f, 0.0f, 0.0f);
+    up = float3(0.0f, 0.0f, 1.0f);
+    break;
+  case 3u:
+    right = float3(-1.0f, 0.0f, 0.0f);
+    up = float3(0.0f, 0.0f, 1.0f);
+    break;
+  case 4u:
+    right = float3(-1.0f, 0.0f, 0.0f);
+    up = float3(0.0f, 1.0f, 0.0f);
+    break;
+  default:
+    right = float3(1.0f, 0.0f, 0.0f);
+    up = float3(0.0f, 1.0f, 0.0f);
+    break;
+  }
+}
+
 // The point kernel reprojects each displaced ray into its owning cube face.
 // Its comparison depth follows the biased receiver's radial distance. Fully
 // filtered lights take `tap_count` Poisson taps rotated by `tap_rotation`. A
@@ -427,10 +462,35 @@ float3 vkr_metal_packet_local_shadow_sample(
   uint face = point ? vkr_local_shadow_face(from_light) : 0u;
   const device VkrLocalShadowView &view =
       root->local_shadow_views[first_view + face];
-  float4 clip = view.light_view_projection * float4(receiver, 1.0);
-  if (clip.w <= 0.0 || clip.z < 0.0 || clip.z > clip.w)
+  // The face's projection from the light's offset along its axes, as
+  // vkr_local_shadow_write_views builds it with mat4_look_at and
+  // mat4_perspective, in place of the face's matrix: a point light's faces
+  // look along the axes, and a spot light's axes follow from its direction
+  // alone, the same for every pixel. Loading a matrix for the pixel's face
+  // held sixteen more values in the opaque pass's shadowed light loop.
+  float3 axis_forward;
+  float3 axis_right;
+  float3 axis_up;
+  if (point) {
+    vkr_metal_local_shadow_face_axes(face, axis_forward, axis_right, axis_up);
+  } else {
+    axis_forward = first.light_direction_far.xyz;
+    axis_right = normalize(cross(axis_forward, abs(axis_forward.y) > 0.99f
+                                                   ? float3(0.0f, 0.0f, 1.0f)
+                                                   : float3(0.0f, 1.0f, 0.0f)));
+    axis_up = cross(axis_right, axis_forward);
+  }
+  const float depth_along = dot(from_light, axis_forward);
+  if (depth_along <= 0.0f)
     return float3(1.0);
-  float3 projected = clip.xyz / clip.w;
+  const float near_clip = first.light_position_near.w;
+  const float far_clip = first.light_direction_far.w;
+  const float lateral = 1.0f / (depth_along * first.projection_params.x);
+  float3 projected = float3(
+      dot(from_light, axis_right) * lateral, -dot(from_light, axis_up) * lateral,
+      (far_clip * near_clip / depth_along - far_clip) / (near_clip - far_clip));
+  if (projected.z < 0.0f || projected.z > 1.0f)
+    return float3(1.0);
   float2 uv = projected.xy * 0.5 + 0.5;
   if (!point && (any(uv < 0.0) || any(uv > 1.0)))
     return float3(1.0);
