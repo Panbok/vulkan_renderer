@@ -539,30 +539,39 @@ void vkr_metal_packet_punctual_layered(
             VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
       continue;
     /* The base lobes are zero for a light behind the shadow normal, so its
-       visibility is never looked up. */
-    float3 base_attenuation =
-        vkr_local_shadow_light_faces(shadow_normal, light_direction)
-            ? attenuation * local_shadow(frame, uint(p3.w), light_index,
-                                         kind, world_position,
-                                         shadow_normal)
-            : float3(0.0f);
-    float3 coat_attenuation = base_attenuation;
-    if (coat_active && any(coat.normal != shadow_normal)) {
-      coat_attenuation =
-          attenuation * vkr_metal_packet_local_shadow_sample(
-              frame, uint(p3.w), kind, world_position, coat.normal);
-    }
+       visibility is never looked up. The lobes are evaluated before the
+       visibility and scaled by it after: across the shadow lookup only the
+       two lobes in Sum stay live, not the light's direction, colour and
+       falloff, which set the tiled opaque pass's register count. */
+    Sum unshadowed_diffuse = Sum(0.0f);
+    Sum unshadowed_specular = Sum(0.0f);
+    float3 unshadowed_irradiance = float3(0.0f);
     if (EvaluateDiffuse) {
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
-          normal, view, light_direction, p1.rgb * intensity * base_attenuation,
+          normal, view, light_direction, p1.rgb * intensity * attenuation,
           albedo, metallic, roughness, f0, energy);
-      irradiance_sum += direct.irradiance;
-      diffuse_sum += Sum(direct.diffuse);
-      specular_sum += Sum(direct.specular);
+      unshadowed_irradiance = direct.irradiance;
+      unshadowed_diffuse = Sum(direct.diffuse);
+      unshadowed_specular = Sum(direct.specular);
     } else {
-      specular_sum += Sum(vkr_metal_packet_direct_specular(
-          normal, view, light_direction, p1.rgb * intensity * base_attenuation,
+      unshadowed_specular = Sum(vkr_metal_packet_direct_specular(
+          normal, view, light_direction, p1.rgb * intensity * attenuation,
           roughness, f0, energy));
+    }
+    const float3 visibility =
+        vkr_local_shadow_light_faces(shadow_normal, light_direction)
+            ? local_shadow(frame, uint(p3.w), light_index, kind, world_position,
+                           shadow_normal)
+            : float3(0.0f);
+    irradiance_sum += unshadowed_irradiance * visibility;
+    diffuse_sum += unshadowed_diffuse * Sum(visibility);
+    specular_sum += unshadowed_specular * Sum(visibility);
+    float3 base_attenuation = attenuation * visibility;
+    float3 coat_attenuation = base_attenuation;
+    if (coat_active && any(coat.normal != shadow_normal)) {
+      coat_attenuation = attenuation * vkr_metal_packet_local_shadow_sample(
+                                           frame, uint(p3.w), kind,
+                                           world_position, coat.normal);
     }
     if (coat_active)
       coat_sum += vkr_metal_packet_clearcoat_direct(
