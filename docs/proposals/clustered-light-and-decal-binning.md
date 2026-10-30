@@ -430,9 +430,13 @@ words, the light head. Two limits follow:
 
 1. **Coarse cells.** `Lighting.Clusters` keeps its prepare dispatch,
    which bounds each item by a sphere and a box of tiles and slices. A
-   new coarse dispatch writes each light into lists for cells of 4 × 4
-   tiles (128 px): a count pass, a prefix sum, then a fill. A light is
-   written in row order within each cell, so the lists are repeatable. The
+   new coarse dispatch marks each light in a bitfield per cell of 4 × 4
+   tiles (128 px), one word per 32 rows, with an atomic OR. The result
+   does not depend on the order the threads run in. At 2560 × 1440 that
+   is 240 cells × 628 words, about 600 KB at 20,072 rows. The size is
+   fixed, so the coarse step needs no count, no prefix sum and no
+   overflow rule. A count, prefix sum and atomic fill would put a cell's
+   rows in arrival order, not row order (Mac review, 2026-10-30). The
    boxes buffer grows to the table's capacity plus the decals, which ends
    the 4,096-item limit and the row cap.
 2. **Tile depth bounds.** A new pass, `Lighting.Lists`, runs after
@@ -440,19 +444,24 @@ words, the light head. Two limits follow:
    depth (`VBuffer.SplitDepth`) to each tile's nearest and farthest clip w.
    A tile with no opaque pixel gets an empty range.
 3. **Fine lists.** `Lighting.Lists` then gives each tile one workgroup. It
-   takes its coarse cell's candidates and keeps those that reach the
-   tile's side planes and its depth range. The survivors go into group
-   memory, are sorted by row, and are written to an index pool as 16-bit
-   rows, with a per-tile header (first, count). One list per tile:
+   walks its coarse cell's set bits in ascending order and keeps the
+   lights that reach the tile's side planes and its depth range. The
+   compaction preserves order: each step takes 64 candidates, a ballot,
+   and a prefix popcount for each survivor's place. The list is then in
+   row order with no sort, and no bound on survivors besides the pool's.
+   It is written to an index pool as 16-bit rows, with a per-tile header
+   (first, count). One list per tile:
    - `opaque`, bounded by the tile's depth range: deferred lighting and
      `Shadow.LocalMask` (its head rows lead the sorted list).
    - `full`, bounded only by the side planes: transmission and forward
      blend, which shade surfaces off the opaque depth. Later depth bins
      can narrow it if glass shows the cost (item 4).
 
-   A pool too small for a tile's list drops the list's highest rows and
-   counts them (`lighting.point.list_dropped`), so a pixel never reads
-   another tile's rows. The head rows stay, because they lead.
+   The pool takes the last frame's total times a margin. Only a frame
+   that exceeds it drops lists' highest rows, counted in
+   `lighting.point.list_dropped`, so a pixel never reads another tile's
+   rows and the head rows stay. A steady scene therefore does not lose
+   lights every frame, and the pool still has a bound.
 4. **Consumers.** `packet_punctual_layered` walks a list instead of words.
    - A deferred wave lies within one tile, so its list is wave-uniform and
      loads rows as scalars, as today.
@@ -465,9 +474,15 @@ words, the light head. Two limits follow:
    - The per-wave box test stays, for the lights the tile range keeps.
 5. **Crossover.** Measure lists against bitfields on
    `bistro_clustered_1440` (392 rows), `bistro_clustered_stress_1440`
-   (920) and `bistro_vulkan_high_orbit_1440`. Keep both only if the
-   bitfields are clearly faster at small tables. Otherwise the bitfields
-   and the row cap retire together.
+   (920) and `bistro_vulkan_high_orbit_1440`, and the lists alone on
+   `bistro_clustered_m3_1440` (20,072), the case where they must win.
+   Keep both only if the bitfields are clearly faster at small tables.
+   Otherwise the bitfields and the row cap retire together.
+6. **Depth within a tile.** A tile that holds a near and a far surface
+   keeps every light between them. A 32-bit mask of depth slices per
+   tile, ANDed with each light's slice mask (2.5D culling, Harada 2012),
+   would fix that for one word a tile. It waits for the crossover
+   numbers.
 
 **Steps.**
 
@@ -479,18 +494,16 @@ words, the light head. Two limits follow:
 - **W4c-2** `Lighting.Lists` with tile depth bounds and the `opaque`
   lists. Deferred lighting and `Shadow.LocalMask` switch over; the
   bitfields and the row cap retire. `lighting.point.unshaded` reads 0 on
-  `bistro_clustered_m3_1440`. Then measure `Lighting.Deferred` at the three
+  `bistro_clustered_m3_1440`. A still scene's lists repeat byte for byte
+  across two frames. Then measure `Lighting.Deferred` at the four
   sizes.
 - **W4c-3** ADR-135 records the lists, their limits and the timing.
 
 **Open choices** (recommendation first):
 
-- Depth source: reduce the opaque depth in `Lighting.Lists`, one 32 × 32
-  read per tile. Or extend `HZB.BuildBase` to keep the nearest depth
-  beside the farthest, which saves a read but changes a shared pass.
-- Pool overflow: drop the highest rows and count them. Or grow the pool
-  from the last frame's count, which keeps every row but adds a frame of
-  latency to the size.
+- Depth source (agreed 2026-10-30): reduce the opaque depth in
+  `Lighting.Lists`, one 32 × 32 read per tile, rather than change the
+  shared `HZB.BuildBase` without a measured need.
 - Forward depth: the `full` lists first, and depth bins only if glass
   shows the cost. Or bin by slices from the start, which costs a list per
   tile and slice.
