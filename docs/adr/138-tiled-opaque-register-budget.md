@@ -167,6 +167,22 @@ measurement and not kept:
 - **Diffuse and environment light ahead of the direct light, or the
   lightmap and volume block ahead of it**: 4 more registers. A volume loop
   unroll pragma changed nothing.
+- **A smaller light tile** (`VKR_METAL_TILED_TILE_LIGHT_MAX` 64, 400 bytes
+  of threadgroup memory in place of 2,192): 5.31 ms either way; the tile's
+  threadgroup memory does not bound occupancy.
+- **Each SIMD lane loading one candidate light's row and the walk reading
+  rows from the lanes' registers**: 100 registers, 6.51 ms against 5.56 ms.
+  Loading every row from one fixed address cut a walk-and-load-only loop
+  by just 0.3 ms (3.00 to 2.70 ms), so each walked light pays a load
+  latency that occupancy, not caching, must hide.
+- **The environment specular sampled before the lightmap**: the probe
+  variant 80 → 76 but the general lightmapped variant 72 → 76 and the
+  volume variants 88 → 96.
+- **The environment reflectance or the geometric normal carried in half
+  precision**: no variant fewer registers.
+- **The frame's (at most 4) shadowed lights' visibility evaluated before the
+  light loop and looked up in it**: only the probe variant fewer registers
+  (80 → 76), against a frame-root field for their first views.
 
 ## Revisit when
 
