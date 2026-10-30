@@ -1301,6 +1301,8 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> temporal_transform_pipeline;
   /* The still-camera running mean over MetalFX's output. */
   id<MTLComputePipelineState> tiled_stabilize_pipeline;
+  /* The same mean with its display-linear transform (ADR-138). */
+  id<MTLComputePipelineState> tiled_stabilize_display_linear_pipeline;
   /* The sun shafts' source and their march toward the sun (ADR-132). */
   id<MTLComputePipelineState> tiled_sun_shafts_source_pipeline;
   id<MTLComputePipelineState> tiled_sun_shafts_pipeline;

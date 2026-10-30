@@ -743,6 +743,24 @@
       ]
     },
     {
+      "name": "post_display_linear_stable",
+      "type": "image",
+      "condition": "scene_rendering && tiled_stable_display_linear",
+      "extent": {
+        "mode": "window"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "SAMPLED",
+        "STORAGE"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "light_table",
       "condition": "scene_rendering",
       "type": "buffer",
@@ -2349,31 +2367,6 @@
       "execute": "pass.tiled.temporal"
     },
     {
-      "name": "Tiled.Stabilize",
-      "condition": "scene_rendering && tiled_temporal_still",
-      "type": "compute",
-      "reads": [
-        {
-          "image": "tiled_temporal_color",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "tiled_motion",
-          "access": "SAMPLED",
-          "binding": 1
-        }
-      ],
-      "writes": [
-        {
-          "image": "tiled_stable_color",
-          "access": "STORAGE_WRITE",
-          "binding": 2
-        }
-      ],
-      "execute": "pass.tiled.stabilize"
-    },
-    {
       "name": "Temporal.TransformHistory",
       "condition": "scene_rendering && tiled_object_motion_pending",
       "type": "compute",
@@ -2710,10 +2703,57 @@
       "execute": "pass.bloom.upsample"
     },
     {
+      "name": "Tiled.Stabilize",
+      "condition": "scene_rendering && tiled_temporal_still",
+      "type": "compute",
+      "reads": [
+        {
+          "image": "tiled_temporal_color",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "tiled_motion",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_READ",
+          "binding": 3,
+          "when": "exposure_automatic"
+        },
+        {
+          "image": "bloom_accum",
+          "access": "SAMPLED",
+          "binding": 4,
+          "subresource": {
+            "base_mip": 0,
+            "mip_count": 1
+          },
+          "when": "bloom_enabled"
+        }
+      ],
+      "writes": [
+        {
+          "image": "tiled_stable_color",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        },
+        {
+          "image": "post_display_linear_stable",
+          "access": "STORAGE_WRITE",
+          "binding": 5,
+          "when": "tiled_stable_display_linear"
+        }
+      ],
+      "execute": "pass.tiled.stabilize"
+    },
+    {
       "name": "Post.DisplayLinear.Fullscreen",
       "type": "graphics",
       "domain": "POST",
-      "condition": "scene_rendering && post_transform_cache_enabled && !editor_enabled",
+      "condition": "scene_rendering && post_transform_cache_enabled && !editor_enabled && !tiled_stable_display_linear",
       "reads": [
         {
           "image": "hdr_scene_color",
@@ -2811,7 +2851,13 @@
           "image": "post_display_linear_fullscreen",
           "access": "SAMPLED",
           "binding": 5,
-          "when": "post_transform_cache_enabled"
+          "when": "post_transform_cache_enabled && !editor_enabled && !tiled_stable_display_linear"
+        },
+        {
+          "image": "post_display_linear_stable",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "tiled_stable_display_linear"
         }
       ],
       "attachments": {

@@ -2335,11 +2335,11 @@ struct VkrMetalTiledStabilizeRoot {
   uint reserved[2];
 };
 
-kernel void vkr_metal_tiled_stabilize(constant VkrMetalTiledStabilizeRoot &root
-                                      [[buffer(0)]],
-                                      uint2 pixel [[thread_position_in_grid]]) {
-  if (any(pixel >= root.extent))
-    return;
+// The still-camera mean at `pixel`, inside the root's extent, with the
+// frame count in alpha; Tiled.Stabilize writes it as the next frame's history.
+static float4
+vkr_metal_tiled_stable_color(constant VkrMetalTiledStabilizeRoot &root,
+                             uint2 pixel) {
   const float3 current = root.color.read(pixel).rgb;
   float4 result = float4(current, 1.0f);
   if (root.history_valid != 0u) {
@@ -2376,7 +2376,15 @@ kernel void vkr_metal_tiled_stabilize(constant VkrMetalTiledStabilizeRoot &root
       result = float4(mean + (current - mean) / count, count);
     }
   }
-  root.output.write(result, pixel);
+  return result;
+}
+
+kernel void vkr_metal_tiled_stabilize(constant VkrMetalTiledStabilizeRoot &root
+                                      [[buffer(0)]],
+                                      uint2 pixel [[thread_position_in_grid]]) {
+  if (any(pixel >= root.extent))
+    return;
+  root.output.write(vkr_metal_tiled_stable_color(root, pixel), pixel);
 }
 
 static_assert(sizeof(VkrMetalTiledStabilizeRoot) == 64,

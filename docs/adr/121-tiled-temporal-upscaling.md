@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-16
+updated: 2026-10-30
 authority: adr
 ---
 
@@ -131,6 +131,16 @@ like clouds and froxel fog.
     could not be used: jitter flicker changes a pixel by 10 to 40%.
     Post passes read that image on still frames and `tiled_temporal_color`
     on moving frames.
+    On still frames whose display-linear cache (ADR-043) fills the window,
+    `Tiled.Stabilize` runs after bloom and also writes the mean's
+    display-linear transform into `post_display_linear_stable`
+    (`vkr_metal_tiled_stabilize_display_linear`), and
+    `Post.DisplayLinear.Fullscreen` does not run
+    (`tiled_stable_display_linear` in
+    [vkr_rg_json.c](../../renderer/src/vkr_rg_json.c)). That image is a
+    storage image apart from the attachment moving frames render, which a
+    storage write would leave without lossless compression and so slow the
+    tonemap's reads by about 0.06 ms.
 11. **Consumers.** Tonemap, display-linear and editor resolve read the
     upscaled image at the output extent. Exposure and bloom still read the
     internal `hdr_scene_color`.
@@ -179,6 +189,30 @@ like clouds and froxel fog.
 - MetalFX gains timestamps or a changed cost structure on newer GPUs.
 
 ## Evidence
+
+### Stabilize with the display-linear transform
+
+Release on `ddc9817a` plus the change, M1 Pro, 2026-10-30, per-pass GPU
+timestamps (`local-offscreen-gpu-single`), Bistro street view at 2560×1440,
+MetalFX 0.6, image sharpness 0.25 (the shipped default, which turns the
+display-linear cache on), p50 in ms, two runs each:
+
+| Camera | Build | `Tiled.Stabilize` | `Post.DisplayLinear.Fullscreen` | `Post.Tonemap.Fullscreen` | Sum |
+|---|---|---|---|---|---|
+| Still | before | 0.714 / 0.720 | 0.706 / 0.707 | 0.424 / 0.426 | 1.85 |
+| Still | after | 1.171 / 1.174 | not run | 0.516 / 0.517 | 1.69 |
+| Orbit | before | 0.714 / 0.727 | 0.709 / 0.710 | 0.421 / 0.422 | |
+| Orbit | after | 1.172 / 1.177 | 0.710 / 0.710 | 0.423 / 0.424 | |
+
+The orbit holds still frames and moving ones; its moving frames, which take
+the display-linear pass, are unchanged. The still frame's tonemap reads the
+uncompressed storage image, 0.09 ms slower. Captures of `final_color` after
+32 still frames: after against before 64.8 and 65.0 dB, at most 14 of 255 on
+about 240 pixels; before against before 66.2 dB, at most 10 of 255; after
+against after 66.6 dB, at most 14 of 255, so the difference is MetalFX's
+run-to-run spread. Sharing the `Tiled.Stabilize` 3×3 neighbourhood through
+threadgroup memory was 0.06 ms slower (0.89 against 0.83 ms with the
+exposure and bloom work in the same encoder) and was not kept.
 
 ### Frame-gap reset fix
 

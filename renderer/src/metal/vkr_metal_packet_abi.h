@@ -875,6 +875,19 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTiledStabilizeRoot {
 _Static_assert(sizeof(VkrMetalTiledStabilizeRoot) == 64u,
                "Metal tiled stabilize root ABI drift");
 
+/** Tiled.Stabilize on still frames whose display-linear cache fills the
+    window: the stabilize root, the address of the VkrMetalPacketTonemapRoot
+    that Post.DisplayLinear.Fullscreen would take, and the display-linear
+    image the pass writes in its place (ADR-138). */
+typedef struct VKR_SIMD_ALIGN VkrMetalTiledStabilizeDisplayRoot {
+  VkrMetalTiledStabilizeRoot stabilize;
+  uint64_t tonemap_root;
+  uint64_t display_linear_texture_id;
+} VkrMetalTiledStabilizeDisplayRoot;
+
+_Static_assert(sizeof(VkrMetalTiledStabilizeDisplayRoot) == 80u,
+               "Metal tiled stabilize display root ABI drift");
+
 /** The tiled pipeline's camera motion: `reprojection` maps the jittered
     current clip position of a resolved depth into the previous frame's
     unjittered clip space; the motion is the previous unjittered texture
@@ -1342,6 +1355,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_LIGHT_SCATTER_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
   VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT,
+  VKR_METAL_PACKET_ABI_TILED_STABILIZE_DISPLAY_ROOT,
   VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT,
   VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT,
   VKR_METAL_PACKET_ABI_TILED_SUN_SHAFTS_ROOT,

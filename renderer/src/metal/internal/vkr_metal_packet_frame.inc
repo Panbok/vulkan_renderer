@@ -659,30 +659,16 @@ vkr_metal_packet_frame_data_view(const VkrPreparedFrame *packet) {
          (packet->input.debug && packet->input.debug->shadow_debug_mode != 0u);
 }
 
-vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
-    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, uint32_t target_width,
-    uint32_t target_height, const Vec4 *editor_rect)
-    API_AVAILABLE(macos(26.0)) {
-  const bool8_t prepare_display_linear =
-      prepared->kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE;
-  /* The display-linear cache at binding 5 replaces the scene at binding 0
-     when the frame filters it. */
-  const VkrRgImageUse *cached = vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u);
-  const VkrRgImageUse *read =
-      cached ? cached : vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
-  id<MTLTexture> source = vkr_metal_packet_subresource_texture(renderer, read);
-  if (!source)
-    return false_v;
-  /* The tonemap binds the bloom chain's first level to add to the scene it
-     samples (ADR-087); a display-linear source already holds it. */
-  const VkrRgImageUse *bloom_use =
-      cached ? NULL : vkr_rg_pass_find_image_use(&pass->desc, 6u, 0u);
-  id<MTLTexture> bloom =
-      vkr_metal_packet_subresource_texture(renderer, bloom_use);
-  if (bloom_use && !bloom)
-    return false_v;
+/* The tonemap root a post pass, or Tiled.Stabilize in place of the
+   display-linear pass, samples `source` with: the frame's exposure, grading,
+   bloom and tone curve for its output. Zero when the upload is full. */
+vkr_internal uint64_t vkr_metal_packet_write_tonemap_root(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketFrameUpload *upload, id<MTLTexture> source,
+    id<MTLTexture> bloom,
+    const VkrMetalPacketGraphBufferInstance *exposure_state,
+    bool8_t prepare_display_linear, bool8_t cached, const Vec4 *editor_rect,
+    uint32_t output_width, uint32_t output_height) API_AVAILABLE(macos(26.0)) {
   uint64_t root_gpu = 0;
   VkrMetalPacketTonemapRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -693,7 +679,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
   VkrColorGradingGpu *color_grading = vkr_metal_packet_next_root(
       upload, sizeof(*color_grading), &color_grading_gpu);
   if (!root || !manual_state || !color_grading)
-    return false_v;
+    return 0u;
   const uint32_t render_mode = packet->input.globals.render_mode;
   const bool8_t data_view =
       !editor_rect && vkr_metal_packet_frame_data_view(packet);
@@ -711,12 +697,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       .exposure_multiplier =
           editor_rect || data_view ? 1.0f : packet->exposure.manual,
   };
-  const uint32_t output_x = editor_rect ? (uint32_t)editor_rect->x : 0u;
-  const uint32_t output_y = editor_rect ? (uint32_t)editor_rect->y : 0u;
-  const uint32_t output_width =
-      editor_rect ? (uint32_t)editor_rect->z : target_width;
-  const uint32_t output_height =
-      editor_rect ? (uint32_t)editor_rect->w : target_height;
   *root = (VkrMetalPacketTonemapRoot){
       .source_texture_id = source.gpuResourceID._impl,
       .inverse_pre_exposure = 1.0f / packet->exposure.pre_exposure,
@@ -759,15 +739,54 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
                 : 0.0f,
       .bloom_texture_id = bloom ? bloom.gpuResourceID._impl : 0u,
   };
-  const VkrRgBufferUse *exposure_use =
-      vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
-  VkrMetalPacketGraphBufferInstance *exposure_state =
-      exposure_use
-          ? vkr_metal_packet_graph_buffer(renderer, exposure_use->buffer)
-          : NULL;
   /* A data view keeps the unit exposure of its manual record. */
   if (exposure_state && !data_view)
     root->exposure_state = exposure_state->resource.gpu_address;
+  return root_gpu;
+}
+
+vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload, uint32_t target_width,
+    uint32_t target_height, const Vec4 *editor_rect)
+    API_AVAILABLE(macos(26.0)) {
+  const bool8_t prepare_display_linear =
+      prepared->kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE;
+  /* The display-linear cache at binding 5 replaces the scene at binding 0
+     when the frame filters it. */
+  const VkrRgImageUse *cached = vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u);
+  const VkrRgImageUse *read =
+      cached ? cached : vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  id<MTLTexture> source = vkr_metal_packet_subresource_texture(renderer, read);
+  if (!source)
+    return false_v;
+  /* The tonemap binds the bloom chain's first level to add to the scene it
+     samples (ADR-087); a display-linear source already holds it. */
+  const VkrRgImageUse *bloom_use =
+      cached ? NULL : vkr_rg_pass_find_image_use(&pass->desc, 6u, 0u);
+  id<MTLTexture> bloom =
+      vkr_metal_packet_subresource_texture(renderer, bloom_use);
+  if (bloom_use && !bloom)
+    return false_v;
+  const VkrRgBufferUse *exposure_use =
+      vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
+  const VkrMetalPacketGraphBufferInstance *exposure_state =
+      exposure_use
+          ? vkr_metal_packet_graph_buffer(renderer, exposure_use->buffer)
+          : NULL;
+  const uint32_t output_x = editor_rect ? (uint32_t)editor_rect->x : 0u;
+  const uint32_t output_y = editor_rect ? (uint32_t)editor_rect->y : 0u;
+  const uint32_t output_width =
+      editor_rect ? (uint32_t)editor_rect->z : target_width;
+  const uint32_t output_height =
+      editor_rect ? (uint32_t)editor_rect->w : target_height;
+  const uint64_t root_gpu = vkr_metal_packet_write_tonemap_root(
+      renderer, packet, upload, source, bloom, exposure_state,
+      prepare_display_linear, cached != NULL, editor_rect, output_width,
+      output_height);
+  if (root_gpu == 0u)
+    return false_v;
   prepared->tonemap.root = root_gpu;
   prepared->tonemap.viewport =
       (MTLViewport){output_x, output_y, output_width, output_height, 0.0, 1.0};
@@ -3050,7 +3069,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_temporal_transform(
    viewport's motion at 1 into this frame's instance of the history image at
    2. The last submitted frame's instance holds the mean when that frame was
    still and stabilized too, across any gap in frame numbers; its read keeps
-   the instance from the history ring until this frame completes. */
+   the instance from the history ring until this frame completes. On frames
+   whose display-linear cache fills the window, the pass also writes the
+   mean's display-linear transform at 5, with the exposure state at 3 and the
+   bloom chain's first level at 4, in place of
+   Post.DisplayLinear.Fullscreen (ADR-138). */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_stabilize(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -3080,9 +3103,26 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_stabilize(
   if (history_valid)
     previous->last_use_submit_value =
         Max(previous->last_use_submit_value, renderer->submit_value + 1u);
+  const VkrRgImageUse *display_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u);
+  id<MTLTexture> display_linear =
+      display_use ? vkr_metal_packet_texture(renderer, display_use->image)
+                  : nil;
+  if (display_use &&
+      (!display_linear || !renderer->tiled_stabilize_display_linear_pipeline ||
+       display_linear.width != output.width ||
+       display_linear.height != output.height))
+    return false_v;
   uint64_t root_gpu = 0u;
-  VkrMetalTiledStabilizeRoot *root =
-      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  VkrMetalTiledStabilizeDisplayRoot *display_root = NULL;
+  VkrMetalTiledStabilizeRoot *root = NULL;
+  if (display_linear) {
+    display_root =
+        vkr_metal_packet_next_root(upload, sizeof(*display_root), &root_gpu);
+    root = display_root ? &display_root->stabilize : NULL;
+  } else {
+    root = vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  }
   if (!root)
     return false_v;
   *root = (VkrMetalTiledStabilizeRoot){
@@ -3103,8 +3143,31 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_stabilize(
                            : 1.0f,
       .history_valid = history_valid ? 1u : 0u,
   };
+  if (display_root) {
+    const VkrRgImageUse *bloom_use =
+        vkr_rg_pass_find_image_use(&pass->desc, 4u, 0u);
+    id<MTLTexture> bloom =
+        vkr_metal_packet_subresource_texture(renderer, bloom_use);
+    if (bloom_use && !bloom)
+      return false_v;
+    const VkrRgBufferUse *exposure_use =
+        vkr_rg_pass_find_buffer_use(&pass->desc, 3u, 0u);
+    const VkrMetalPacketGraphBufferInstance *exposure_state =
+        exposure_use
+            ? vkr_metal_packet_graph_buffer(renderer, exposure_use->buffer)
+            : NULL;
+    display_root->tonemap_root = vkr_metal_packet_write_tonemap_root(
+        renderer, packet, upload, color, bloom, exposure_state, true_v, false_v,
+        NULL, (uint32_t)output.width, (uint32_t)output.height);
+    display_root->display_linear_texture_id =
+        display_linear.gpuResourceID._impl;
+    if (display_root->tonemap_root == 0u)
+      return false_v;
+  }
   prepared->stabilize.dispatch = (VkrMetalPacketDispatch){
-      .pipeline = renderer->tiled_stabilize_pipeline,
+      .pipeline = display_root
+                      ? renderer->tiled_stabilize_display_linear_pipeline
+                      : renderer->tiled_stabilize_pipeline,
       .root = root_gpu,
       .threads = MTLSizeMake(output.width, output.height, 1u),
       .group_size = MTLSizeMake(8u, 8u, 1u),
