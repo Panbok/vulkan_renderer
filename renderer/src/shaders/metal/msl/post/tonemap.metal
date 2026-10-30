@@ -138,19 +138,25 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
                                               exposure, flags, *root->color_grading,
                                               display_output, bloom);
   if (sharpness > 0.0) {
+    // A pixel's neighbour inside its 2x2 quad sampled the tap this pixel
+    // needs at its own centre, so each pixel samples only the neighbours
+    // outside the quad: lane bit 0 is the quad column, bit 1 its row.
     float2 step = 1.0 / float2(root->output_extent);
-    float3 north = vkr_metal_packet_post_sample(root->source, source_sampler,
-        uv - float2(0.0, step.y), exposure, flags, *root->color_grading,
-        display_output, bloom).rgb;
-    float3 south = vkr_metal_packet_post_sample(root->source, source_sampler,
-        uv + float2(0.0, step.y), exposure, flags, *root->color_grading,
-        display_output, bloom).rgb;
-    float3 west = vkr_metal_packet_post_sample(root->source, source_sampler,
-        uv - float2(step.x, 0.0), exposure, flags, *root->color_grading,
-        display_output, bloom).rgb;
-    float3 east = vkr_metal_packet_post_sample(root->source, source_sampler,
-        uv + float2(step.x, 0.0), exposure, flags, *root->color_grading,
-        display_output, bloom).rgb;
+    const uint2 quad_cell = uint2(input.position.xy) & 1u;
+    const float3 across_x = quad_shuffle_xor(result.rgb, 1u);
+    const float3 across_y = quad_shuffle_xor(result.rgb, 2u);
+    const float2 outside = float2(quad_cell.x != 0u ? step.x : -step.x,
+                                  quad_cell.y != 0u ? step.y : -step.y);
+    const float3 beyond_x = vkr_metal_packet_post_sample(root->source,
+        source_sampler, uv + float2(outside.x, 0.0), exposure, flags,
+        *root->color_grading, display_output, bloom).rgb;
+    const float3 beyond_y = vkr_metal_packet_post_sample(root->source,
+        source_sampler, uv + float2(0.0, outside.y), exposure, flags,
+        *root->color_grading, display_output, bloom).rgb;
+    float3 north = quad_cell.y != 0u ? across_y : beyond_y;
+    float3 south = quad_cell.y != 0u ? beyond_y : across_y;
+    float3 west = quad_cell.x != 0u ? across_x : beyond_x;
+    float3 east = quad_cell.x != 0u ? beyond_x : across_x;
     result.rgb = vkr_sharpen_color(result.rgb,
         0.25 * (north + south + west + east),
         min(min(north, south), min(west, east)),

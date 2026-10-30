@@ -132,7 +132,12 @@ zero adds no samples or filter arithmetic. Sampling offsets use output pixels an
 This is bounded detail recovery, not FSR RCAS or a new antialiasing algorithm.
 
 Sharpening adds no temporal history; its source is the display-linear image
-described below. Editor.Resolve applies the filter once before overlays;
+described below. On Metal each pixel samples only the two neighbours outside
+its 2×2 quad and takes the other two from those pixels' own centre samples
+by quad shuffle (2026-10-30: the tiled final draw at 2560×1440 on the M1 Pro
+0.505 → 0.438 ms, sharpness 0.25; a deterministic spatial-upscale capture
+moved one pixel by 3 of 255 against five taps, from rounding in the
+interpolated tap positions). Editor.Resolve applies the filter once before overlays;
 Editor.Composite bypasses it. UI and diagnostic render modes are excluded.
 Native roots are recorded in ADR-044. Increased edge contrast can expose existing
 temporal variation, so quality and cost require matched static and moving
@@ -326,7 +331,13 @@ float64 model of the operator against trilinear lookups over 2⁻¹² to 2⁶ ne
 14 % on saturated highlights at headroom 4; 64³ errs up to 15/255. The
 analytic pass costs 0.2 ms at 2560×1440 on the M1 Pro and runs once per output
 pixel whenever the final draw filters (display-linear preparation above), so
-sharpening does not multiply it.
+sharpening does not multiply it. Since 2026-10-30 the tiled pipeline applies
+it at the internal extent before MetalFX
+([ADR-121](121-tiled-temporal-upscaling.md)), where it costs 0.13 of the
+display-linear pass's 0.27 ms at 1536×864. Exact rewrites of the operator
+changed nothing measurable there: the curve evaluating only the section each
+channel lies in, and the PQ encoding as one logarithm of a ratio, both
+0.27 ms.
 
 Shader gamma plus sRGB attachment encoding is double conversion. Scaling the
 physical target to reduce Scene cost also degrades native UI; the high-DPI
