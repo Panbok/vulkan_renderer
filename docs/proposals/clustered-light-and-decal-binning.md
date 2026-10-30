@@ -405,6 +405,96 @@ list makes probes take turns more slowly rather than costing frame time.
   selection's bricks use, which gives shorter lists but drops a dim
   source's light past 0.05 irradiance.
 
+## Design: desktop light lists (item 3)
+
+Windows design (W4c, 2026-10-30), for review by the Mac. Desktop only
+(Vulkan): the tiled pipeline already culls in tile shaders (M5).
+
+**Today.** `Lighting.Clusters` runs after `Cull.Encode`. One workgroup per
+32 px tile tests every light and decal against the tile's four side planes,
+and writes a bitfield of `ceil(rows / 32)` words per tile.
+`packet_punctual_layered`
+([`default.slang`](../../renderer/src/shaders/vulkan/slang/world/default.slang))
+walks the wave's OR of those words. Deferred lighting, transmission and
+forward blend all use it, and `Shadow.LocalMask` reads only the first four
+words, the light head. Two limits follow:
+
+- Cost grows with the table, not with the lights in reach. Each tile tests
+  every row, and each pixel walks every word: about 630 words at 20,072
+  rows. A tile's side planes do not bound depth, so a tile also keeps every
+  light along its view ray. Deferred lighting drops those per wave against
+  the box of its pixels (ADR-135), but only after loading each row.
+- The build marks at most 4,096 items, so the desktop shades at most
+  4,096 rows less the decals. On `bistro_clustered_m3_1440`, 16,488 of
+  20,072 rows go unshaded (`lighting.point.unshaded`).
+
+1. **Coarse cells.** `Lighting.Clusters` keeps its prepare dispatch,
+   which bounds each item by a sphere and a box of tiles and slices. A
+   new coarse dispatch writes each light into lists for cells of 4 × 4
+   tiles (128 px): a count pass, a prefix sum, then a fill. A light is
+   written in row order within each cell, so the lists are repeatable. The
+   boxes buffer grows to the table's capacity plus the decals, which ends
+   the 4,096-item limit and the row cap.
+2. **Tile depth bounds.** A new pass, `Lighting.Lists`, runs after
+   `HZB.BuildMip` and before `Shadow.LocalMask`. It reduces the opaque
+   depth (`VBuffer.SplitDepth`) to each tile's nearest and farthest clip w.
+   A tile with no opaque pixel gets an empty range.
+3. **Fine lists.** `Lighting.Lists` then gives each tile one workgroup. It
+   takes its coarse cell's candidates and keeps those that reach the
+   tile's side planes and its depth range. The survivors go into group
+   memory, are sorted by row, and are written to an index pool as 16-bit
+   rows, with a per-tile header (first, count). One list per tile:
+   - `opaque`, bounded by the tile's depth range: deferred lighting and
+     `Shadow.LocalMask` (its head rows lead the sorted list).
+   - `full`, bounded only by the side planes: transmission and forward
+     blend, which shade surfaces off the opaque depth. Later depth bins
+     can narrow it if glass shows the cost (item 4).
+
+   A pool too small for a tile's list drops the list's highest rows and
+   counts them (`lighting.point.list_dropped`), so a pixel never reads
+   another tile's rows. The head rows stay, because they lead.
+4. **Consumers.** `packet_punctual_layered` walks a list instead of words.
+   - A deferred wave lies within one tile, so its list is wave-uniform and
+     loads rows as scalars, as today.
+   - A forward or transmission wave can span tiles. Its lanes' sorted
+     lists merge with `WaveActiveMin`, as the decal resolve does
+     (ADR-135, decision 4).
+   - Each lane still adds only its own lights, in row order. The sum
+     therefore matches today's except where a light's sphere misses a
+     tile's depth range, and there it added nothing anyway.
+   - The per-wave box test stays, for the lights the tile range keeps.
+5. **Crossover.** Measure lists against bitfields on
+   `bistro_clustered_1440` (392 rows), `bistro_clustered_stress_1440`
+   (920) and `bistro_vulkan_high_orbit_1440`. Keep both only if the
+   bitfields are clearly faster at small tables. Otherwise the bitfields
+   and the row cap retire together.
+
+**Steps.**
+
+- **W4c-1** Coarse cells and fine `full` lists in `Lighting.Clusters`.
+  Forward and transmission switch to the lists. Bitfields remain for
+  deferred lighting. The capture parity follows the W2 oracle: G-buffer
+  and depth bytes, HDR within the run-to-run spread. Timing of
+  `Lighting.Clusters` at 392, 920 and 20,072 rows.
+- **W4c-2** `Lighting.Lists` with tile depth bounds and the `opaque`
+  lists. Deferred lighting and `Shadow.LocalMask` switch over; the
+  bitfields and the row cap retire. `lighting.point.unshaded` reads 0 on
+  `bistro_clustered_m3_1440`. Then measure `Lighting.Deferred` at the three
+  sizes.
+- **W4c-3** ADR-135 records the lists, their limits and the timing.
+
+**Open choices** (recommendation first):
+
+- Depth source: reduce the opaque depth in `Lighting.Lists`, one 32 × 32
+  read per tile. Or extend `HZB.BuildBase` to keep the nearest depth
+  beside the farthest, which saves a read but changes a shared pass.
+- Pool overflow: drop the highest rows and count them. Or grow the pool
+  from the last frame's count, which keeps every row but adds a frame of
+  latency to the size.
+- Forward depth: the `full` lists first, and depth bins only if glass
+  shows the cost. Or bin by slices from the start, which costs a list per
+  tile and slice.
+
 ## Owner decisions
 
 On 2026-10-20 the owner accepted these recommendations; the ones marked
