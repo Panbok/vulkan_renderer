@@ -183,6 +183,11 @@ measurement and not kept:
 - **The frame's (at most 4) shadowed lights' visibility evaluated before the
   light loop and looked up in it**: only the probe variant fewer registers
   (80 → 76), against a frame-root field for their first views.
+- **A cap on the lights each fragment shades** (the first 6 or 4 in depth
+  order past the cutoff, as an upper bound on what a strongest-N cap could
+  save): 5.36 ms at 6 against 5.20 to 5.37 ms uncapped, and 5.08 ms at 4,
+  while dropping half the lights the median fragment shades; the SIMD-group
+  walks on until its last fragment reaches the cap.
 
 ## Revisit when
 
