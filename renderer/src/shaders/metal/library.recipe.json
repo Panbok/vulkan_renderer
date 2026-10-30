@@ -51,6 +51,7 @@
     "msl/editor/animation_preview.metal",
     "msl/world/gpu_draws.metal",
     "msl/world/tiled.metal",
+    "msl/world/light_table.metal",
     "msl/world/sun_shadow.metal",
     "msl/world/sun_shafts.metal",
     "msl/world/diffuse_volume.metal",

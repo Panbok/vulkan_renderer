@@ -265,8 +265,8 @@ the GPU between frames.
   the CPU's per-frame ranking; until then it costs little at 1024 rows.
   CPU tests: a light keeps its row across frames, a removal moves one row,
   a new generation sends every row, and the head keeps its hysteresis.
-- **2c** Metal table and scatter pass (Mac). **2d** Vulkan table and scatter
-  pass (Windows); then the helper goes.
+- **2c** Metal table and scatter pass (Mac, landed 2026-10-30). **2d**
+  Vulkan table and scatter pass (Windows, landed 2026-10-29).
 
 **Status of 2a and 2d (2026-10-28).** Vulkan's half of 2a landed in
 ee41ebfd. The Vulkan table and scatter pass build on 2b. The table

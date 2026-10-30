@@ -349,6 +349,7 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   case VKR_RG_EXECUTOR_TILED_BLEND:
   case VKR_RG_EXECUTOR_EDITOR_PRESENT:
   case VKR_RG_EXECUTOR_TILED_MOTION:
+  case VKR_RG_EXECUTOR_LIGHT_SCATTER:
   case VKR_RG_EXECUTOR_TILED_TEMPORAL:
   case VKR_RG_EXECUTOR_TILED_OBJECT_MOTION:
   case VKR_RG_EXECUTOR_TEMPORAL_TRANSFORM:
@@ -1117,6 +1118,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer,
   renderer->skinning_output_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->transform_history_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->exposure_state_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->light_table_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
         array_get_VkrRgBuffer(&renderer->graph->buffers, i);
@@ -1137,6 +1139,8 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer,
       renderer->transform_history_handle = handle;
     else if (vkr_string8_equals_cstr(&buffer->name, "exposure_state"))
       renderer->exposure_state_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name, "light_table"))
+      renderer->light_table_handle = handle;
     if (buffer->imported ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
       log_error("Metal graph buffer '%.*s' cannot be external",
@@ -1273,12 +1277,55 @@ vkr_metal_packet_retained_commit(void *context, uint32_t image_index,
     *slot = *state;
 }
 
+/* The one instance of a live RETAINED graph buffer, or NULL. */
+vkr_internal VkrMetalPacketGraphBufferInstance *
+vkr_metal_packet_retained_buffer(VkrMetalPacketRenderer *renderer,
+                                 uint32_t buffer_index) {
+  if (buffer_index >= renderer->graph->buffers.length)
+    return NULL;
+  const VkrRgBuffer *buffer =
+      array_get_VkrRgBuffer(&renderer->graph->buffers, buffer_index);
+  const VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[buffer_index];
+  if (!buffer || !slot->live || slot->graph_generation != buffer->generation ||
+      slot->instance_count != 1u ||
+      (slot->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED) == 0u)
+    return NULL;
+  VkrMetalPacketGraphBufferInstance *instance =
+      &renderer->graph_buffer_instances[(uint64_t)buffer_index *
+                                        renderer->history_instance_count];
+  return instance->live ? instance : NULL;
+}
+
+vkr_internal void
+vkr_metal_packet_retained_buffer_read(void *context, uint32_t buffer_index,
+                                      VkrRgRetainedBufferState *out_state) {
+  const VkrMetalPacketGraphBufferInstance *instance =
+      vkr_metal_packet_retained_buffer((VkrMetalPacketRenderer *)context,
+                                       buffer_index);
+  /* As for images, an unresolvable buffer, or a new instance no submit has
+     used, leaves the caller's invalid seed in place. */
+  if (instance && instance->retained_state.content_valid)
+    *out_state = instance->retained_state;
+}
+
+vkr_internal void
+vkr_metal_packet_retained_buffer_commit(void *context, uint32_t buffer_index,
+                                        const VkrRgRetainedBufferState *state) {
+  VkrMetalPacketGraphBufferInstance *instance =
+      vkr_metal_packet_retained_buffer((VkrMetalPacketRenderer *)context,
+                                       buffer_index);
+  if (instance)
+    instance->retained_state = *state;
+}
+
 vkr_internal void
 vkr_metal_packet_install_retained_provider(VkrMetalPacketRenderer *renderer) {
   const VkrRgRetainedStateProvider provider = {
       .context = renderer,
       .read = vkr_metal_packet_retained_read,
       .commit = vkr_metal_packet_retained_commit,
+      .read_buffer = vkr_metal_packet_retained_buffer_read,
+      .commit_buffer = vkr_metal_packet_retained_buffer_commit,
   };
   vkr_rg_set_retained_state_provider(renderer->graph, &provider);
 }

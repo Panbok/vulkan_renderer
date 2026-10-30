@@ -913,6 +913,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->tiled_retired_depth release];
   [renderer->tiled_retired_sun release];
   [renderer->tiled_motion_pipeline release];
+  [renderer->light_scatter_pipeline release];
   [renderer->tiled_object_motion_pipeline release];
   [renderer->temporal_transform_pipeline release];
   [renderer->tiled_stabilize_pipeline release];

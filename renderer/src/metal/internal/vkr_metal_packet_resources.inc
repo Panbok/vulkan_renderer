@@ -2766,10 +2766,12 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       plan->gpu_draw_instances_offset + gpu_draw_instances_bytes;
   plan->point_light_count =
       packet->input.lighting ? packet->input.lighting->point_light_count : 0;
+  /* Lighting.Scatter's VkrLightRowUpdate records for the retained light
+     table, at most one a row, or every row without a table. */
   plan->point_light_offset =
       vkr_align_up_u64(instance_bytes, AlignOf(VkrGpuPointLightRow));
   const uint64_t point_light_bytes =
-      (uint64_t)plan->point_light_count * sizeof(VkrGpuPointLightRow);
+      (uint64_t)plan->point_light_count * sizeof(VkrLightRowUpdate);
   /* The depth bins, then the rows in depth-rank order (point_light_bins). */
   plan->point_light_bins_offset = vkr_align_up_u64(
       plan->point_light_offset + point_light_bytes, sizeof(uint32_t));
@@ -3234,6 +3236,52 @@ vkr_metal_packet_write_light_bins(const VkrPreparedFrame *packet,
   upload->point_light_unbounded_count = unbounded;
 }
 
+/* The frame's light rows: the retained light table's address, and the
+   VkrLightRowUpdate records Lighting.Scatter writes into it, the rows the
+   renderer lists as changed since the last submitted frame, or every row
+   when the frame is full or the table's contents are not valid (a new or
+   recreated table, ADR-029). Without a table the frame uploads every row. */
+vkr_internal bool8_t vkr_metal_packet_write_light_table(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketFrameUpload *upload, const VkrMetalPacketUploadPlan *plan) {
+  uint8_t *cpu = upload->addresses.cpu_address;
+  const uint64_t gpu = upload->addresses.gpu_address;
+  const VkrLightTableFrame *frame = &packet->light_table;
+  VkrMetalPacketGraphBufferInstance *table =
+      vkr_metal_packet_graph_buffer_instance(renderer,
+                                             renderer->light_table_handle, 0u);
+  if (!table) {
+    MemCopy(cpu + plan->point_light_offset, frame->rows,
+            (uint64_t)frame->count * sizeof(VkrGpuPointLightRow));
+    upload->point_light_data_gpu = gpu + plan->point_light_offset;
+    return true_v;
+  }
+  if ((uint64_t)frame->count * sizeof(VkrGpuPointLightRow) >
+      table->resource.length) {
+    log_error("Metal light table holds %llu rows, the frame has %u lights",
+              (unsigned long long)(table->resource.length /
+                                   sizeof(VkrGpuPointLightRow)),
+              frame->count);
+    return false_v;
+  }
+  upload->point_light_data_gpu = table->resource.gpu_address;
+  const bool8_t full = frame->full || !table->retained_state.content_valid;
+  const uint32_t update_count = full ? frame->count : frame->update_count;
+  VkrLightRowUpdate *updates =
+      (VkrLightRowUpdate *)(cpu + plan->point_light_offset);
+  if (full) {
+    for (uint32_t row = 0u; row < update_count; ++row)
+      updates[row] = (VkrLightRowUpdate){.row = row, .value = frame->rows[row]};
+  } else {
+    MemCopy(updates, frame->updates,
+            (uint64_t)update_count * sizeof(VkrLightRowUpdate));
+  }
+  upload->light_updates_gpu =
+      update_count > 0u ? gpu + plan->point_light_offset : 0u;
+  upload->light_update_count = update_count;
+  return true_v;
+}
+
 /* Writes point-light, shadow, rectangle-light, LTC and sheen data. */
 vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
@@ -3242,13 +3290,11 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
   uint64_t gpu = upload->addresses.gpu_address;
   if (plan->point_light_count > 0) {
     /* The renderer packed the frame's rows, before exposure and with the
-       head's shadow views (vkr_light_table.h); this backend uploads them
-       all until it keeps a table between frames. */
+       head's shadow views (vkr_light_table.h). */
     if (packet->light_table.count != plan->point_light_count)
       return false_v;
-    MemCopy(cpu + plan->point_light_offset, packet->light_table.rows,
-            (uint64_t)plan->point_light_count * sizeof(VkrGpuPointLightRow));
-    upload->point_light_data_gpu = gpu + plan->point_light_offset;
+    if (!vkr_metal_packet_write_light_table(renderer, packet, upload, plan))
+      return false_v;
     vkr_metal_packet_write_light_bins(
         packet, (uint32_t *)(cpu + plan->point_light_bins_offset), upload);
     upload->point_light_bins_gpu = gpu + plan->point_light_bins_offset;

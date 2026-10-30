@@ -197,6 +197,9 @@ typedef struct VkrMetalPacketGraphBufferInstance {
   float64_t history_exposure_seconds;
   bool8_t history_valid;
   bool8_t live;
+  /* A RETAINED buffer's state after the last submit that used it (ADR-029);
+     zero, so invalid, on a new instance. */
+  VkrRgRetainedBufferState retained_state;
 } VkrMetalPacketGraphBufferInstance;
 
 typedef struct VkrMetalPacketGraphBuffer {
@@ -418,6 +421,10 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t gpu_draw_state_zero_source_offset;
   uint64_t point_light_data_gpu;
   uint64_t point_light_bins_gpu;
+  /* The VkrLightRowUpdate records Lighting.Scatter writes into the retained
+     light table; zero without a table or with nothing to write. */
+  uint64_t light_updates_gpu;
+  uint32_t light_update_count;
   /* point_light_bin_params.x and point_light_bin_counts.x and .y. */
   float32_t point_light_bins_per_metre;
   uint32_t point_light_bin_count;
@@ -1298,6 +1305,10 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> tiled_sun_shafts_source_pipeline;
   id<MTLComputePipelineState> tiled_sun_shafts_pipeline;
   VkrRgBufferHandle transform_history_handle;
+  /* The retained light table (vkr_light_table.h) and the pass that writes the
+     frame's changed rows into it. */
+  VkrRgBufferHandle light_table_handle;
+  id<MTLComputePipelineState> light_scatter_pipeline;
   /* The last submitted frame: its history instance, which holds its
      transforms and skinned vertices, its frame index and skinning layout,
      and whether it ran the upscaler. Frames on the one queue order the

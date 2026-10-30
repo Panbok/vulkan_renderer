@@ -45,8 +45,10 @@ The production `shadow_map` uses `RETAINED, PER_IMAGE, RESIZABLE` on both
 backends. The desktop `light_table` is a retained buffer: `Lighting.Scatter`
 writes the frame's light row updates into it and every pass that shades
 lights declares a read, so its first write in a frame waits for the previous
-frame's last read (ADR-135). Metal installs no buffer hooks yet, so a retained
-buffer there seeds with invalid contents; the tiled graph declares none. Omitted cascade passes consume previously submitted layers under
+frame's last read (ADR-135). Since 2026-10-30 Metal installs the buffer hooks
+too (`vkr_metal_packet_retained_buffer_read` and `_commit`, the state kept on
+the buffer's one instance, so a reallocated one is invalid) and the tiled
+graph declares the same `light_table` and `Lighting.Scatter` (ADR-019). Omitted cascade passes consume previously submitted layers under
 ADR-041. `PERSISTENT` only relaxes a diagnostic; it is not this content proof.
 `HISTORY` selects another completed temporal instance and remains a distinct
 lifetime policy.

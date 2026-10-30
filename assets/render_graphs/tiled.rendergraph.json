@@ -743,6 +743,18 @@
       ]
     },
     {
+      "name": "light_table",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": 65536,
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "RETAINED"
+      ]
+    },
+    {
       "name": "skinning_output",
       "condition": "skinning_enabled",
       "type": "buffer",
@@ -1556,11 +1568,32 @@
       "execute": "pass.clouds.sky_light"
     },
     {
+      "name": "Lighting.Scatter",
+      "condition": "scene_rendering",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "writes": [
+        {
+          "buffer": "light_table",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.light_scatter"
+    },
+    {
       "name": "Tiled.Opaque",
       "condition": "scene_rendering",
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
+        {
+          "buffer": "light_table",
+          "access": "STORAGE_READ",
+          "binding": 50
+        },
         {
           "buffer": "gpu_visible_draws",
           "access": "STORAGE_READ",
@@ -1802,6 +1835,11 @@
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
+        {
+          "buffer": "light_table",
+          "access": "STORAGE_READ",
+          "binding": 50
+        },
         {
           "buffer": "gpu_visible_draws",
           "access": "STORAGE_READ",
@@ -2092,6 +2130,11 @@
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
+        {
+          "buffer": "light_table",
+          "access": "STORAGE_READ",
+          "binding": 50
+        },
         {
           "buffer": "skinning_output",
           "access": "STORAGE_READ",

@@ -74,8 +74,12 @@ the rows that differ from what the last submitted frame left
 [`vkr_light_table.h`](../../renderer/src/vkr_light_table.h), on the
 prepared frame): every row on the first frame and after a device failure,
 and a frame that is never submitted leaves its changes to the next one.
-Metal uploads every row from it; a backend that keeps its table between
-frames writes only the listed ones. `lighting.point.rows_updated` counts
+Both backends keep the table in a retained graph buffer, `light_table`
+([ADR-029](029-retained-graph-resources.md)), into which `Lighting.Scatter`
+writes the listed rows, or every row when the frame is full or the buffer's
+contents are not valid; Metal's scatter (`vkr_metal_light_scatter`) landed
+2026-10-30, with the tiled lamp, clustered, four-sample and moving-light
+captures byte-identical to the per-frame upload. `lighting.point.rows_updated` counts
 them: none a frame on the still clustered street and the lamp orbit, 9 at
 p50 with the clustered street's 64-light group moving (tiled, 64 drawn).
 When more lights are offered than the table

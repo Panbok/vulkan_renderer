@@ -1564,6 +1564,23 @@ typedef struct VkrFramePreparation {
   VkrExposureFrameInput exposure_input;
 } VkrFramePreparation;
 
+/* The probes the frame packs, and the scene frame's light rows and those
+   that differ from what the last submitted frame left in a backend's table
+   (vkr_light_table.h). */
+vkr_internal void vkr_renderer_prepare_lighting(VkrRenderer *rf,
+                                                const VkrFrameInput *packet,
+                                                VkrPreparedFrame *frame) {
+  rf->ibl_probes_packed =
+      packet->lighting ? packet->lighting->ibl_probe_count : 0u;
+  frame->light_table = (VkrLightTableFrame){0};
+  rf->light_rows_updated = 0u;
+  if (frame->scene_rendering && rf->light_table) {
+    vkr_light_table_prepare(rf->light_table, packet->lighting,
+                            packet->local_shadow, &frame->light_table);
+    rf->light_rows_updated = frame->light_table.update_count;
+  }
+}
+
 vkr_internal void
 vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
                                 VkrFramePreparation *prepared) {
@@ -1662,17 +1679,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.render_mode == VKR_RENDER_MODE_WIREFRAME;
   const bool8_t indirect_diffuse_only =
       packet->globals.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE;
-  rf->ibl_probes_packed =
-      packet->lighting ? packet->lighting->ibl_probe_count : 0u;
-  /* The light rows that differ from what the last submitted frame left in
-     a backend's table (vkr_light_table.h). */
-  prepared->frame.light_table = (VkrLightTableFrame){0};
-  rf->light_rows_updated = 0u;
-  if (prepared->frame.scene_rendering && rf->light_table) {
-    vkr_light_table_prepare(rf->light_table, packet->lighting,
-                            packet->local_shadow, &prepared->frame.light_table);
-    rf->light_rows_updated = prepared->frame.light_table.update_count;
-  }
+  vkr_renderer_prepare_lighting(rf, packet, &prepared->frame);
   prepared->frame.fog = vkr_fog_prepare(&packet->globals.fog);
   /* The tiled graph has no froxel fog; its forward shading applies the
      analytic fog (ADR-087). */

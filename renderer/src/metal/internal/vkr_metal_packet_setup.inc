@@ -154,6 +154,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME_COMPOSE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
   case VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT:
+  case VKR_METAL_PACKET_ABI_LIGHT_SCATTER_ROOT:
   case VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT:
   case VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT:
   case VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT:
@@ -1731,6 +1732,9 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
   renderer->tiled_motion_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_tiled_motion",
       VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT, false_v, @"VKR tiled motion");
+  renderer->light_scatter_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_light_scatter",
+      VKR_METAL_PACKET_ABI_LIGHT_SCATTER_ROOT, false_v, @"VKR light scatter");
   renderer->tiled_stabilize_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_tiled_stabilize",
       VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT, false_v,

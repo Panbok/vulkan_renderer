@@ -842,6 +842,12 @@ vkr_global const VkrMetalPacketAbiField vkr_tiled_motion_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalTiledMotionRoot, jitter_uv, "jitter_uv", 88),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_light_scatter_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalLightScatterRoot, updates, "updates", 0),
+    VKR_ABI_FIELD(VkrMetalLightScatterRoot, table, "table", 8),
+    VKR_ABI_FIELD(VkrMetalLightScatterRoot, update_count, "update_count", 16),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_temporal_transform_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, instances, "instances",
                   0),
@@ -1109,6 +1115,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT] =
             VKR_ABI_RECORD(VkrMetalTiledMotionRoot, "VkrMetalTiledMotionRoot",
                            96, 16, vkr_tiled_motion_root_fields),
+        [VKR_METAL_PACKET_ABI_LIGHT_SCATTER_ROOT] =
+            VKR_ABI_RECORD(VkrMetalLightScatterRoot, "VkrMetalLightScatterRoot",
+                           32, 16, vkr_light_scatter_root_fields),
         [VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT] = VKR_ABI_RECORD(
             VkrMetalTiledStabilizeRoot, "VkrMetalTiledStabilizeRoot", 64, 16,
             vkr_tiled_stabilize_root_fields),

@@ -2940,6 +2940,39 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_motion(
   return true_v;
 }
 
+/* Lighting.Scatter: writes the frame's changed light rows into the retained
+   light table (vkr_metal_packet_write_light_table), one thread a row. A frame
+   with nothing to write records no dispatch. */
+vkr_internal bool8_t vkr_metal_packet_prepare_light_scatter(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  if (upload->light_update_count == 0u)
+    return true_v;
+  VkrMetalPacketGraphBufferInstance *table =
+      vkr_metal_packet_pass_buffer(renderer, pass, 0u);
+  if (!table || !renderer->light_scatter_pipeline)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalLightScatterRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalLightScatterRoot){
+      .updates = upload->light_updates_gpu,
+      .table = table->resource.gpu_address,
+      .update_count = upload->light_update_count,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->light_scatter_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(upload->light_update_count, 1u, 1u),
+      .group_size = MTLSizeMake(64u, 1u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
 /* Object motion for the MetalFX upscaler: the motion view's dynamic draws
    over the camera motion, tested against the resolved depth. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_object_motion(
@@ -3728,6 +3761,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_TILED_MOTION:
     return vkr_metal_packet_prepare_tiled_motion(renderer, pass, packet,
                                                  prepared, upload);
+  case VKR_RG_EXECUTOR_LIGHT_SCATTER:
+    return vkr_metal_packet_prepare_light_scatter(renderer, pass, prepared,
+                                                  upload);
   case VKR_RG_EXECUTOR_TILED_TEMPORAL:
     return vkr_metal_packet_prepare_tiled_temporal(renderer, pass, packet,
                                                    prepared);

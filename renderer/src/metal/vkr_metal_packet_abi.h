@@ -891,6 +891,19 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTiledMotionRoot {
 _Static_assert(sizeof(VkrMetalTiledMotionRoot) == 96u,
                "Metal tiled motion root ABI drift");
 
+/** Lighting.Scatter (vkr_light_table.h): `update_count` VkrLightRowUpdate
+    records at `updates`, each written into its row of the retained light
+    table at `table`. */
+typedef struct VKR_SIMD_ALIGN VkrMetalLightScatterRoot {
+  uint64_t updates;
+  uint64_t table;
+  uint32_t update_count;
+  uint32_t reserved[3];
+} VkrMetalLightScatterRoot;
+
+_Static_assert(sizeof(VkrMetalLightScatterRoot) == 32u,
+               "Metal light scatter root ABI drift");
+
 /** The tiled opaque pass's texture demand tile kernel (ADR-024): the
     demand frame's words, one per material table row. */
 typedef struct VKR_SIMD_ALIGN VkrMetalTiledDemandRoot {
@@ -1326,6 +1339,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT,
   VKR_METAL_PACKET_ABI_TILED_SKY_ROOT,
   VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT,
+  VKR_METAL_PACKET_ABI_LIGHT_SCATTER_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
   VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT,
   VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT,
