@@ -1029,11 +1029,11 @@ extents, UV0 and sampler constraints, approximation limits and cache ownership
 are recorded in [ADR-012](adr/012-texture-compression-pipeline.md).
 See [ADR-012](adr/012-texture-compression-pipeline.md).
 
-Punctual lighting uses a 1024-light table, ranked by camera distance with
+Punctual lighting uses a table of up to 65,535 lights, ranked by camera distance with
 hysteresis and 0.25 s fades when more lights compete, whose first 128 rows
 alone cast shadows. Both pipelines keep the rows in a retained graph
 buffer, `light_table`, that `Lighting.Scatter` updates with the rows that
-changed since the last submitted frame (ADR-019). The desktop pipeline bins every row into GPU-built
+changed since the last submitted frame (ADR-019). The desktop pipeline bins up to 4,096 rows less the frame's decals into GPU-built
 screen tiles (ADR-135); the tiled pipeline reads a 384-cell fragment-local
 bitmask grid of those 128 rows. Both apply exact range/cone rejection. Up to 16 ready
 probes, listed smaller box first, take priority shares inside their boxes

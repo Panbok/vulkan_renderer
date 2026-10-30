@@ -25,8 +25,8 @@ clustered culling. What decals write stays in
   light row shades; only the 128-row head is shadowed. The build costs
   about 0.014 ms on the Bistro orbit (RX 6700 XT, 1440p). One build marks
   at most 4,096 lights and decals.
-- **Limits.** The light table holds at most 1024 rows since 2026-10-28 (M4;
-  `VKR_MAX_SCENE_POINT_LIGHTS`,
+- **Limits.** The light table held at most 1024 rows from 2026-10-28
+  (M4) and holds 65,535 since 2026-10-30 (P2b; `VKR_MAX_SCENE_POINT_LIGHTS`,
   [`vkr_lighting.h`](../../renderer/src/vkr_lighting.h)), ranked on the CPU
   by camera distance with hysteresis and fades and uploaded every frame
   ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)); the first
@@ -269,8 +269,11 @@ the GPU between frames.
   a new generation sends every row, and the head keeps its hysteresis.
   Row keeping and the casters-only head (items 1 and 5) landed first, on
   2026-10-30, with the 1024-row table: tiled clustered, stress, dense and
-  street captures byte-identical. Change detection, the tiled drawn-row
-  list and the larger table follow.
+  street captures byte-identical. Heap storage and bounded selection
+  heaps followed (56bada3c), then the 65,535-row table (5dcc6178), over
+  the desktop's row cap (ADR-135, decision 3). The tiled drawn-row list
+  was dropped: the 64-row compaction already bounds tiled updates. Change
+  detection follows.
 - **2c** Metal table and scatter pass (Mac, landed 2026-10-30). **2d**
   Vulkan table and scatter pass (Windows, landed 2026-10-29).
 
@@ -279,9 +282,9 @@ ee41ebfd. The Vulkan table and scatter pass build on 2b. The table
 is not imported: it is `light_table`, a retained graph buffer (ADR-029,
 which now covers buffers), so the graph itself carries the table's access
 state across frames, and a buffer it recreates comes back with invalid
-contents, which is item 7's new generation. Its size is fixed at 1024 rows,
-the current `VKR_MAX_SCENE_POINT_LIGHTS`, rather than the generation's
-count rounded up; a larger table changes that size or adds a count source.
+contents, which is item 7's new generation. Its size is fixed at
+`VKR_MAX_SCENE_POINT_LIGHTS` rows (1024, then 65,535 and 4 MB since
+2026-10-30), rather than the generation's count rounded up.
 Vulkan takes 2b's updates: it uploads the listed rows, and every row when
 the list is `full` or the table's retained contents are invalid.
 

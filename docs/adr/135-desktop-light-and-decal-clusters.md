@@ -18,9 +18,10 @@ slice, lists the decal rows that reach it for the decal resolve. Since
 2026-10-28 the runtime builds no CPU light or decal grid at all: the tiled
 pipeline lists its lights and decals per screen tile on the GPU too
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 11). Native
-evidence is Vulkan on an RX 6700 XT (Evidence). Since 2026-10-28 the light
-table holds 1024 rows (`VKR_MAX_SCENE_POINT_LIGHTS`); the tiled pipeline
-draws the 64 nearest. Depth bins for the light tiles, per-tile lists
+evidence is Vulkan on an RX 6700 XT (Evidence). The light table holds
+1024 rows since 2026-10-28 and 65,535 since 2026-10-30
+(`VKR_MAX_SCENE_POINT_LIGHTS`). The desktop shades at most 4,096 rows less
+the frame's decals (decision 3); the tiled pipeline draws the 64 nearest. Depth bins for the light tiles, per-tile lists
 past the bitfields and the cluster counters in metrics are open
 ([Clustered light and decal binning](../proposals/clustered-light-and-decal-binning.md)).
 
@@ -80,8 +81,8 @@ than depth culling saves.
    (`vkr_vulkan_shaded_point_light_limit`). The light head, rows
    `[0, 128)`, and the 512 decals always fit. Rows past the limit stay
    unshaded and `lighting.point.unshaded` counts them. This holds until
-   per-tile light lists replace the bitfields (proposal W4c), which lets
-   the table grow past 1024 rows.
+   per-tile light lists replace the bitfields (proposal W4c). The table
+   itself holds up to 65,535 rows since that day.
 4. **Decal cluster.** An 8-byte `VkrVulkanLightCluster` names a run of the
    index pool: its decal rows in ascending order. A list that does not fit
    the pool is dropped whole and counted, so a pixel never reads another
@@ -107,7 +108,8 @@ than depth culling saves.
    a null table address (the AMD driver may hoist such a load above its
    guard).
 8. **Light table.** Since 2026-10-29 the light rows live in `light_table`,
-   a retained graph buffer of 65536 bytes (1024 rows; ADR-029).
+   a retained graph buffer of 4,194,304 bytes (65,536 rows; 65,536 bytes
+   and 1024 rows until 2026-10-30; ADR-029).
    `Lighting.Scatter` (`pass.light_scatter`) runs before
    `Lighting.Clusters` and writes the frame's updates into it, one thread
    per update (`vk_light_table_scatter`); every pass that reads light rows
