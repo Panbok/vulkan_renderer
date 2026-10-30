@@ -27,9 +27,15 @@ typedef struct VkrDynamicVolumeSelection {
   /* This frame's active probes, reused from frame to frame. */
   uint32_t *active_probes;
   uint32_t active_probe_capacity;
-  /* Brick b + 1 that covers each indirection entry (x fastest), zero for
-     none, so each source marks the bricks inside its own bounds. */
-  uint32_t *entry_bricks;
+  /* Cells of 4 x 4 x 4 indirection entries (x fastest): cell c lists the
+     bricks that overlap it, cell_bricks[cell_first[c]] up to
+     cell_bricks[cell_first[c + 1]], and cell_unmarked[c] counts those this
+     frame has not marked, so a source skips a cell whose bricks are all
+     active. */
+  uint32_t cell_dimensions[3];
+  uint32_t *cell_first;
+  uint32_t *cell_bricks;
+  uint32_t *cell_unmarked;
   /* Past the light cap, each kept point light slot's luminous power and a
      min-heap of the slots by it (VKR_DYNAMIC_VOLUME_LIGHTS_MAX each). */
   float32_t *point_power;

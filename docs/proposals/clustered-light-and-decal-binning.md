@@ -340,9 +340,9 @@ list makes probes take turns more slowly rather than costing frame time.
    The selection's sphere list grows with it. The selection marks a brick
    active by testing it against every sphere
    (`dynamic_volume_box_reached`): 7,581 bricks on the café volume times
-   4,096 spheres would cost tens of milliseconds. So each sphere marks
-   the bricks inside its own bounds instead, through a CPU map from brick
-   coordinates to bricks.
+   4,096 spheres would cost tens of milliseconds. So each sphere walks
+   cells of 4 × 4 × 4 indirection entries inside its own bounds. A cell
+   lists its bricks and skips them once all are marked (ADR-119).
 3. **Layout.** 16 × 16 × 16 cells per cascade, centred on the camera
    and snapped to the cascade's cell size. Cascade 0 has 1 m cells (16 m
    across), and each next cascade doubles the cell size. Six cascades

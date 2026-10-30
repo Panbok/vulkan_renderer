@@ -17,8 +17,10 @@ typedef struct DynamicVolumeSphere {
 
 #define DYNAMIC_VOLUME_SPHERES_MAX                                             \
   (VKR_DYNAMIC_VOLUME_RECTANGLE_LIGHTS_MAX + 256u)
-/* Indirection entries the brick map covers at most (64 MiB of map). */
-#define DYNAMIC_VOLUME_ENTRY_MAP_MAX (1u << 24u)
+/* Indirection entries per side of a brick cell, and the indirection
+   entries a volume may have for its cells. */
+#define DYNAMIC_VOLUME_CELL_ENTRIES 4u
+#define DYNAMIC_VOLUME_ENTRIES_MAX (1u << 24u)
 /* Irradiance below which a source's bounce is left out, in the volume's
    physical units, and the farthest reach of an unbounded source. */
 #define DYNAMIC_VOLUME_IRRADIANCE_FLOOR 0.05f
@@ -505,8 +507,65 @@ vkr_internal void dynamic_volume_brick_box(const VkrSceneDiffuseVolume *volume,
                               3.0f * scale * spacing));
 }
 
-/* Marks active the bricks whose boxes a sphere reaches: the bricks of the
-   indirection entries inside its bounds, through the entry map. */
+/* Whether a sphere reaches the box from `low` to `high`. */
+vkr_internal bool8_t dynamic_volume_sphere_reaches(Vec3 center,
+                                                   float32_t radius, Vec3 low,
+                                                   Vec3 high) {
+  const float32_t dx = Max(Max(low.x - center.x, center.x - high.x), 0.0f);
+  const float32_t dy = Max(Max(low.y - center.y, center.y - high.y), 0.0f);
+  const float32_t dz = Max(Max(low.z - center.z, center.z - high.z), 0.0f);
+  return dx * dx + dy * dy + dz * dz <= radius * radius;
+}
+
+/* The cells, inclusive, that brick b's indirection entries overlap. */
+vkr_internal void
+dynamic_volume_brick_cells(const VkrSceneDiffuseVolume *volume, uint32_t b,
+                           uint32_t low[3], uint32_t high[3]) {
+  const uint32_t packed = volume->brick_entries[b];
+  const uint32_t level = packed >> 30u;
+  const uint32_t scale = level == 0u ? 1u : (level == 1u ? 3u : 9u);
+  const uint32_t first[3] = {packed & 1023u, (packed >> 10u) & 1023u,
+                             (packed >> 20u) & 1023u};
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const uint32_t last = volume->dimensions[axis] - 1u;
+    const uint32_t first_entry = Min(first[axis], last);
+    const uint32_t last_entry = Min(first[axis] + scale - 1u, last);
+    low[axis] = first_entry / DYNAMIC_VOLUME_CELL_ENTRIES;
+    high[axis] = Max(first_entry, last_entry) / DYNAMIC_VOLUME_CELL_ENTRIES;
+  }
+}
+
+vkr_internal uint32_t
+dynamic_volume_cell_index(const VkrDynamicVolumeSelection *selection,
+                          uint32_t x, uint32_t y, uint32_t z) {
+  return (z * selection->cell_dimensions[1] + y) *
+             selection->cell_dimensions[0] +
+         x;
+}
+
+/* Marks brick b active and counts it off every cell it overlaps. */
+vkr_internal void
+dynamic_volume_mark_brick(VkrDynamicVolumeSelection *selection,
+                          const VkrSceneDiffuseVolume *volume, uint32_t b) {
+  selection->next_bricks[b / 64u] |= UINT64_C(1) << (b % 64u);
+  uint32_t low[3];
+  uint32_t high[3];
+  dynamic_volume_brick_cells(volume, b, low, high);
+  for (uint32_t z = low[2]; z <= high[2]; ++z) {
+    for (uint32_t y = low[1]; y <= high[1]; ++y) {
+      for (uint32_t x = low[0]; x <= high[0]; ++x) {
+        --selection
+              ->cell_unmarked[dynamic_volume_cell_index(selection, x, y, z)];
+      }
+    }
+  }
+}
+
+/* Marks active the bricks whose boxes a sphere reaches. The sphere walks
+   the cells of 4 x 4 x 4 indirection entries inside its bounds and tests
+   the bricks each lists that are not yet marked; a cell whose bricks are all
+   marked costs one read, so overlapping sources stop paying for bricks an
+   earlier one marked. */
 vkr_internal void
 dynamic_volume_mark_sphere(VkrDynamicVolumeSelection *selection,
                            const VkrSceneDiffuseVolume *volume, Vec3 origin,
@@ -517,44 +576,39 @@ dynamic_volume_mark_sphere(VkrDynamicVolumeSelection *selection,
   const float32_t entry = 3.0f * volume->spacing;
   const float32_t offset[3] = {center.x - origin.x, center.y - origin.y,
                                center.z - origin.z};
-  int32_t low[3];
-  int32_t high[3];
+  uint32_t low[3];
+  uint32_t high[3];
   for (uint32_t axis = 0u; axis < 3u; ++axis) {
-    const int32_t last = (int32_t)volume->dimensions[axis] - 1;
-    low[axis] = Max((int32_t)vkr_floor_f32((offset[axis] - radius) / entry), 0);
-    high[axis] =
-        Min((int32_t)vkr_floor_f32((offset[axis] + radius) / entry), last);
-    if (low[axis] > high[axis]) {
+    /* Clamped as floats first, so a far source cannot overflow the cast. */
+    const float32_t last = (float32_t)volume->dimensions[axis] - 1.0f;
+    const float32_t first_entry =
+        vkr_floor_f32((offset[axis] - radius) / entry);
+    const float32_t last_entry = vkr_floor_f32((offset[axis] + radius) / entry);
+    if (!(last_entry >= 0.0f) || !(first_entry <= last)) {
       return;
     }
+    low[axis] = (uint32_t)Max(first_entry, 0.0f) / DYNAMIC_VOLUME_CELL_ENTRIES;
+    high[axis] = (uint32_t)Min(last_entry, last) / DYNAMIC_VOLUME_CELL_ENTRIES;
   }
-  for (int32_t z = low[2]; z <= high[2]; ++z) {
-    for (int32_t y = low[1]; y <= high[1]; ++y) {
-      for (int32_t x = low[0]; x <= high[0]; ++x) {
-        const uint64_t index =
-            ((uint64_t)z * volume->dimensions[1] + (uint64_t)y) *
-                volume->dimensions[0] +
-            (uint64_t)x;
-        const uint32_t brick = selection->entry_bricks[index];
-        if (!brick) {
-          continue;
-        }
-        const uint32_t b = brick - 1u;
-        const uint64_t bit = UINT64_C(1) << (b % 64u);
-        if (selection->next_bricks[b / 64u] & bit) {
-          continue;
-        }
-        Vec3 box_low;
-        Vec3 box_high;
-        dynamic_volume_brick_box(volume, origin, b, &box_low, &box_high);
-        const float32_t dx =
-            Max(Max(box_low.x - center.x, center.x - box_high.x), 0.0f);
-        const float32_t dy =
-            Max(Max(box_low.y - center.y, center.y - box_high.y), 0.0f);
-        const float32_t dz =
-            Max(Max(box_low.z - center.z, center.z - box_high.z), 0.0f);
-        if (dx * dx + dy * dy + dz * dz <= radius * radius) {
-          selection->next_bricks[b / 64u] |= bit;
+  for (uint32_t z = low[2]; z <= high[2]; ++z) {
+    for (uint32_t y = low[1]; y <= high[1]; ++y) {
+      for (uint32_t x = low[0]; x <= high[0]; ++x) {
+        const uint32_t cell = dynamic_volume_cell_index(selection, x, y, z);
+        for (uint32_t i = selection->cell_first[cell];
+             i < selection->cell_first[cell + 1u] &&
+             selection->cell_unmarked[cell] > 0u;
+             ++i) {
+          const uint32_t b = selection->cell_bricks[i];
+          if (selection->next_bricks[b / 64u] & (UINT64_C(1) << (b % 64u))) {
+            continue;
+          }
+          Vec3 box_low;
+          Vec3 box_high;
+          dynamic_volume_brick_box(volume, origin, b, &box_low, &box_high);
+          if (dynamic_volume_sphere_reaches(center, radius, box_low,
+                                            box_high)) {
+            dynamic_volume_mark_brick(selection, volume, b);
+          }
         }
       }
     }
@@ -569,7 +623,9 @@ void vkr_dynamic_volume_selection_destroy(
   vkr_heap_free(selection->active_bricks);
   vkr_heap_free(selection->next_bricks);
   vkr_heap_free(selection->active_probes);
-  vkr_heap_free(selection->entry_bricks);
+  vkr_heap_free(selection->cell_first);
+  vkr_heap_free(selection->cell_bricks);
+  vkr_heap_free(selection->cell_unmarked);
   vkr_heap_free(selection->point_power);
   vkr_heap_free(selection->point_heap);
   MemZero(selection, sizeof(*selection));
@@ -586,47 +642,72 @@ vkr_internal bool8_t dynamic_volume_follow(
   vkr_dynamic_volume_selection_destroy(selection);
   const uint64_t entries = (uint64_t)volume->dimensions[0] *
                            volume->dimensions[1] * volume->dimensions[2];
-  if (entries > DYNAMIC_VOLUME_ENTRY_MAP_MAX) {
-    log_error("Dynamic volume of %llu indirection entries exceeds the brick "
-              "map's %u",
-              (unsigned long long)entries, DYNAMIC_VOLUME_ENTRY_MAP_MAX);
+  if (entries == 0u || entries > DYNAMIC_VOLUME_ENTRIES_MAX) {
+    log_error("Dynamic volume of %llu indirection entries is outside the "
+              "brick cells' 1 to %u",
+              (unsigned long long)entries, DYNAMIC_VOLUME_ENTRIES_MAX);
     return false_v;
   }
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    selection->cell_dimensions[axis] =
+        (volume->dimensions[axis] + DYNAMIC_VOLUME_CELL_ENTRIES - 1u) /
+        DYNAMIC_VOLUME_CELL_ENTRIES;
+  }
+  const uint32_t cells = selection->cell_dimensions[0] *
+                         selection->cell_dimensions[1] *
+                         selection->cell_dimensions[2];
   const uint32_t words = (volume->brick_count + 63u) / 64u;
   selection->active_bricks =
       vkr_heap_alloc_zeroed(Max(words, 1u), sizeof(uint64_t));
   selection->next_bricks =
       vkr_heap_alloc_zeroed(Max(words, 1u), sizeof(uint64_t));
-  selection->entry_bricks =
-      vkr_heap_alloc_zeroed(Max(entries, 1u), sizeof(uint32_t));
+  selection->cell_first = vkr_heap_alloc_zeroed(cells + 1u, sizeof(uint32_t));
+  selection->cell_unmarked = vkr_heap_alloc_zeroed(cells, sizeof(uint32_t));
   selection->point_power =
       vkr_heap_alloc_zeroed(VKR_DYNAMIC_VOLUME_LIGHTS_MAX, sizeof(float32_t));
   selection->point_heap =
       vkr_heap_alloc_zeroed(VKR_DYNAMIC_VOLUME_LIGHTS_MAX, sizeof(uint32_t));
   if (!selection->active_bricks || !selection->next_bricks ||
-      !selection->entry_bricks || !selection->point_power ||
-      !selection->point_heap) {
+      !selection->cell_first || !selection->cell_unmarked ||
+      !selection->point_power || !selection->point_heap) {
     vkr_dynamic_volume_selection_destroy(selection);
     return false_v;
   }
-  /* Each indirection entry names the brick that covers it: a level-1 brick
-     covers 3^3 entries and a level-2 brick 9^3. */
+  /* Each cell lists the bricks that overlap it, in brick order: count, sum,
+     then fill with cell_unmarked as each cell's cursor. */
   for (uint32_t b = 0u; b < volume->brick_count; ++b) {
-    const uint32_t packed = volume->brick_entries[b];
-    const uint32_t level = packed >> 30u;
-    const uint32_t scale = level == 0u ? 1u : (level == 1u ? 3u : 9u);
-    const uint32_t first[3] = {packed & 1023u, (packed >> 10u) & 1023u,
-                               (packed >> 20u) & 1023u};
-    const uint32_t end[3] = {Min(first[0] + scale, volume->dimensions[0]),
-                             Min(first[1] + scale, volume->dimensions[1]),
-                             Min(first[2] + scale, volume->dimensions[2])};
-    for (uint32_t z = first[2]; z < end[2]; ++z) {
-      for (uint32_t y = first[1]; y < end[1]; ++y) {
-        for (uint32_t x = first[0]; x < end[0]; ++x) {
-          const uint64_t index = ((uint64_t)z * volume->dimensions[1] + y) *
-                                     volume->dimensions[0] +
-                                 x;
-          selection->entry_bricks[index] = b + 1u;
+    uint32_t low[3];
+    uint32_t high[3];
+    dynamic_volume_brick_cells(volume, b, low, high);
+    for (uint32_t z = low[2]; z <= high[2]; ++z) {
+      for (uint32_t y = low[1]; y <= high[1]; ++y) {
+        for (uint32_t x = low[0]; x <= high[0]; ++x) {
+          ++selection
+                ->cell_first[dynamic_volume_cell_index(selection, x, y, z) +
+                             1u];
+        }
+      }
+    }
+  }
+  for (uint32_t cell = 0u; cell < cells; ++cell) {
+    selection->cell_first[cell + 1u] += selection->cell_first[cell];
+    selection->cell_unmarked[cell] = selection->cell_first[cell];
+  }
+  selection->cell_bricks =
+      vkr_heap_alloc(Max(selection->cell_first[cells], 1u) * sizeof(uint32_t));
+  if (!selection->cell_bricks) {
+    vkr_dynamic_volume_selection_destroy(selection);
+    return false_v;
+  }
+  for (uint32_t b = 0u; b < volume->brick_count; ++b) {
+    uint32_t low[3];
+    uint32_t high[3];
+    dynamic_volume_brick_cells(volume, b, low, high);
+    for (uint32_t z = low[2]; z <= high[2]; ++z) {
+      for (uint32_t y = low[1]; y <= high[1]; ++y) {
+        for (uint32_t x = low[0]; x <= high[0]; ++x) {
+          const uint32_t cell = dynamic_volume_cell_index(selection, x, y, z);
+          selection->cell_bricks[selection->cell_unmarked[cell]++] = b;
         }
       }
     }
@@ -709,6 +790,13 @@ bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
     }
   }
   if (!volume->runtime_grid) {
+    const uint32_t cells = selection->cell_dimensions[0] *
+                           selection->cell_dimensions[1] *
+                           selection->cell_dimensions[2];
+    for (uint32_t cell = 0u; cell < cells; ++cell) {
+      selection->cell_unmarked[cell] =
+          selection->cell_first[cell + 1u] - selection->cell_first[cell];
+    }
     for (uint32_t i = 0u; i < out->input.point_light_count; ++i) {
       dynamic_volume_mark_sphere(
           selection, volume, origin, out->point_lights[i].position,
