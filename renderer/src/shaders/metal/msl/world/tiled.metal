@@ -1165,6 +1165,18 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     energy = vkr_brdf_apply_diffuse_extension(energy, extension,
                                               base * (1.0f - metallic));
   }
+  // Without the BRDF extensions every diffuse lobe here is linear in the
+  // albedo and scaled by the diffuse weight and the dielectric share, so the
+  // lights take that product as their albedo: as three values in place of
+  // five, it is live through the light loops for 4 fewer registers.
+  const float3 lit_albedo =
+      vkr_tiled_brdf_extension
+          ? base
+          : energy.diffuse_weight * (1.0f - metallic) * base;
+  const float lit_metallic = vkr_tiled_brdf_extension ? metallic : 0.0f;
+  VkrGgxMaterialEnergy lit_energy = energy;
+  if (!vkr_tiled_brdf_extension)
+    lit_energy.diffuse_weight = 1.0f;
   VkrMetalTiledSurfaceLight light;
   light.diffuse = half3(0.0h);
   light.specular = half3(0.0h);
@@ -1179,8 +1191,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   // its inputs stay live through the other lights' code. Frames that correct
   // the sun's light also keep it, packed, to return beside the colour.
   if (frame->directional_direction_enabled.w > 0.5f)
-    vkr_metal_tiled_light_sun(frame, sun_visibility, normal, view, base,
-                              metallic, roughness, f0, energy, light);
+    vkr_metal_tiled_light_sun(frame, sun_visibility, normal, view, lit_albedo,
+                              lit_metallic, roughness, f0, lit_energy, light);
 
   // The dynamic local lights, the bounded set the runtime keeps, through the
   // world-space light grid with their shadows sampled inline. Static lights
@@ -1193,14 +1205,14 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     float3 sheen_unused = float3(0.0f);
     if (Lighting == VKR_METAL_TILED_LIGHTING_PUNCTUAL) {
       vkr_metal_packet_punctual_layered<true>(
-          frame, input.world_position, normal, view, base, metallic,
-          roughness, f0, energy, false, no_coat, false, no_sheen, 0.0f,
+          frame, input.world_position, normal, view, lit_albedo, lit_metallic,
+          roughness, f0, lit_energy, false, no_coat, false, no_sheen, 0.0f,
           punctual_irradiance, light.diffuse, light.specular, coat_unused,
           sheen_unused, VkrMetalTiledNoLocalShadow{}, light_tile);
     } else {
       vkr_metal_packet_punctual_layered<true>(
-          frame, input.world_position, normal, view, base, metallic,
-          roughness, f0, energy, false, no_coat, false, no_sheen, 0.0f,
+          frame, input.world_position, normal, view, lit_albedo, lit_metallic,
+          roughness, f0, lit_energy, false, no_coat, false, no_sheen, 0.0f,
           punctual_irradiance, light.diffuse, light.specular, coat_unused,
           sheen_unused, VkrMetalTiledLocalShadow{geometric_normal}, light_tile);
     }
@@ -1209,9 +1221,9 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
         Lighting == VKR_METAL_TILED_LIGHTING_CASTERS_ALL) {
       VkrMetalPacketDirectResult rectangles =
           vkr_metal_packet_layered_rectangle_lights<true, true>(
-              frame, input.world_position, normal, view, base, metallic,
-              roughness, f0, energy, false, no_coat, false, no_sheen,
-              coat_unused, sheen_unused);
+              frame, input.world_position, normal, view, lit_albedo,
+              lit_metallic, roughness, f0, lit_energy, false, no_coat, false,
+              no_sheen, coat_unused, sheen_unused);
       light.diffuse += half3(rectangles.diffuse);
       light.specular += half3(rectangles.specular);
     }
@@ -1369,8 +1381,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   } else if (environment_diffuse) {
     diffuse_light = frame->ambient_color.rgb;
   }
-  light.diffuse += half3(energy.diffuse_weight * (1.0f - metallic) * base *
-                         diffuse_light * ao);
+  light.diffuse += half3(lit_energy.diffuse_weight * (1.0f - lit_metallic) *
+                         lit_albedo * diffuse_light * ao);
   return light;
 }
 

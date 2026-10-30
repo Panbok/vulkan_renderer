@@ -72,6 +72,12 @@ fragment occupancy down to about 80: 104 registers 19.5%, 88 22.8%, 80
    diffuse and specular lobes unshadowed, then multiplies them by the
    light's visibility. Across the shadow lookup only the two lobes stay
    live, not the light's direction, colour and falloff.
+8. **A folded diffuse albedo.** Without the BRDF extensions every diffuse
+   lobe is linear in the albedo and scaled by the diffuse weight and the
+   dielectric share, so the sun, the punctual and rectangle lights and the
+   indirect diffuse take `diffuse_weight * (1 - metallic) * base` as their
+   albedo with unit weight and no metalness. Extension variants keep the
+   separate values: their back-lit diffuse uses another weight.
 
 A change to the forward shading counts the registers of its affected
 variants before and after, and keeps a change that raises them only with a
@@ -94,6 +100,7 @@ Release, dirty tree, local and not authoritative:
 | 6 | every variant −4 | 1.97 ms, 25.5% | 5.64 / 5.65 ms |
 | 7 | shadowed no-volume 84 → 80 | 1.96 / 1.98 ms | 5.32 / 5.33 / 5.34 ms, 23.1% |
 | 4, signed components in place of axis dot products | unchanged, 264 bytes less code | | 5.40 / 5.41 ms against 5.54 / 5.56 ms in the same batch |
+| 8 | every non-extension variant −4 (shadowed no-volume 80 → 76, lightmapped 72 → 68) | 1.89 / 1.89 ms against 1.97 / 1.98 ms | 5.36 / 5.37 ms against 5.33 / 5.40 ms, unchanged |
 
 Captures against the build before each change
 (`tiled_bistro_capture`, `tiled_bistro_baked_capture`, `local-offscreen`
@@ -110,6 +117,7 @@ profile):
 - Row 7: lightmapped Bistro identical, Bistro with dynamic lamps at most 1 of
   255 (73.3 dB).
 - Signed components: Bistro with dynamic lamps identical.
+- Row 8: one pixel by 1 of 255 in each view (108 to 114 dB).
 
 After row 7, counters over `Tiled.Opaque` on Bistro with dynamic lamps read
 fragment occupancy 23.1%, ALU limiter 62%, F32 utilization 25.5% and F16
