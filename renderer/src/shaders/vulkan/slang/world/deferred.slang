@@ -3769,9 +3769,12 @@ float vk_deferred_sun_shadow(VkrVulkanPacketFrameRoot *frame, float3 world,
 // alone raised the base kernel's registers enough to cost 1.2 ms in Bistro.
 // Without it the light takes the slot that carries its tag, and shades
 // unshadowed when none does; the fallback and layered kernels own the tiles
-// whose mask ran out of slots.
-void vk_deferred_shade<let Layered : bool, let MaskFallback : bool>(
-    uint3 thread_id)
+// whose mask ran out of slots. Rectangles compiles the rectangle lights'
+// loop, which a frame without rectangle lights never runs but which alone
+// held the base kernel at 154 VGPRs and 13 KB of scratch on RDNA2, against
+// 128 and none without it; such frames take the kernels without it.
+void vk_deferred_shade<let Layered : bool, let MaskFallback : bool,
+                       let Rectangles : bool>(uint3 thread_id)
 {
     VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
     if (any(thread_id.xy >= root.extent))
@@ -4014,13 +4017,16 @@ void vk_deferred_shade<let Layered : bool, let MaskFallback : bool>(
     diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
-    VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(
-        frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0,
-        energy, true, clearcoat_active, clearcoat, sheen_active, sheen,
-        sheen_ltc, clearcoat_direct, sheen_direct);
-    diffuse_irradiance += rectangles.irradiance;
-    analytic_diffuse += rectangles.diffuse;
-    analytic_specular += rectangles.specular;
+    if (Rectangles)
+    {
+        VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(
+            frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0,
+            energy, true, clearcoat_active, clearcoat, sheen_active, sheen,
+            sheen_ltc, clearcoat_direct, sheen_direct);
+        diffuse_irradiance += rectangles.irradiance;
+        analytic_diffuse += rectangles.diffuse;
+        analytic_specular += rectangles.specular;
+    }
     // Baked static lamps (ADR-104): the lightmap holds
     // their direct light, shadows and bounce as irradiance, so it shades as
     // diffuse light without GTAO, as on the tiled pipeline; the bake holds
@@ -4199,16 +4205,65 @@ void vk_deferred_shade<let Layered : bool, let MaskFallback : bool>(
     g_storage_2d[root.scene_texture][thread_id.xy] = float4(color, 1.0f);
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID,
-                          uint group_index : SV_GroupIndex)
+// Each lighting kernel below has an entry with the rectangle lights' loop and
+// one without it (`_no_rectangles`) for frames that have none.
+void vk_deferred_lighting_base<let Rectangles : bool>(uint3 thread_id,
+                                                      uint group_index)
 {
     VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
     if (root.layered_tiles != 0u &&
         vk_deferred_tile_class(root, thread_id.xy, group_index) != 0u)
         return;
-    vk_deferred_shade<false, false>(thread_id);
+    vk_deferred_shade<false, false, Rectangles>(thread_id);
+}
+
+void vk_deferred_lighting_layers<let Rectangles : bool>(uint3 thread_id,
+                                                        uint group_index)
+{
+    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
+    if ((vk_deferred_tile_class(root, thread_id.xy, group_index) &
+         VK_DEFERRED_TILE_LAYERS) == 0u)
+        return;
+    vk_deferred_shade<true, true, Rectangles>(thread_id);
+}
+
+// The base kernel with the inline filtering of lights past the last mask
+// slot, for the tiles whose mask overflowed and that hold no layer data. The
+// layered kernel, which also filters them, costs about twice as much there.
+void vk_deferred_lighting_overflow<let Rectangles : bool>(uint3 thread_id,
+                                                          uint group_index)
+{
+    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
+    if (vk_deferred_tile_class(root, thread_id.xy, group_index) !=
+        VK_DEFERRED_TILE_MASK_OVERFLOW)
+        return;
+    vk_deferred_shade<false, true, Rectangles>(thread_id);
+}
+
+// SMAA S2x's second sample lights its listed pixels without tiles, so its
+// kernel keeps the inline filtering of lights past the last mask slot.
+void vk_deferred_lighting_second_sample<let Rectangles : bool>(
+    uint3 group_id, uint group_index)
+{
+    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
+    vk_deferred_shade<false, true, Rectangles>(
+        vk_msaa_sample1_pixel(root.sample1_pixels, group_id, group_index));
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID,
+                          uint group_index : SV_GroupIndex)
+{
+    vk_deferred_lighting_base<true>(thread_id, group_index);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting_no_rectangles(uint3 thread_id : SV_DispatchThreadID,
+                                        uint group_index : SV_GroupIndex)
+{
+    vk_deferred_lighting_base<false>(thread_id, group_index);
 }
 
 [shader("compute")]
@@ -4216,38 +4271,47 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID,
 void vk_deferred_lighting_layered(uint3 thread_id : SV_DispatchThreadID,
                                   uint group_index : SV_GroupIndex)
 {
-    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
-    if ((vk_deferred_tile_class(root, thread_id.xy, group_index) &
-         VK_DEFERRED_TILE_LAYERS) == 0u)
-        return;
-    vk_deferred_shade<true, true>(thread_id);
+    vk_deferred_lighting_layers<true>(thread_id, group_index);
 }
 
-// The base kernel with the inline filtering of lights past the last mask
-// slot, for the tiles whose mask overflowed and that hold no layer data. The
-// layered kernel, which also filters them, costs about twice as much there.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting_layered_no_rectangles(
+    uint3 thread_id : SV_DispatchThreadID, uint group_index : SV_GroupIndex)
+{
+    vk_deferred_lighting_layers<false>(thread_id, group_index);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_deferred_lighting_fallback(uint3 thread_id : SV_DispatchThreadID,
                                    uint group_index : SV_GroupIndex)
 {
-    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
-    if (vk_deferred_tile_class(root, thread_id.xy, group_index) !=
-        VK_DEFERRED_TILE_MASK_OVERFLOW)
-        return;
-    vk_deferred_shade<false, true>(thread_id);
+    vk_deferred_lighting_overflow<true>(thread_id, group_index);
 }
 
-// SMAA S2x's second sample lights its listed pixels without tiles, so its
-// kernel keeps the inline filtering of lights past the last mask slot.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting_fallback_no_rectangles(
+    uint3 thread_id : SV_DispatchThreadID, uint group_index : SV_GroupIndex)
+{
+    vk_deferred_lighting_overflow<false>(thread_id, group_index);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_deferred_lighting_sample1(uint3 group_id : SV_GroupID,
                                   uint group_index : SV_GroupIndex)
 {
-    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
-    vk_deferred_shade<false, true>(
-        vk_msaa_sample1_pixel(root.sample1_pixels, group_id, group_index));
+    vk_deferred_lighting_second_sample<true>(group_id, group_index);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting_sample1_no_rectangles(
+    uint3 group_id : SV_GroupID, uint group_index : SV_GroupIndex)
+{
+    vk_deferred_lighting_second_sample<false>(group_id, group_index);
 }
 
 // Relative device-depth difference within which last frame's sample shows the

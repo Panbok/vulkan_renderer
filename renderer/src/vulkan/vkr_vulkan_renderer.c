@@ -380,6 +380,8 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
       sun_ray_range_value >= 1.0f && sun_ray_range_value <= 1000.0f) {
     renderer->sun_ray_range_end = sun_ray_range_value;
   }
+  renderer->deferred_no_rectangles_disabled = vkr_platform_environment_equals(
+      "VKR_DEFERRED_NO_RECTANGLES_DISABLED", "1");
   if (!renderer->config.max_graph_images)
     renderer->config.max_graph_images = 128u;
   if (!renderer->config.max_graph_buffers)

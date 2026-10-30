@@ -447,6 +447,26 @@
       "stage": "compute"
     },
     {
+      "name": "packet.deferred_lighting_no_rectangles.comp",
+      "entry": "vk_deferred_lighting_no_rectangles",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.deferred_lighting_layered_no_rectangles.comp",
+      "entry": "vk_deferred_lighting_layered_no_rectangles",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.deferred_lighting_sample1_no_rectangles.comp",
+      "entry": "vk_deferred_lighting_sample1_no_rectangles",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.deferred_lighting_fallback_no_rectangles.comp",
+      "entry": "vk_deferred_lighting_fallback_no_rectangles",
+      "stage": "compute"
+    },
+    {
       "name": "packet.temporal_resolve.comp",
       "entry": "vk_temporal_resolve",
       "stage": "compute"

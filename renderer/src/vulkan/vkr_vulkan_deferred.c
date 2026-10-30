@@ -2366,29 +2366,50 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanLightingRoot),
                                  &prepared->root_address))
     return false_v;
+
+  /* A frame without rectangle lights takes the kernels that compile their
+     loop out. The loop never runs there, yet it alone held the base kernel
+     at 154 VGPRs and 13 KB of scratch on RDNA2, against 128 and none. The
+     shaders take the count from the frame's LTC record, which holds this
+     same count. */
+  const bool8_t rectangles =
+      renderer->deferred_no_rectangles_disabled ||
+      (packet->input.lighting &&
+       packet->input.lighting->rectangle_light_count != 0u);
   if (sample1_arguments) {
     prepared->pipelines[0] =
-        renderer
-            ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SAMPLE1];
+        renderer->deferred_pipelines
+            [rectangles
+                 ? VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SAMPLE1
+                 : VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SAMPLE1_NO_RECTANGLES];
     prepared->indirect_buffer = sample1_arguments->buffer.handle;
     prepared->indirect_offset = pass->desc.dispatch.indirect_offset;
     prepared->dispatch_count = 1u;
     return true_v;
   }
+
   /* The layered pass runs the layered kernel over the tiles with layer data
      and the fallback kernel over the tiles whose mask overflowed without
      any; each kernel classifies every tile and shades only its own. */
   VkrVulkanDeferredPipeline kernels[2];
   uint32_t kernel_count = 0u;
   if (!layered) {
-    kernels[kernel_count++] = VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING;
+    kernels[kernel_count++] =
+        rectangles ? VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING
+                   : VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_NO_RECTANGLES;
   } else {
     if (frame_info->clearcoat_enabled || frame_info->sheen_enabled ||
         frame_info->anisotropy_enabled || frame_info->brdf_extensions_enabled) {
-      kernels[kernel_count++] = VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED;
+      kernels[kernel_count++] =
+          rectangles
+              ? VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED
+              : VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED_NO_RECTANGLES;
     }
     if (frame_info->local_shadow_mask_overflow) {
-      kernels[kernel_count++] = VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_FALLBACK;
+      kernels[kernel_count++] =
+          rectangles
+              ? VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_FALLBACK
+              : VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_FALLBACK_NO_RECTANGLES;
     }
   }
   for (uint32_t i = 0u; i < kernel_count; ++i) {

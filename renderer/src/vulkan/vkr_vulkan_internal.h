@@ -265,6 +265,16 @@ static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
   "packet.deferred_lighting_sample1.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_FALLBACK_COMP_SPV                  \
   "packet.deferred_lighting_fallback.comp.spv"
+/* The lighting kernels without the rectangle lights' loop, for frames that
+   have none. */
+#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_NO_RECTANGLES_COMP_SPV             \
+  "packet.deferred_lighting_no_rectangles.comp.spv"
+#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_NO_RECTANGLES_COMP_SPV     \
+  "packet.deferred_lighting_layered_no_rectangles.comp.spv"
+#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SAMPLE1_NO_RECTANGLES_COMP_SPV     \
+  "packet.deferred_lighting_sample1_no_rectangles.comp.spv"
+#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_FALLBACK_NO_RECTANGLES_COMP_SPV    \
+  "packet.deferred_lighting_fallback_no_rectangles.comp.spv"
 #define VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV                            \
   "packet.temporal_resolve.comp.spv"
 #define VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV "packet.hzb_build.comp.spv"
@@ -570,6 +580,10 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SAMPLE1,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_FALLBACK,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_NO_RECTANGLES,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED_NO_RECTANGLES,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SAMPLE1_NO_RECTANGLES,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_FALLBACK_NO_RECTANGLES,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
   VKR_VULKAN_DEFERRED_PIPELINE_HZB,
   VKR_VULKAN_DEFERRED_PIPELINE_SHADOW_MOMENTS,
@@ -4132,6 +4146,9 @@ struct VkrVulkanRenderer {
      VKR_SUN_RAY_RANGE for a measurement. Their weight falls over the last
      fifth. */
   float32_t sun_ray_range_end;
+  /* VKR_DEFERRED_NO_RECTANGLES_DISABLED=1: every frame takes the lighting
+     kernels with the rectangle lights' loop, for diagnosis. */
+  bool8_t deferred_no_rectangles_disabled;
   /* Probes a frame may trace within VKR_VULKAN_VOLUME_BUDGET_MS, from the
      measured cost of the layer's passes (ADR-119). Written on the render
      thread; the runtime reads it once a frame. */
