@@ -1584,6 +1584,14 @@ vkr_internal void vkr_renderer_prepare_lighting(VkrRenderer *rf,
     }
     rf->light_rows_updated = frame->light_table.update_count;
   }
+  const uint32_t light_count =
+      packet->lighting ? packet->lighting->point_light_count : 0u;
+  const uint32_t decal_count = packet->world ? packet->world->decal_count : 0u;
+  rf->point_lights_unshaded =
+      frame->scene_rendering && !frame->tiled_pipeline
+          ? light_count - Min(light_count,
+                              vkr_vulkan_shaded_point_light_limit(decal_count))
+          : 0u;
   const VkrDynamicVolumeInput *volume = packet->dynamic_volume;
   rf->volume_sources =
       volume ? volume->point_light_count + volume->rectangle_light_count : 0u;

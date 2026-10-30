@@ -404,6 +404,8 @@ vkr_internal bool8_t vkr_renderer_metrics_register_workload(
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(lighting_point_rows_updated, "lighting.point.rows_updated",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(lighting_point_unshaded, "lighting.point.unshaded",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(lighting_volume_sources, "lighting.volume.sources",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(lighting_volume_probes_traced,
@@ -2575,6 +2577,7 @@ void vkr_renderer_metrics_collect(
   }
   VKR_SET_U64(lighting_ibl_probes_packed, renderer->ibl_probes_packed);
   VKR_SET_U64(lighting_point_rows_updated, renderer->light_rows_updated);
+  VKR_SET_U64(lighting_point_unshaded, renderer->point_lights_unshaded);
   VKR_SET_U64(lighting_volume_sources, renderer->volume_sources);
   VKR_SET_U64(lighting_volume_probes_traced, renderer->volume_probes_traced);
   VKR_SET_U64(lighting_point_selected,

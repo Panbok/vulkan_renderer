@@ -2138,6 +2138,11 @@ bool8_t vkr_vulkan_renderer_sun_ray_shadows_supported(
          renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_RESOLVE];
 }
 
+uint32_t vkr_vulkan_shaded_point_light_limit(uint32_t decal_count) {
+  return VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX -
+         Min(decal_count, VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX);
+}
+
 uint32_t vkr_vulkan_renderer_dynamic_volume_probe_budget(
     const VkrVulkanRenderer *renderer) {
   if (!renderer || renderer->volume_probe_budget <= 0.0f) {

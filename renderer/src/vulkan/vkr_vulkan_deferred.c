@@ -1706,7 +1706,12 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
   if (!(far_w <= VKR_VULKAN_LIGHT_CLUSTER_FAR_W_MAX))
     far_w = VKR_VULKAN_LIGHT_CLUSTER_FAR_W_MAX;
   const VkrFrameLighting *lighting = packet->input.lighting;
-  const uint32_t light_count = lighting ? lighting->point_light_count : 0u;
+  /* The rows past the cluster build's limit stay unshaded
+     (lighting.point.unshaded); the head comes first. */
+  const uint32_t decal_count = slot->decal_count;
+  const uint32_t light_count =
+      Min(lighting ? lighting->point_light_count : 0u,
+          vkr_vulkan_shaded_point_light_limit(decal_count));
   const uint32_t light_words = vkr_ceil_div_u32(light_count, 32u);
   /* The header buffer holds VKR_VULKAN_LIGHT_CLUSTER_HEADER_BYTES_PER_PIXEL
      bytes per render pixel: the clusters, then each tile's light words. An
@@ -1751,7 +1756,6 @@ bool8_t vkr_vk_prepare_light_clusters(VkrVulkanRenderer *renderer,
     return true_v;
 
   /* The packet tables keep both row addresses valid without rows. */
-  const uint32_t decal_count = slot->decal_count;
   const uint64_t lights = slot->point_light_data;
   const uint64_t decals = slot->decals;
   if (lights == 0u || decals == 0u)

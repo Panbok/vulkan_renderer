@@ -274,6 +274,11 @@ bool8_t vkr_vulkan_renderer_sun_ray_shadows_supported(
 /** The device encodes view exports with Vulkan Video H.264 (ADR-131). */
 bool8_t
 vkr_vulkan_renderer_view_encoding_supported(const VkrVulkanRenderer *renderer);
+/* The point light rows the desktop pipeline shades beside `decal_count`
+   decals: its cluster build marks at most 4,096 lights and decals, so the
+   rows past the limit go unshaded until per-tile light lists replace the
+   bitfields (W4c). The light head, rows [0, 128), always fits. */
+uint32_t vkr_vulkan_shaded_point_light_limit(uint32_t decal_count);
 /* Probes the dynamic volume layer may trace next frame within its GPU
    budget (ADR-119). */
 uint32_t vkr_vulkan_renderer_dynamic_volume_probe_budget(

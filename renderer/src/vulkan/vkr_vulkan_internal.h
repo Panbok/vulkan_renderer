@@ -1176,9 +1176,12 @@ _Static_assert(sizeof(VkrVulkanBakedShadowLamp) == 80u,
 #define VKR_VULKAN_LIGHT_CLUSTER_HEADER_BYTES_PER_PIXEL 2u
 #define VKR_VULKAN_LIGHT_CLUSTER_INDEX_BYTES_PER_PIXEL 4u
 
-_Static_assert(VKR_MAX_SCENE_POINT_LIGHTS + VKR_MAX_FRAME_DECALS <=
+/* The cluster build marks every decal and the light head; rows past
+   vkr_vulkan_shaded_point_light_limit go unshaded until per-tile light
+   lists replace the bitfields (W4c). */
+_Static_assert(VKR_POINT_LIGHT_GRID_LIGHT_MAX + VKR_MAX_FRAME_DECALS <=
                    VKR_VULKAN_LIGHT_CLUSTER_ITEM_MAX,
-               "The cluster build must mark every light and decal");
+               "The cluster build must mark the light head and every decal");
 _Static_assert(VKR_VULKAN_LIGHT_CLUSTER_SLICE_COUNT <= 64u,
                "One bin thread per slice");
 _Static_assert(VKR_VULKAN_LIGHT_CLUSTER_TILE_SIZE == 32u,

@@ -265,6 +265,10 @@ struct VkrRenderer {
      lighting.volume.probes_traced, ADR-119); zero without an update. */
   uint32_t volume_sources;
   uint32_t volume_probes_traced;
+  /* Point light rows the desktop pipeline left unshaded in the last
+     accepted packet, past vkr_vulkan_shaded_point_light_limit
+     (lighting.point.unshaded). */
+  uint32_t point_lights_unshaded;
 
   // Last target dimensions applied on the rendering thread.
   uint32_t last_window_width;
