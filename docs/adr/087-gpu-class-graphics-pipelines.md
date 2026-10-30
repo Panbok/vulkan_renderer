@@ -1472,83 +1472,13 @@ glass captures
 
 ### Opaque pass registers
 
-The opaque pass is latency-bound at low occupancy (ADR-129), so its forward
-fragment's register count sets most of its cost. The Metal Toolchain
-compiles a pipelines script (`.mtlp-json`) to M1 Pro binaries offline
-(`applegpu-nt -arch applegpu_g13s`); the fragment metadata's first table
-holds the 32-bit registers per thread, calibrated with shaders whose live
-values are known (8, 16, 24, 40, 76 and 108 registers for 4 to 96). On the
-lightmapped Bistro street view (2560×1440, MetalFX at 0.6), shaders with
-fewer registers ran at proportionally higher fragment occupancy down to
-about 80: 104 registers 19.5%, 88 22.8%, 80 25.0%, 44 35.0% (features
-compiled out for the test, so their times also lost work).
-
-Before 2026-10-30 every forward variant used 104 to 108 registers, the same
-with or without dynamic lights: three parts of the shader each reached about
-88 to 104 with the rest live, the sun's cascade filter (its 16 taps and the
-PCSS search issued together), the shadowed light loop, and the diffuse
-volume and environment tail. Three changes lowered the variants to 92 to 96
-registers and the opaque pass's fragment work, measured over 2 s Metal
-System Traces (M1 Pro, Release, local and not authoritative):
-
-| Change | Lightmapped Bistro | Bistro, dynamic lamps |
-|---|---|---|
-| Before | 3.84 ms, 19.5% occupancy | 7.42 / 7.57 ms, 19.0% |
-| The sun's cascades sampled before the material is read (`vkr_metal_tiled_early_sun_visibility`); each diffuse-volume probe's SH evaluated at the normal as read | 3.52 ms, 21.7% | 7.28 ms, 19.8% |
-| The cloud chain sampled from a cube (ADR-074) | 2.29 ms, 20.9% | 5.90 ms, 19.9% |
-| A shadowed light's normal offset from its first view, without a second face's view; lights below `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` skipped, as in the desktop pipeline | 2.28 ms | 5.64 ms |
-| A shadowed light's face projected from its offset along the face's axes, without the face's matrix (the shadowed loop's registers 88 → 80); frames whose scene binds no diffuse volume take a variant without its lookup (`VKR_METAL_TILED_NO_VOLUME_VARIANT`, the general forward variants 92 → 76 registers) | 2.10 ms | 5.64 ms |
-| The surface's diffuse, specular and emissive totals in half precision, as the colour target stores them (every forward variant 4 registers fewer) | 1.97 ms, 25.5% (2.10 to 2.12 ms, 22.9% before; one pair of runs measured both at 2.28 ms) | 5.64 / 5.65 ms, within the spread |
-| Each local light's lobes evaluated before its shadow lookup and scaled by its visibility after, so only the two lobes stay live across the lookup (the shadowed variant without a diffuse volume 84 → 80 registers) | 1.96 / 1.98 ms, unchanged | 5.32 / 5.33 / 5.34 ms (5.64 before) |
-
-The early lookup gates on the geometric normal facing the sun in place of
-the normal-mapped one; a surface whose geometric normal faces away lies in
-its own shadow in the cascades. Moving the diffuse and environment light
-ahead of the direct light raised the counts by 4, and a SIMD-uniform light
-index did not change them. Captures of the last row against the build
-before it: the lightmapped Bistro identical, Bistro with dynamic lamps at
-most 1 of 255 (`tiled_bistro_capture`, `tiled_bistro_baked_capture`). The no-volume variant's captures equal
-the same binary's with `VKR_TILED_NO_VOLUME_DISABLED`; the face projection
-moves 6 pixels of Bistro with dynamic lamps by at most 7 of 255 (76.4 dB),
-from rounding at shadow edges. Its timing on that scene, 5.64 against 5.78
-and 5.79 ms off, is within this machine's spread.
-The half-precision totals move both captures by at most 2 of 255 (65 to
-67 dB), from rounding.
-Evaluating the lobes before the shadow lookup leaves the lightmapped
-Bistro's captures identical and moves Bistro with dynamic lamps by at most 1
-of 255 (73.3 dB).
-
-On Bistro with dynamic lamps (`tiled_bistro_capture`'s view at 1536×864), a
-fragment walks 12.5 light entries on average (p90 23), finds 7.5 in range and
-shades 7.2, 3.0 of them shadowed. Culling each SIMD-group's candidates against
-the box around its fragments, reading the tile's first 64 light rows from
-threadgroup memory, light rows in the `constant` address space and a
-SIMD-uniform light index were measured on 2026-10-30 and each ran 0.1 to
-0.5 ms slower or unchanged; half-precision lobes inside the light (the
-specular distribution kept in single precision) raised the registers by 4.
-
-Sharing the sun's cascade filter across each 2×2 quad of fragments, each
-reading the quarter of the 16 grid taps and 8 PCSS blocker taps toward its
-own corner and taking the quad's sum, was built and measured on 2026-10-30
-and not kept: each fragment read 6 taps instead of 24, but the opaque pass
-took 1.96 to 2.26 ms on the lightmapped Bistro against 1.97 to 2.28 ms for
-the same build without it, and 5.62 against 5.64 to 5.65 ms with dynamic
-lamps, inside the spread. Sampled before the material is read, the taps no
-longer set the register count, so they cost little, and sharing them would
-have made the penumbra constant across each quad.
-
-Deferring the dynamic lights to a full-screen draw at the end of each opaque
-pass, which would read the surface from four memoryless targets the forward
-draws write (base and metalness, the two normals, depth and roughness, the
-material row), was compiled and counted on 2026-10-30 and not built: the
-forward draws without lights still took 92 registers, and the light draw 64
-with unshadowed lights, 80 with shadowed ones and 116 with rectangle lights.
-The shadowed loop's own 80, for its shadow view and four compares a light,
-would raise occupancy by about a seventh for the 3.6 ms the lights cost on
-Bistro with dynamic lamps, against four more targets in the pass (the texture
-demand target alone costs about 1 ms, see `tiled.metal`) and a costlier draw
-for frames with rectangle lights. Captures against the build before these
-changes are in ADR-074's tiled chain evidence.
+The opaque pass is latency-bound at low occupancy, so its forward fragment's
+register count sets most of its cost.
+[ADR-138](138-tiled-opaque-register-budget.md) owns the order and types of
+the forward shading that bound it, the no-volume shading variants, the
+offline register count, the measurements (Bistro with dynamic lamps 7.5 to
+5.3 ms, lightmapped Bistro 3.84 to 1.97 ms) and the alternatives declined,
+among them deferred local lights.
 
 ### Sun contact shadow measurement
 

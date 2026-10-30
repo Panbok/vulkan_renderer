@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-29
+updated: 2026-10-30
 authority: adr
 ---
 
@@ -101,7 +101,8 @@ already made light code a per-frame variant).
   texture sample limiter 10% and read bandwidth 6%: still latency-bound at
   low occupancy, not cache-bound, so a split would add passes without a
   limiter to relieve. The desktop `Lighting.Deferred` shows the same pattern
-  (ADR-087). Not pursued.
+  (ADR-087). Not pursued; the register work that followed is
+  [ADR-138](138-tiled-opaque-register-budget.md).
 
 ## Revisit when
 

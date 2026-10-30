@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-28
+updated: 2026-10-30
 authority: architecture
 ---
 
@@ -836,7 +836,11 @@ shading variant ([ADR-129](adr/129-tiled-standard-draw-kinds.md)). Draws of
 materials with detail maps shade with two more kinds, the only pipelines
 that sample them, which frames request while their scene has such a
 material; the desktop pipeline's G-buffer resolve takes a detail variant in
-those frames ([ADR-136](adr/136-standard-detail-maps.md)). It
+those frames ([ADR-136](adr/136-standard-detail-maps.md)). Frames whose
+scene binds no diffuse volume take shading variants that compile its lookup
+out, and the forward shading samples the sun's cascades before the material
+and keeps its light totals in half precision to bound its register count
+([ADR-138](adr/138-tiled-opaque-register-budget.md)). It
 draws the 64 dynamic lights nearest the camera, each tile walking the ones
 its tile kernel lists within the fragment's depth bin, 4 of them shadowed
 with a four-comparison tent each, holding the set with an incumbent bonus and fading
