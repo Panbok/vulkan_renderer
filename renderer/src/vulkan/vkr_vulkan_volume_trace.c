@@ -1191,7 +1191,8 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
   slot->volume_grid_moments_image = VK_NULL_HANDLE;
   slot->volume_relight_count = 0u;
   slot->volume_light_count = 0u;
-  slot->probe_relight = 0u;
+  /* slot->probe_relight keeps the packet tables' table of ones until this
+     frame relights the rows. */
   if (!slot->volume_build_ready) {
     return true_v;
   }
@@ -1371,7 +1372,9 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
   slot->volume_trace_root = root_address;
   slot->volume_relight_count = relight_count;
   slot->volume_light_count = input->point_light_count;
-  slot->probe_relight = relight_count ? slot->volume_probe_relight.address : 0u;
+  if (relight_count) {
+    slot->probe_relight = slot->volume_probe_relight.address;
+  }
   slot->volume_trace_count = input->trace_probe_count;
   slot->volume_clear_count = input->clear_probe_count;
   slot->volume_dynamic_image = dynamic->image.handle;

@@ -373,6 +373,16 @@ vkr_internal bool8_t vkr_vk_upload_sky(VkrVulkanRenderer *renderer,
       slot, sizeof(*sky), _Alignof(VkrVulkanSky), &sky_address, NULL);
   if (!sky)
     return false_v;
+  /* Until Cloud.SkyLight patches its chain in, global reflections read a
+     zero chain of one texel per face, the most a zero face size addresses:
+     the record never holds a null table, which the AMD compiler may read
+     ahead of its face-size test. */
+  uint64_t cloud_chain_address = 0u;
+  Vec4 *cloud_chain = vkr_vk_frame_upload_allocate(slot, 6u * sizeof(Vec4), 16u,
+                                                   &cloud_chain_address, NULL);
+  if (!cloud_chain)
+    return false_v;
+  MemZero(cloud_chain, 6u * sizeof(Vec4));
   /* The cloud passes patch their sampled output slots in during graph
      preparation; the noise rows are permanent. */
   *sky = (VkrVulkanSky){
@@ -388,6 +398,7 @@ vkr_internal bool8_t vkr_vk_upload_sky(VkrVulkanRenderer *renderer,
           renderer->cloud_noise_texture_slots[1].index,
       .cloud_weather_texture = renderer->cloud_noise_texture_slots[2].index,
       .cloud_noise_sampler = renderer->cloud_noise_sampler_slot.index,
+      .cloud_sky_light = cloud_chain_address,
       .clear_sh_slot = VKR_SH_SLOT_BLACK,
   };
   if (packet->scene_rendering && packet->input.sky &&
@@ -498,7 +509,9 @@ vkr_internal void vkr_vk_reset_packet_tables(VkrVulkanFrameSlot *slot) {
   slot->sh_referenced_slot_count = 0u;
 }
 
-/* The LTC record and the frame's packed rectangle lights it points to. */
+/* The LTC record and the frame's packed rectangle lights it points to: one
+   zero row when it has none, so the rows' address is never null, which the
+   AMD compiler may read ahead of the count test (see vkr_vk_upload_decals). */
 vkr_internal bool8_t vkr_vk_upload_ltc(VkrVulkanRenderer *renderer,
                                        VkrVulkanFrameSlot *slot,
                                        const VkrPreparedFrame *packet,
@@ -511,18 +524,20 @@ vkr_internal bool8_t vkr_vk_upload_ltc(VkrVulkanRenderer *renderer,
   }
   const uint32_t rectangle_count =
       lighting ? lighting->rectangle_light_count : 0u;
+  const uint32_t row_count = Max(rectangle_count, 1u);
   uint64_t rectangle_lights = 0u;
-  if (rectangle_count) {
-    VkrGpuRectangleLightRow *rows = vkr_vk_frame_upload_allocate(
-        slot, (uint64_t)rectangle_count * sizeof(*rows),
-        _Alignof(VkrGpuRectangleLightRow), &rectangle_lights, NULL);
-    if (!rows) {
-      return false_v;
-    }
-    for (uint32_t i = 0u; i < rectangle_count; ++i) {
-      vkr_rectangle_light_pack(&lighting->rectangle_lights[i],
-                               packet->exposure.pre_exposure, &rows[i]);
-    }
+  VkrGpuRectangleLightRow *rows = vkr_vk_frame_upload_allocate(
+      slot, (uint64_t)row_count * sizeof(*rows),
+      Max(_Alignof(VkrGpuRectangleLightRow), 16u), &rectangle_lights, NULL);
+  if (!rows) {
+    return false_v;
+  }
+  if (!rectangle_count) {
+    MemZero(rows, sizeof(*rows));
+  }
+  for (uint32_t i = 0u; i < rectangle_count; ++i) {
+    vkr_rectangle_light_pack(&lighting->rectangle_lights[i],
+                             packet->exposure.pre_exposure, &rows[i]);
   }
   *ltc = (VkrVulkanLtc){
       .lights = rectangle_lights,
@@ -822,6 +837,18 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrPreparedFrame *packet) {
   vkr_vk_reset_packet_tables(slot);
+
+  /* Probe rows no trace relit this frame keep their brightness: a table of
+     ones, never a null table, which the AMD compiler may read ahead of its
+     null test. Volume.Trace points the frame at its relight buffer when it
+     relit the rows (ADR-119). */
+  float32_t *relight_ones = vkr_vk_frame_upload_allocate(
+      slot, VKR_FRAME_IBL_PROBE_MAX * sizeof(float32_t), 16u,
+      &slot->probe_relight, NULL);
+  if (!relight_ones)
+    return false_v;
+  for (uint32_t i = 0u; i < VKR_FRAME_IBL_PROBE_MAX; ++i)
+    relight_ones[i] = 1.0f;
 
   uint64_t fog_address = 0u;
   VkrFogGpuParams *fog =

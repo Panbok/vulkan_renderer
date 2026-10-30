@@ -223,7 +223,9 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
    averaged over normals, which a lamp group's baked light holds in its
    direct band ([ADR-054](054-baked-diffuse-volumes.md)). The probe loops
    multiply the probe's intensity by it (`packet_probe_relight`); a frame
-   without a trace binds none, and probes keep their baked brightness.
+   without a trace binds a table of ones from upload memory, and probes keep
+   their baked brightness. The table is never null: the AMD compiler may
+   read a guarded table ahead of its null test.
 
 ## Consequences
 

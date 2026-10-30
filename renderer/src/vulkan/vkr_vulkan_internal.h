@@ -1996,8 +1996,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint64_t sky;
   /* The diffuse volume's dynamic layer (ADR-119): sampled slot of its
      signed L1 SH, zero without one; and one factor per IBL probe row on its
-     brightness for the layer's light at its capture origin, null when no
-     trace relit them this frame. */
+     brightness for the layer's light at its capture origin, a table of ones
+     when no trace relit them this frame, never null. */
   uint32_t diffuse_volume_dynamic_texture;
   uint32_t diffuse_volume_reserved;
   uint64_t probe_relight;

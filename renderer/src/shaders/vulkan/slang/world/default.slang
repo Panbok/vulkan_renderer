@@ -876,10 +876,12 @@ float packet_probe_influence(VkrVulkanIblProbe probe, float3 world_position)
 }
 
 // The factor on probe row `index`'s brightness for the dynamic layer's
-// light at its capture origin (ADR-119); one when no trace relit the rows.
+// light at its capture origin (ADR-119); one when no trace relit the rows,
+// read from the host's table of ones. The table is never null: the AMD
+// compiler may read a guarded table ahead of its null test.
 float packet_probe_relight(VkrVulkanPacketFrameRoot *frame, uint index)
 {
-    return frame.probe_relight != nullptr ? frame.probe_relight[index] : 1.0f;
+    return frame.probe_relight[index];
 }
 
 // The cube direction of `dominant`, the lobe's dominant reflection, in one
