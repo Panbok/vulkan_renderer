@@ -3175,14 +3175,24 @@ vkr_internal int32_t vkr_metal_light_depth_compare(const void *lhs,
    SIGGRAPH 2017); the tile shader has no depth bounds (ADR-087 decision 5).
    Each interval widens by a millimetre and a part in a thousand of its depth,
    so a fragment's own depth arithmetic never falls just outside it. */
-vkr_internal void
-vkr_metal_packet_write_light_bins(const VkrPreparedFrame *packet,
-                                  uint32_t *bins,
-                                  VkrMetalPacketFrameUpload *upload) {
+vkr_internal bool8_t vkr_metal_packet_write_light_bins(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    uint32_t *bins, VkrMetalPacketFrameUpload *upload) {
   const VkrFrameLighting *lighting = packet->input.lighting;
   const uint32_t count = lighting->point_light_count;
   const Mat4 view = packet->input.globals.view;
-  VkrMetalLightDepth bounded[VKR_MAX_SCENE_POINT_LIGHTS];
+  const uint64_t depth_bytes = (uint64_t)count * sizeof(VkrMetalLightDepth);
+  if (depth_bytes > renderer->light_depth_bytes) {
+    void *depths = vkr_allocator_realloc(
+        renderer->allocator, renderer->light_depths,
+        renderer->light_depth_bytes, depth_bytes,
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!depths)
+      return false_v;
+    renderer->light_depths = depths;
+    renderer->light_depth_bytes = depth_bytes;
+  }
+  VkrMetalLightDepth *bounded = renderer->light_depths;
   uint16_t *order = (uint16_t *)(bins + VKR_METAL_TILED_LIGHT_BIN_COUNT);
   uint32_t unbounded = 0u;
   uint32_t bounded_count = 0u;
@@ -3234,6 +3244,7 @@ vkr_metal_packet_write_light_bins(const VkrPreparedFrame *packet,
   upload->point_light_bins_per_metre = bins_per_metre;
   upload->point_light_bin_count = VKR_METAL_TILED_LIGHT_BIN_COUNT;
   upload->point_light_unbounded_count = unbounded;
+  return true_v;
 }
 
 /* The frame's light rows: the retained light table's address, and the
@@ -3295,8 +3306,10 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
       return false_v;
     if (!vkr_metal_packet_write_light_table(renderer, packet, upload, plan))
       return false_v;
-    vkr_metal_packet_write_light_bins(
-        packet, (uint32_t *)(cpu + plan->point_light_bins_offset), upload);
+    if (!vkr_metal_packet_write_light_bins(
+            renderer, packet, (uint32_t *)(cpu + plan->point_light_bins_offset),
+            upload))
+      return false_v;
     upload->point_light_bins_gpu = gpu + plan->point_light_bins_offset;
   }
   if (plan->shadow_cascade_count > 0) {

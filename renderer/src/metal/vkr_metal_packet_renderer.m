@@ -1309,6 +1309,10 @@ struct VkrMetalPacketRenderer {
      frame's changed rows into it. */
   VkrRgBufferHandle light_table_handle;
   id<MTLComputePipelineState> light_scatter_pipeline;
+  /* The depth bins' sort records (VkrMetalLightDepth), grown with the
+     frames' light counts from renderer->allocator and freed at destroy. */
+  void *light_depths;
+  uint64_t light_depth_bytes;
   /* The last submitted frame: its history instance, which holds its
      transforms and skinned vertices, its frame index and skinning layout,
      and whether it ran the upscaler. Frames on the one queue order the

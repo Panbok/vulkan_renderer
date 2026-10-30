@@ -32,11 +32,19 @@ typedef struct VkrPointLightLimitEntry {
  * lights still fading out, at most two tables' worth. */
 #define VKR_POINT_LIGHT_SELECTION_ENTRY_MAX (2u * VKR_MAX_SCENE_POINT_LIGHTS)
 
-/** A ranked selection's state from its previous frame. */
+/** A ranked selection's state from its previous frame. Its storage grows
+ * with the lights it records and lives until the lighting system shuts
+ * down. */
 typedef struct VkrPointLightSelection {
-  /** Identified lights that were selected or drawn, sorted by render id. */
-  VkrPointLightLimitEntry entries[VKR_POINT_LIGHT_SELECTION_ENTRY_MAX];
+  /** Identified lights that were selected or drawn, in no order. */
+  VkrPointLightLimitEntry *entries;
   uint32_t entry_count;
+  uint32_t entry_capacity;
+  /** `entries` by render id, open addressed: an entry's index plus one,
+   * zero for a free slot. `index_mask + 1` slots, a power of two at least
+   * twice `entry_capacity`. */
+  uint32_t *index;
+  uint32_t index_mask;
   Vec3 camera;
   /** Lights competed for the selection: one offered was not drawn or one
    * drawn was still fading. Only then does a newly selected light fade in;
@@ -68,38 +76,53 @@ typedef struct VkrPointLightSortRecord {
   uint32_t index;
 } VkrPointLightSortRecord;
 
-/** Scratch of one ranked selection over at most
- * VKR_POINT_LIGHT_CANDIDATE_MAX lights, each array by light index except
- * `order` and `records`. Too large for a stack frame at these limits. */
+/** Scratch of one ranked selection over `capacity` lights, each array by
+ * light index except the index lists `order`, `drawn`, `ranked`,
+ * `occupant` (by row) and `records`. */
 typedef struct VkrPointLightRanking {
-  VkrPointLightLimitEntry previous[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  bool8_t identified[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  VkrPointLightRankKey keys[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  uint32_t order[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  bool8_t selected[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  uint32_t capacity;
+  VkrPointLightLimitEntry *previous;
+  bool8_t *identified;
+  VkrPointLightRankKey *keys;
+  bool8_t *selected;
   /** The light is in the table's head. */
-  bool8_t head[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  bool8_t *head;
   /** The light's row in the scene table plus one; zero for a light not
    * drawn and in the tiled limit. */
-  uint32_t rows[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  uint32_t *rows;
   /** Intensity scale; zero for a light not drawn. */
-  float32_t weights[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  VkrPointLightSortRecord records[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  float32_t *weights;
+  uint32_t *order;
+  uint32_t *drawn;
+  uint32_t *ranked;
+  uint32_t *occupant;
+  VkrPointLightSortRecord *records;
+  /** Render ids of the lights being ranked, open addressed like
+   * VkrPointLightSelection's index, at least twice `capacity` slots. */
+  uint32_t *ids;
+  uint32_t ids_mask;
 } VkrPointLightRanking;
 
 /** The frame's point-light candidates, gathered by the scene syncs in
- * bounded storage however many lights the scenes hold. */
+ * storage that grows with them up to VKR_POINT_LIGHT_CANDIDATE_MAX,
+ * however many lights the scenes hold. */
 typedef struct VkrPointLightCandidates {
-  VkrPointLight lights[VKR_POINT_LIGHT_CANDIDATE_MAX];
-  VkrPointLightRankKey keys[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  VkrPointLight *lights;
+  VkrPointLightRankKey *keys;
   /** The light was drawn in the previous frame, so it keeps a candidate
    * place while it fades out, whatever its rank. */
-  bool8_t showing[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  bool8_t *showing;
+  /** The light is among the best offered so far, in `best`. */
+  bool8_t *in_best;
   uint32_t count;
-  /** Candidate indices of the best-ranked lights offered so far, best
-   * first. */
-  uint32_t best[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint32_t capacity;
+  /** Candidate indices of the best-ranked lights offered so far, at most
+   * VKR_MAX_SCENE_POINT_LIGHTS, as a heap whose root ranks worst. */
+  uint32_t *best;
   uint32_t best_count;
+  /** Candidates the best evicted that do not show, kept until the next
+   * compaction. */
+  uint32_t evicted;
   /** Lights offered this frame, kept or not. */
   uint32_t offered;
   Vec3 camera;
@@ -132,11 +155,15 @@ typedef struct VkrLightingSystem {
      hold lights outside it; only head lights cast shadows. A light keeps its
      row from frame to frame while it stays in the table, so a backend's
      light table changes only where lights do (vkr_light_table.h). */
-  VkrPointLight point_lights[VKR_MAX_SCENE_POINT_LIGHTS];
+  VkrPointLight *point_lights;
   /* Each table light's intensity before its fades, which sizes its local
      shadow: a light fading out keeps its shadow's size while it shows. */
-  float32_t point_light_unfaded_intensity[VKR_MAX_SCENE_POINT_LIGHTS];
+  float32_t *point_light_unfaded_intensity;
   uint32_t point_light_count;
+  /* Rows `point_lights` and `point_light_unfaded_intensity` hold, at most
+     VKR_MAX_SCENE_POINT_LIGHTS. The table's and the selections' storage
+     grows with the lights offered and stays until shutdown. */
+  uint32_t point_light_capacity;
   uint32_t point_light_dropped_count;
   /* Static lights light only through baked data, the lightmaps and diffuse
      volumes, so the tables keep the dynamic lights (the tiled pipeline,
@@ -157,7 +184,7 @@ typedef struct VkrLightingSystem {
   VkrPointLightCandidates point_light_candidates;
   /* The table selection's state from the previous frame, which this frame
      ranks and fades from, and this frame's, which the next frame's sync
-     adopts; an appended scene selects again from the same state. */
+     swaps in; an appended scene selects again from the same state. */
   VkrPointLightSelection point_light_selection;
   VkrPointLightSelection point_light_selection_next;
 
@@ -187,10 +214,17 @@ typedef struct VkrLightingSystem {
 bool8_t vkr_lighting_system_init(VkrLightingSystem *system);
 
 /**
- * @brief Shuts down the lighting system.
+ * @brief Shuts down the lighting system and releases its storage.
  * @param system The lighting system to shut down.
  */
 void vkr_lighting_system_shutdown(VkrLightingSystem *system);
+
+/** Grows the scene table to hold `count` rows, at most
+ * VKR_MAX_SCENE_POINT_LIGHTS, with the ranking scratch to rank them.
+ * Selections grow it themselves; returns false_v when storage runs out,
+ * leaving the table as it was. */
+bool8_t vkr_lighting_system_reserve_point_lights(VkrLightingSystem *system,
+                                                 uint32_t count);
 
 /**
  * @brief Syncs a frame's lights from the ECS.

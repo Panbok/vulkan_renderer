@@ -37,6 +37,7 @@ static bool32_t test_point_light_limit_keeps_nearest(void) {
   /* Range 2 at x = 10 * i: light i's range starts 10 * i - 2 from the
      origin, so the table order is the distance order reversed. */
   const uint32_t count = 6u;
+  assert(vkr_lighting_system_reserve_point_lights(&system, count));
   for (uint32_t i = 0u; i < count; ++i) {
     const uint32_t slot = count - 1u - i;
     system.point_lights[slot] =
@@ -58,6 +59,7 @@ static bool32_t test_point_light_limit_keeps_nearest(void) {
     assert(system.point_lights[i].casts_shadow == shadowed[i]);
     assert(system.point_lights[i].intensity == 10.0f);
   }
+  vkr_lighting_system_shutdown(&system);
   printf("  test_point_light_limit_keeps_nearest PASSED\n");
   return true_v;
 }
@@ -66,6 +68,7 @@ static bool32_t test_point_light_limit_keeps_nearest(void) {
    ranges both hold the camera, of which the limit keeps one: the table is
    rebuilt as the scene sync rebuilds it every frame. */
 static void limit_test_frame(VkrLightingSystem *system, float32_t camera_x) {
+  assert(vkr_lighting_system_reserve_point_lights(system, 2u));
   system->point_light_count = 2u;
   system->point_lights[0] =
       make_gltf_point(1u, vec3_new(10.0f, 0.0f, 0.0f), 100.0f);
@@ -136,6 +139,7 @@ static bool32_t test_point_light_limit_holds_and_fades(void) {
   assert(system.point_light_count == 1u);
   assert(system.point_lights[0].render_id == 2u);
   assert(system.point_lights[0].intensity == 10.0f);
+  vkr_lighting_system_shutdown(&system);
   printf("  test_point_light_limit_holds_and_fades PASSED\n");
   return true_v;
 }
@@ -200,6 +204,7 @@ static bool32_t test_point_light_table_keeps_nearest_past_capacity(void) {
     assert(system.point_lights[i].intensity == 10.0f);
     assert(system.point_lights[i].casts_shadow == (i < head));
   }
+  vkr_lighting_system_shutdown(&system);
   printf("  test_point_light_table_keeps_nearest_past_capacity PASSED\n");
   return true_v;
 }
@@ -257,6 +262,7 @@ static bool32_t test_point_light_head_holds_and_trades(void) {
   assert(table_test_find(&system, 2u) - system.point_lights == head);
   assert(!table_test_find(&system, 2u)->casts_shadow);
   assert(table_test_find(&system, 2u)->intensity == 10.0f);
+  vkr_lighting_system_shutdown(&system);
   printf("  test_point_light_head_holds_and_trades PASSED\n");
   return true_v;
 }
@@ -341,6 +347,7 @@ static bool32_t test_point_light_table_holds_and_fades(void) {
   table_contest_frame(&system, -30.0f);
   assert(!table_test_find(&system, 1u));
   assert(table_test_find(&system, 2u)->intensity == 10.0f);
+  vkr_lighting_system_shutdown(&system);
   printf("  test_point_light_table_holds_and_fades PASSED\n");
   return true_v;
 }
@@ -365,6 +372,7 @@ static bool32_t test_point_light_table_without_competition_snaps(void) {
   }
   table_test_frame(&system, &lights[1], 3u, vec3_new(0.2f, 0.0f, 0.0f));
   assert(system.point_light_count == 3u && !table_test_find(&system, 4u));
+  vkr_lighting_system_shutdown(&system);
   printf("  test_point_light_table_without_competition_snaps PASSED\n");
   return true_v;
 }
@@ -410,6 +418,7 @@ static bool32_t test_point_light_table_keeps_rows(void) {
   table_test_frame(&system, without_four, ArrayCount(without_four),
                    vec3_new(-300.0f, 0.0f, 0.0f));
   table_test_expect_rows(&system, removed, ArrayCount(removed));
+  vkr_lighting_system_shutdown(&system);
   printf("  test_point_light_table_keeps_rows PASSED\n");
   return true_v;
 }

@@ -66,9 +66,16 @@ outside the head, while lights that cast no shadow are not ranked for it
 ([`vkr_lighting_system_select_point_lights`](../../runtime/src/renderer/systems/vkr_lighting_system.h);
 before, head and rest were each in render-id order and the head held the
 best-ranked drawn lights, casters or not). The tiled lamp, clustered,
-stress, dense and street captures stayed byte-identical. CPU scene
-synchronization owns membership; shaders perform exact range and spot-cone
-rejection.
+stress, dense and street captures stayed byte-identical. Since 2026-10-30
+the lighting system and the renderer's light table keep their per-light
+storage on the heap, grown with the lights offered and released at
+shutdown, not in arrays sized by the table's capacity. The offers keep the
+best in a bounded heap, the selections find the previous frame's state by
+render id in a hash index, and the head, the tiled limit and its shadows
+take the best few with bounded heaps, so no step sorts every light unless
+more compete than can draw; the same captures stayed byte-identical. CPU
+scene synchronization owns membership; shaders perform exact range and
+spot-cone rejection.
 Four-vector, 64-byte light rows share position/range, direction/cone,
 color/intensity and type semantics across Metal and Vulkan shading paths.
 Since 2026-10-28 the rows carry intensity before exposure on both backends,

@@ -1014,6 +1014,8 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     vkr_metal_diagnostics_close(&renderer->diagnostics);
     VkrAllocator *allocator = renderer->allocator;
     vkr_draw_census_store_release(&renderer->draw_census, allocator);
+    vkr_metal_packet_free_sized(allocator, renderer->light_depths,
+                                renderer->light_depth_bytes);
     vkr_metal_packet_release_record_storage(renderer);
     vkr_metal_packet_free_sized(allocator, renderer, sizeof(*renderer));
   }

@@ -45,11 +45,12 @@ void vkr_light_table_destroy(VkrLightTable *table);
 
 /** Packs `lighting`'s rows, with `local_shadow`'s first views on the head's
  * rows when given, and lists the rows that differ from the last committed
- * frame. The frame stays valid until the next prepare. */
-void vkr_light_table_prepare(VkrLightTable *table,
-                             const VkrFrameLighting *lighting,
-                             const VkrLocalShadowPassPayload *local_shadow,
-                             VkrLightTableFrame *out_frame);
+ * frame. The frame stays valid until the next prepare or commit. Returns
+ * false_v, with an empty frame, when the table cannot grow to the rows. */
+bool8_t vkr_light_table_prepare(VkrLightTable *table,
+                                const VkrFrameLighting *lighting,
+                                const VkrLocalShadowPassPayload *local_shadow,
+                                VkrLightTableFrame *out_frame);
 
 /** The prepared frame was submitted: its rows are what the backend's table
  * now holds. A frame never committed leaves its changes to the next one. */

@@ -1575,8 +1575,13 @@ vkr_internal void vkr_renderer_prepare_lighting(VkrRenderer *rf,
   frame->light_table = (VkrLightTableFrame){0};
   rf->light_rows_updated = 0u;
   if (frame->scene_rendering && rf->light_table) {
-    vkr_light_table_prepare(rf->light_table, packet->lighting,
-                            packet->local_shadow, &frame->light_table);
+    /* A frame whose rows the table cannot hold fails in its backend, which
+       finds the frame's table short of its lights. */
+    if (!vkr_light_table_prepare(rf->light_table, packet->lighting,
+                                 packet->local_shadow, &frame->light_table)) {
+      log_error("Light table cannot grow to %u rows",
+                packet->lighting ? packet->lighting->point_light_count : 0u);
+    }
     rf->light_rows_updated = frame->light_table.update_count;
   }
 }
