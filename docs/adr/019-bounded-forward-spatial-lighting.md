@@ -56,7 +56,8 @@ per draw causes large meshes to inherit the wrong local environment.
 
 ## Decision
 
-Use a table of up to 1024 punctual lights (128 until 2026-10-28). Its head,
+Use a table of up to 65,535 punctual lights (128 until 2026-10-28, 1024
+until 2026-10-30). Its head,
 the at most 128 drawn shadow casters ranked best, alone casts shadows and
 lies in the first 128 rows, which can also hold lights outside it. Since
 2026-10-30 a light keeps its row while it stays in the table: a new light
@@ -73,8 +74,13 @@ shutdown, not in arrays sized by the table's capacity. The offers keep the
 best in a bounded heap, the selections find the previous frame's state by
 render id in a hash index, and the head, the tiled limit and its shadows
 take the best few with bounded heaps, so no step sorts every light unless
-more compete than can draw; the same captures stayed byte-identical. CPU
-scene synchronization owns membership; shaders perform exact range and
+more compete than can draw; the same captures stayed byte-identical. With
+the table at 65,535 rows (the retained `light_table` is 4 MB on both
+pipelines) a scene's lights all fit, and the selection, the tiled limit and
+the offers together cost 1.35 ms a frame for 20,000 lights on an M1 Pro
+(Release CPU benchmark of the lighting system alone, against 0.73 ms with
+1024 rows and 2.6 ms before the heaps); the tiled captures stayed
+byte-identical. CPU scene synchronization owns membership; shaders perform exact range and
 spot-cone rejection.
 Four-vector, 64-byte light rows share position/range, direction/cone,
 color/intensity and type semantics across Metal and Vulkan shading paths.
@@ -98,7 +104,7 @@ captures byte-identical to the per-frame upload. `lighting.point.rows_updated` c
 them: none a frame on the still clustered street and the lamp orbit, 9 at
 p50 with the clustered street's 64-light group moving (tiled, 64 drawn).
 When more lights are offered than the table
-holds, it keeps the 1024 nearest the camera by the distance to their range,
+holds, it keeps the 65,535 nearest the camera by the distance to their range,
 ties by the distance to their centre, and a light selected the frame before
 ranks as if the camera were 1.15 times closer. While lights compete for the
 table, a newly selected light fades in over 0.25 s once a slot is free and

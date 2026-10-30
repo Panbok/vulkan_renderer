@@ -277,8 +277,10 @@ static void table_contest_frame(VkrLightingSystem *system, float32_t camera_x) {
   const uint32_t near_count = VKR_MAX_SCENE_POINT_LIGHTS - 1u;
   const Vec3 camera = vec3_new(camera_x, 0.0f, 0.0f);
   for (uint32_t i = 0u; i < near_count; ++i) {
-    lights[i] = make_gltf_point(
-        10000u + i, vec3_new(camera_x, 0.001f * (float32_t)i, 0), 1000.0f);
+    /* Within a metre of the camera however large the table. */
+    const float32_t offset = (float32_t)i / (float32_t)near_count;
+    lights[i] =
+        make_gltf_point(10000u + i, vec3_new(camera_x, offset, 0), 1000.0f);
     lights[i].casts_shadow = true_v;
   }
   lights[near_count] = make_gltf_point(1u, vec3_new(10.0f, 0.0f, 0.0f), 100.0f);

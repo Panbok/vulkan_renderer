@@ -19,10 +19,12 @@ typedef enum VkrPointLightKind {
  */
 #define VKR_POINT_LIGHT_SOURCE_RADIUS_MAX 1.0f
 
-/* Point and spot lights one frame's table holds (ADR-019). The desktop
- * pipeline shades every row from its light tiles (ADR-135); the tiled
- * pipeline draws its 64 nearest from tile lists (ADR-087, decision 11). */
-#define VKR_MAX_SCENE_POINT_LIGHTS 1024u
+/* Point and spot lights one frame's table holds (ADR-019); 0xFFFF stays
+ * free as a 16-bit empty row index. The desktop pipeline shades the rows
+ * below vkr_vulkan_shaded_point_light_limit from its light tiles and counts
+ * the rest as unshaded (ADR-135); the tiled pipeline draws its 64 nearest
+ * from tile lists (ADR-087, decision 11). */
+#define VKR_MAX_SCENE_POINT_LIGHTS 65535u
 /* The light head: the highest-ranked shadow casters, which lie in the
  * table's first min(count, VKR_POINT_LIGHT_GRID_LIGHT_MAX) rows beside other
  * lights. Only those rows cast local shadows and take contribution counters,
