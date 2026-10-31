@@ -3108,7 +3108,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_stabilize(
       .pipeline = renderer->tiled_stabilize_pipeline,
       .root = root_gpu,
       .threads = MTLSizeMake(output.width, output.height, 1u),
-      .group_size = MTLSizeMake(8u, 8u, 1u),
+      /* The kernel's threadgroup window (VKR_METAL_TILED_STABLE_GROUP). */
+      .group_size = MTLSizeMake(16u, 16u, 1u),
   };
   prepared->stabilize.history_in_flight =
       history_valid && renderer->temporal_previous_submit_value >

@@ -2322,6 +2322,10 @@ static_assert(sizeof(VkrMetalTiledMotionRoot) == 96,
 constant float VKR_METAL_TILED_STABLE_FRAMES = 32.0f;
 constant float VKR_METAL_TILED_STABLE_CLIP = 0.05f;
 constant float VKR_METAL_TILED_STABLE_MOTION_PIXELS = 0.01f;
+// Mirrors the host's 16x16 dispatch groups.
+constant ushort VKR_METAL_TILED_STABLE_GROUP = 16u;
+constant ushort VKR_METAL_TILED_STABLE_WINDOW =
+    VKR_METAL_TILED_STABLE_GROUP + 2u;
 
 struct VkrMetalTiledStabilizeRoot {
   texture2d<float, access::read> color;
@@ -2335,46 +2339,72 @@ struct VkrMetalTiledStabilizeRoot {
   uint reserved[2];
 };
 
-kernel void vkr_metal_tiled_stabilize(constant VkrMetalTiledStabilizeRoot &root
-                                      [[buffer(0)]],
-                                      uint2 pixel [[thread_position_in_grid]]) {
+kernel void vkr_metal_tiled_stabilize(
+    constant VkrMetalTiledStabilizeRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]],
+    uint2 group [[threadgroup_position_in_grid]],
+    ushort2 local [[thread_position_in_threadgroup]],
+    ushort2 group_size [[threads_per_threadgroup]]) {
+  // The group's pixels and a one-pixel border, read once: each pixel's 3x3
+  // neighbourhood then comes from threadgroup memory, not nine reads of the
+  // uncompressed MetalFX output. Half holds its RGBA16F values exactly.
+  threadgroup half3 window[VKR_METAL_TILED_STABLE_WINDOW *
+                           VKR_METAL_TILED_STABLE_WINDOW];
+  const bool history_valid = root.history_valid != 0u;
+  if (history_valid) {
+    const int2 origin = int2(group * VKR_METAL_TILED_STABLE_GROUP) - 1;
+    const int2 last = int2(root.extent) - 1;
+    const ushort thread_count = group_size.x * group_size.y;
+    for (ushort i = local.y * group_size.x + local.x;
+         i < VKR_METAL_TILED_STABLE_WINDOW * VKR_METAL_TILED_STABLE_WINDOW;
+         i += thread_count) {
+      const int2 tap =
+          clamp(origin + int2(i % VKR_METAL_TILED_STABLE_WINDOW,
+                              i / VKR_METAL_TILED_STABLE_WINDOW),
+                int2(0), last);
+      window[i] = half3(root.color.read(uint2(tap)).rgb);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
   if (any(pixel >= root.extent))
     return;
-  const float3 current = root.color.read(pixel).rgb;
+  if (!history_valid) {
+    root.output.write(float4(root.color.read(pixel).rgb, 1.0f), pixel);
+    return;
+  }
+  const ushort centre =
+      (local.y + 1u) * VKR_METAL_TILED_STABLE_WINDOW + local.x + 1u;
+  const float3 current = float3(window[centre]);
   float4 result = float4(current, 1.0f);
-  if (root.history_valid != 0u) {
-    const uint2 motion_pixel =
-        min(uint2((float2(pixel) + 0.5f) * float2(root.motion_extent) /
-                  float2(root.extent)),
-            root.motion_extent - 1u);
-    const float2 motion =
-        root.motion.read(motion_pixel).xy * float2(root.motion_extent);
-    const float4 history = root.history.read(pixel);
-    const int2 last = int2(root.extent) - 1;
-    float3 low = current;
-    float3 high = current;
-    for (int y = -1; y <= 1; ++y) {
-      for (int x = -1; x <= 1; ++x) {
-        const uint2 tap = uint2(clamp(int2(pixel) + int2(x, y), int2(0), last));
-        const float3 neighbour = root.color.read(tap).rgb;
-        low = min(low, neighbour);
-        high = max(high, neighbour);
-      }
+  const uint2 motion_pixel =
+      min(uint2((float2(pixel) + 0.5f) * float2(root.motion_extent) /
+                float2(root.extent)),
+          root.motion_extent - 1u);
+  const float2 motion =
+      root.motion.read(motion_pixel).xy * float2(root.motion_extent);
+  const float4 history = root.history.read(pixel);
+  half3 low = window[centre];
+  half3 high = low;
+  for (ushort y = 0u; y < 3u; ++y) {
+    for (ushort x = 0u; x < 3u; ++x) {
+      const half3 neighbour =
+          window[(local.y + y) * VKR_METAL_TILED_STABLE_WINDOW + local.x + x];
+      low = min(low, neighbour);
+      high = max(high, neighbour);
     }
-    const float3 history_mean = history.rgb * root.history_scale;
-    const float3 mean = clamp(history_mean, low, high);
-    const float3 weights = float3(0.2126f, 0.7152f, 0.0722f);
-    const float clip = dot(abs(history_mean - mean), weights);
-    const bool still = dot(motion, motion) <
-                       VKR_METAL_TILED_STABLE_MOTION_PIXELS *
-                           VKR_METAL_TILED_STABLE_MOTION_PIXELS;
-    const bool steady =
-        clip <= max(VKR_METAL_TILED_STABLE_CLIP * dot(mean, weights), 1e-4f);
-    if (still && steady) {
-      const float count =
-          min(history.a + 1.0f, VKR_METAL_TILED_STABLE_FRAMES);
-      result = float4(mean + (current - mean) / count, count);
-    }
+  }
+  const float3 history_mean = history.rgb * root.history_scale;
+  const float3 mean = clamp(history_mean, float3(low), float3(high));
+  const float3 weights = float3(0.2126f, 0.7152f, 0.0722f);
+  const float clip = dot(abs(history_mean - mean), weights);
+  const bool still = dot(motion, motion) <
+                     VKR_METAL_TILED_STABLE_MOTION_PIXELS *
+                         VKR_METAL_TILED_STABLE_MOTION_PIXELS;
+  const bool steady =
+      clip <= max(VKR_METAL_TILED_STABLE_CLIP * dot(mean, weights), 1e-4f);
+  if (still && steady) {
+    const float count = min(history.a + 1.0f, VKR_METAL_TILED_STABLE_FRAMES);
+    result = float4(mean + (current - mean) / count, count);
   }
   root.output.write(result, pixel);
 }

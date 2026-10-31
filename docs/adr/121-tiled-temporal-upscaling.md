@@ -131,7 +131,10 @@ like clouds and froxel fog.
     than 5% of its luminance. A test of the pixel's own luminance change
     could not be used: jitter flicker changes a pixel by 10 to 40%.
     Post passes read that image on still frames and `tiled_temporal_color`
-    on moving frames.
+    on moving frames. Each 16×16 threadgroup reads its pixels and a
+    one-pixel border into threadgroup memory once, so the 3×3
+    neighbourhood does not take nine reads of the uncompressed MetalFX
+    output per pixel.
 11. **Display-linear input.** Exposure and bloom read the internal
     `hdr_scene_color` after `Tiled.Blend`. `Post.DisplayLinear.Internal`
     then applies bloom, exposure, grading and the tone curve once per
@@ -252,9 +255,30 @@ uncompressed storage image, 0.09 ms slower. Captures of `final_color` after
 32 still frames: after against before 64.8 and 65.0 dB, at most 14 of 255 on
 about 240 pixels; before against before 66.2 dB, at most 10 of 255; after
 against after 66.6 dB, at most 14 of 255, so the difference is MetalFX's
-run-to-run spread. Sharing the `Tiled.Stabilize` 3×3 neighbourhood through
+run-to-run spread. Sharing the fused kernel's 3×3 neighbourhood through
 threadgroup memory was 0.06 ms slower (0.89 against 0.83 ms with the
-exposure and bloom work in the same encoder) and was not kept.
+exposure and bloom work in the same encoder) and was not kept; the
+standalone kernel's window is faster (see Stabilize threadgroup window).
+
+### Stabilize threadgroup window
+
+Release on `8bbd85ed` plus the change, M1 Pro, 2026-10-31, per-pass GPU
+timestamps (`local-offscreen-gpu-single`), plain Bistro street view, still,
+at 2560×1440, MetalFX 0.6, p50 in ms:
+
+| Build | `Tiled.Stabilize` |
+|---|---|
+| before (8×8 groups, nine reads per pixel) | 0.716 |
+| after (16×16 groups, 18×18 window) | 0.605 / 0.624 / 0.610 / 0.610 |
+| 32×8 groups, 34×10 window | 0.611 / 0.615 |
+
+The pass moves about 28 bytes per pixel after the change (the window, the
+history, the motion and the output), about 165 GB/s, near the device's
+bandwidth, so the group shape no longer matters. Captures of `final_color`
+after 90 still frames: after against before 110.8 dB, at most 1 of 255;
+the two before runs differ by 68.4 dB, at most 7 of 255. Metal shader
+validation is unavailable for this pass: the still capture with MetalFX did
+not complete under `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1`.
 
 ### Frame-gap reset fix
 
