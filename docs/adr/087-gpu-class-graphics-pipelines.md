@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-30
+updated: 2026-10-31
 authority: adr
 ---
 
@@ -1485,8 +1485,10 @@ register count sets most of its cost.
 [ADR-138](138-tiled-opaque-register-budget.md) owns the order and types of
 the forward shading that bound it, the no-volume shading variants, the
 offline register count, the measurements (Bistro with dynamic lamps 7.5 to
-5.3 ms, lightmapped Bistro 3.84 to 1.97 ms) and the alternatives declined,
-among them deferred local lights.
+5.3 ms, lightmapped Bistro 3.84 to 1.97 ms), the light draw that shades
+point and spot lights at the end of each opaque pass from a memoryless
+surface target (street 5.8 to 5.1 ms, orbit p95 8.4 to 6.3 ms) and the
+alternatives declined.
 
 ### Sun contact shadow measurement
 

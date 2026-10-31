@@ -595,11 +595,20 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   const VkrMetalPacketIndirectPass *draw = &pass->tiled.draws;
+  const uint32_t sun = pass->tiled.sun != 0u ? 1u : 0u;
+  const uint32_t demand = pass->tiled.demand != 0u ? 1u : 0u;
+  /* A deferred light frame's pass has the surface target, which its own
+     pass pipelines declare (ADR-138). */
+  const VkrMetalTiledSurfacePass *surface =
+      pass->tiled.surface
+          ? &renderer->tiled_surface_passes[sun | (demand << 1u) |
+                                            (pass->tiled.no_volume ? 4u : 0u)]
+          : NULL;
   [encoder setViewport:draw->viewport];
   vkr_metal_packet_record_tiled_light_tile(
       renderer, encoder, pass,
-      renderer->tiled_light_pipelines[pass->tiled.sun != 0u ? 1u : 0u]
-                                     [pass->tiled.demand != 0u ? 1u : 0u]);
+      surface ? surface->light_tile
+              : renderer->tiled_light_pipelines[sun][demand]);
   if (draw->commands) {
     /* Opaque buckets shade first, without discard, then the alpha-tested
        ones write the samples their alpha covers. The overdraw view draws
@@ -638,7 +647,15 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
            draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
            ++plane) {
         const uint32_t variant = plane | pass->tiled.sun | pass->tiled.demand |
-                                 pass->tiled.no_volume;
+                                 pass->tiled.no_volume | pass->tiled.surface;
+        /* A deferred light frame's extended draws shade their own point and
+           spot lights and leave the light draw no surface. */
+        const uint32_t plane_lighting =
+            plane != 0u && pass->tiled.deferred != 0u
+                ? (pass->tiled.deferred == 2u
+                       ? (uint32_t)VKR_METAL_TILED_LIGHTING_SHADOWED
+                       : (uint32_t)VKR_METAL_TILED_LIGHTING_PUNCTUAL)
+                : lighting;
         for (uint32_t slot = 0u; slot < VKR_METAL_COMPACTION_SLOTS; ++slot) {
           if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
             continue;
@@ -651,14 +668,14 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
           id<MTLRenderPipelineState> pipeline =
               overdraw    ? draw->opaque_pipeline
               : slot == 0u
-                  ? (cutout
-                         ? renderer->tiled_coverage_pipelines[variant][decals]
-                                                             [probes][lighting]
-                         : renderer->tiled_forward_pipelines[variant][decals]
-                                                            [probes][lighting])
-                  : (cutout
-                         ? graph->coverage[variant][decals][probes][lighting]
-                         : graph->forward[variant][decals][probes][lighting]);
+                  ? (cutout ? renderer->tiled_coverage_pipelines
+                                  [variant][decals][probes][plane_lighting]
+                            : renderer->tiled_forward_pipelines
+                                  [variant][decals][probes][plane_lighting])
+                  : (cutout ? graph->coverage[variant][decals][probes]
+                                             [plane_lighting]
+                            : graph->forward[variant][decals][probes]
+                                            [plane_lighting]);
           vkr_metal_packet_set_render_pipeline(renderer, encoder, pipeline);
           for (uint32_t bucket = 0u;
                bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT; ++bucket) {
@@ -673,18 +690,33 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
   }
   /* Each pass of a demand frame reads back the texture demand of the
      surfaces it drew. */
-  const uint32_t sun = pass->tiled.sun != 0u ? 1u : 0u;
-  const uint32_t demand = pass->tiled.demand != 0u ? 1u : 0u;
   if (pass->tiled.demand_root) {
     [renderer->argument_table setAddress:pass->tiled.demand_root atIndex:1u];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageTile];
-    vkr_metal_packet_set_render_pipeline(renderer, encoder,
-                                         renderer->tiled_demand_pipelines[sun]);
+    vkr_metal_packet_set_render_pipeline(
+        renderer, encoder,
+        surface ? surface->demand_tile : renderer->tiled_demand_pipelines[sun]);
     vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder
         dispatchThreadsPerTile:MTLSizeMake(VKR_METAL_TILED_TILE_WIDTH,
                                            VKR_METAL_TILED_TILE_HEIGHT, 1u)];
+  }
+  /* A deferred light frame's light draw shades the point and spot lights
+     over the surfaces this pass drew (ADR-138). */
+  if (pass->tiled.deferred != 0u) {
+    [renderer->argument_table setAddress:pass->tiled.deferred_root
+                                 atIndex:1u];
+    [encoder setArgumentTable:renderer->argument_table
+                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    [encoder setDepthStencilState:renderer->tiled_overdraw_state];
+    vkr_metal_packet_set_render_pipeline(
+        renderer, encoder, surface->lights[pass->tiled.deferred - 1u]);
+    [encoder setCullMode:MTLCullModeNone];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                vertexStart:0u
+                vertexCount:3u];
   }
   /* An early pass of a two-phase frame leaves the sky and the resolve to
      the late pass (ADR-032). */
@@ -697,7 +729,8 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
     [encoder setDepthStencilState:renderer->tiled_sky_state];
     vkr_metal_packet_set_render_pipeline(
-        renderer, encoder, renderer->tiled_sky_pipelines[sun][demand]);
+        renderer, encoder,
+        surface ? surface->sky : renderer->tiled_sky_pipelines[sun][demand]);
     [encoder setCullMode:MTLCullModeNone];
     vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle
@@ -705,7 +738,8 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
                 vertexCount:3u];
   }
   vkr_metal_packet_set_render_pipeline(
-      renderer, encoder, renderer->tiled_resolve_pipelines[sun][demand]);
+      renderer, encoder,
+      surface ? surface->resolve : renderer->tiled_resolve_pipelines[sun][demand]);
   vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
   [encoder dispatchThreadsPerTile:MTLSizeMake(VKR_METAL_TILED_TILE_WIDTH,
                                               VKR_METAL_TILED_TILE_HEIGHT, 1u)];

@@ -839,7 +839,11 @@ material; the desktop pipeline's G-buffer resolve takes a detail variant in
 those frames ([ADR-136](adr/136-standard-detail-maps.md)). Frames whose
 scene binds no diffuse volume take shading variants that compile its lookup
 out, and the forward shading samples the sun's cascades before the material
-and keeps its light totals in half precision to bound its register count
+and keeps its light totals in half precision to bound its register count.
+With one sample a pixel, frames whose dynamic lights are point and spot
+lights draw the base model without them and write its surface to a
+memoryless target; a light draw at the end of each opaque pass shades them
+from it in a kernel of their own
 ([ADR-138](adr/138-tiled-opaque-register-budget.md)). It
 draws the 64 dynamic lights nearest the camera, each tile walking the ones
 its tile kernel lists within the fragment's depth bin, 4 of them shadowed

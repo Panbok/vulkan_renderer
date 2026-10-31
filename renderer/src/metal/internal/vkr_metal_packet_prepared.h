@@ -206,6 +206,15 @@ typedef struct VkrMetalPacketPreparedPass {
       /* VKR_METAL_TILED_NO_VOLUME_VARIANT in frames that shade without the
          diffuse volume's lookup, else zero. */
       uint32_t no_volume;
+      /* Deferred light frames (ADR-138): 1 when the pass ends with the
+         light draw of point and spot lights, 2 with their local shadows,
+         else 0; the draw's root (VkrMetalTiledSkyRoot over the camera
+         draws' frame root); and VKR_METAL_TILED_SURFACE_VARIANT, which
+         picks the forward variant and the pass pipelines with the surface
+         target, else zero. */
+      uint32_t deferred;
+      uint64_t deferred_root;
+      uint32_t surface;
       /* The overdraw view: every draw adds a layer without a depth test,
          and no sky is drawn (ADR-127). */
       bool8_t overdraw;

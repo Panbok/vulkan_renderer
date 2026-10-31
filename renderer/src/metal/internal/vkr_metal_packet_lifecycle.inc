@@ -897,6 +897,15 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
     [renderer->tiled_atmosphere_pipelines[sun][1] release];
     [renderer->tiled_overdraw_pipelines[sun] release];
   }
+  for (uint32_t set = 0u; set < VKR_METAL_TILED_SURFACE_SET_COUNT; ++set) {
+    VkrMetalTiledSurfacePass *pass = &renderer->tiled_surface_passes[set];
+    [pass->sky release];
+    [pass->resolve release];
+    [pass->light_tile release];
+    [pass->demand_tile release];
+    [pass->lights[0] release];
+    [pass->lights[1] release];
+  }
   [renderer->tiled_overdraw_blend_pipeline release];
   [renderer->tiled_blend_light_pipeline release];
   [renderer->tiled_picking_pipeline release];
@@ -909,6 +918,8 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->tiled_msaa_sun release];
   [renderer->tiled_demand_target release];
   [renderer->tiled_retired_demand release];
+  [renderer->tiled_surface_target release];
+  [renderer->tiled_retired_surface release];
   [renderer->tiled_retired_color release];
   [renderer->tiled_retired_depth release];
   [renderer->tiled_retired_sun release];

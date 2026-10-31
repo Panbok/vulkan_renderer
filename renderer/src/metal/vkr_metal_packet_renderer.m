@@ -832,7 +832,13 @@ typedef enum VkrMetalTiledLighting {
    (vkr_tiled_no_volume); created in the background when a frame first runs
    without a volume, by sun and demand variant. */
 #define VKR_METAL_TILED_NO_VOLUME_VARIANT 8u
-#define VKR_METAL_TILED_SHADING_VARIANT_COUNT 16u
+/* Plus VKR_METAL_TILED_SURFACE_VARIANT in deferred light frames
+   (vkr_metal_packet_tiled_deferred_frame), whose opaque entries shade
+   without their point and spot lights and write the surface those need to
+   VKR_METAL_TILED_SURFACE_ATTACHMENT; created in the background when a frame
+   first can defer its lights, by sun, demand and no-volume variant. */
+#define VKR_METAL_TILED_SURFACE_VARIANT 16u
+#define VKR_METAL_TILED_SHADING_VARIANT_COUNT 32u
 /* The sun light target: the unshadowed light and the cascade visibility. */
 #define VKR_METAL_TILED_SUN_LIGHT_FORMAT MTLPixelFormatRGBA16Float
 /* The tiled opaque pass's texture demand words (ADR-024), a memoryless
@@ -840,8 +846,28 @@ typedef enum VkrMetalTiledLighting {
    (VkrMetalTiledForwardOutput.texture_demand). */
 #define VKR_METAL_TILED_DEMAND_ATTACHMENT 2u
 #define VKR_METAL_TILED_DEMAND_FORMAT MTLPixelFormatR32Uint
+/* Deferred light frames' surface (VkrMetalTiledForwardOutput.surface), a
+   memoryless target the forward shading writes and the light draw at the
+   end of each opaque pass reads (vkr_metal_tiled_deferred_lights). */
+#define VKR_METAL_TILED_SURFACE_ATTACHMENT 3u
+#define VKR_METAL_TILED_SURFACE_FORMAT MTLPixelFormatRGBA32Uint
+/* The surface variants' pass pipelines by sun, demand and no-volume
+   variant (bit 0 sun, bit 1 demand, bit 2 no volume). */
+#define VKR_METAL_TILED_SURFACE_SET_COUNT 8u
 
 #define VKR_METAL_CUSTOM_LIBRARY_PATH 4096u
+
+/* A surface set's opaque pass pipelines (VkrMetalPacketRenderer
+   .tiled_surface_passes): the sky, resolve, light tile and demand tile over
+   the pass's targets with the surface target, and the light draws without
+   (0) and with (1) local shadows. */
+typedef struct VkrMetalTiledSurfacePass {
+  id<MTLRenderPipelineState> sky;
+  id<MTLRenderPipelineState> resolve;
+  id<MTLRenderPipelineState> light_tile;
+  id<MTLRenderPipelineState> demand_tile;
+  id<MTLRenderPipelineState> lights[2];
+} VkrMetalTiledSurfacePass;
 
 /* A Custom graph's pipelines (ADR-096): created on a background queue the
    first time a material names its function. */
@@ -1176,6 +1202,28 @@ struct VkrMetalPacketRenderer {
   /* Whether this frame shades with its no-volume variant: its scene binds
      no diffuse volume and that variant's Standard pipelines are READY. */
   bool8_t tiled_no_volume;
+  /* The same for the surface variants of both BRDF variants and the
+     opaque pass pipelines of deferred light frames, by surface set
+     (VKR_METAL_TILED_SURFACE_SET_COUNT): EMPTY until a frame first can
+     defer its lights in that set. */
+  VkrAtomicUint32 tiled_surface_state[VKR_METAL_TILED_SURFACE_SET_COUNT];
+  VkrJobHandle tiled_surface_jobs[VKR_METAL_TILED_SURFACE_SET_COUNT];
+  /* A surface set's sky, resolve, light tile and, in demand sets, demand
+     tile over the opaque pass's targets with the surface target, and its
+     light draws without (0) and with (1) local shadows. */
+  VkrMetalTiledSurfacePass
+      tiled_surface_passes[VKR_METAL_TILED_SURFACE_SET_COUNT];
+  /* Whether this frame defers its point and spot lights to the light draw:
+     its surface set is READY (vkr_metal_packet_tiled_deferred_frame). */
+  bool8_t tiled_deferred;
+  /* The opaque pass's memoryless surface target, its extent, and the one a
+     resize replaced, released once the GPU completes
+     `tiled_retired_surface_submit_value`. */
+  id<MTLTexture> tiled_surface_target;
+  uint32_t tiled_surface_width;
+  uint32_t tiled_surface_height;
+  id<MTLTexture> tiled_retired_surface;
+  uint64_t tiled_retired_surface_submit_value;
   id<MTLRenderPipelineState> tiled_text_pipeline;
   /* Custom material graphs (ADR-096): the project library, each slot's
      pipelines (slot 0 stays empty) and the jobs creating them. */
@@ -1253,6 +1301,9 @@ struct VkrMetalPacketRenderer {
      (ADR-032). */
   bool8_t hzb_history_in_flight;
   uint64_t gpu_draw_roots_gpu;
+  /* The camera view's frame root this frame, which a deferred light frame's
+     light draw reads its lights through. */
+  uint64_t camera_frame_root_gpu;
   uint32_t custom_ready_mask;
   /* This frame buckets extended Standard draws into Custom slot 0, which the
      tiled pipeline shades with its extension variant (ADR-113): a scene

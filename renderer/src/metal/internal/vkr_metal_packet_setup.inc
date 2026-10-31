@@ -518,13 +518,21 @@ typedef enum VkrMetalPacketBlend {
   VKR_METAL_PACKET_BLEND_ADD,
 } VkrMetalPacketBlend;
 
+/* The surface target's format in a deferred light frame's opaque passes,
+   which every pipeline drawing in them declares, else none. */
+vkr_internal MTLPixelFormat
+vkr_metal_packet_tiled_surface_format(bool8_t surface_target) {
+  return surface_target ? VKR_METAL_TILED_SURFACE_FORMAT
+                        : MTLPixelFormatInvalid;
+}
+
 vkr_internal id<MTLRenderPipelineState>
 vkr_metal_packet_create_pipeline_with_targets(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> vertex_library,
     const char *vertex_name, id<MTLLibrary> fragment_library,
     const char *fragment_name, MTLPixelFormat color_format,
     MTLPixelFormat second_color_format, MTLPixelFormat third_color_format,
-    VkrMetalPacketBlend blend, VkrMetalPacketAbiRecordId vertex_abi,
+    bool8_t surface_target, VkrMetalPacketBlend blend, VkrMetalPacketAbiRecordId vertex_abi,
     VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
     uint32_t sample_count, MTLFunctionConstantValues *fragment_constants,
     NSString *label) API_AVAILABLE(macos(26.0)) {
@@ -603,10 +611,12 @@ vkr_metal_packet_create_pipeline_with_targets(
   }
   /* A second and third target the fragment writes unblended, such as the
      tiled sun light of sun contact frames and the tiled opaque pass's
-     texture demand words. */
+     texture demand words, and a deferred light frame's surface. */
   descriptor.colorAttachments[1].pixelFormat = second_color_format;
   descriptor.colorAttachments[VKR_METAL_TILED_DEMAND_ATTACHMENT].pixelFormat =
       third_color_format;
+  descriptor.colorAttachments[VKR_METAL_TILED_SURFACE_ATTACHMENT].pixelFormat =
+      vkr_metal_packet_tiled_surface_format(surface_target);
   NSError *error = nil;
   const uint64_t start_ns = vkr_metal_packet_now_ns();
   id<MTLRenderPipelineState> pipeline = [renderer->compiler
@@ -640,7 +650,7 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
     NSString *label) API_AVAILABLE(macos(26.0)) {
   return vkr_metal_packet_create_pipeline_with_targets(
       renderer, vertex_library, vertex_name, fragment_library, fragment_name,
-      color_format, MTLPixelFormatInvalid, MTLPixelFormatInvalid, blend,
+      color_format, MTLPixelFormatInvalid, MTLPixelFormatInvalid, false_v, blend,
       vertex_abi, fragment_abi, supports_icb, 1u, nil, label);
 }
 
@@ -854,6 +864,21 @@ typedef struct VkrMetalTiledEntries {
   NSString *blend_label;
 } VkrMetalTiledEntries;
 
+/* Whether shading variant `variant` has the pipelines of lighting variant
+   `lighting`. A surface variant has only those deferred light frames bind:
+   the base model's without dynamic lights, whose light draw shades them,
+   and the BRDF extensions' with point and spot lights, which shade their
+   own (ADR-138). */
+vkr_internal bool8_t vkr_metal_packet_tiled_variant_has_lighting(
+    uint32_t variant, uint32_t lighting) {
+  if ((variant & VKR_METAL_TILED_SURFACE_VARIANT) == 0u)
+    return true_v;
+  if ((variant & 1u) == 0u)
+    return lighting == VKR_METAL_TILED_LIGHTING_NONE;
+  return lighting == VKR_METAL_TILED_LIGHTING_PUNCTUAL ||
+         lighting == VKR_METAL_TILED_LIGHTING_SHADOWED;
+}
+
 /* A Custom graph's forward entries are `<function>_` and these names
    (vkr_material_codegen_msl_entries). */
 static const VkrMetalTiledEntries
@@ -1026,17 +1051,20 @@ vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
   const MTLPixelFormat demand_format =
       (variant & VKR_METAL_TILED_DEMAND_VARIANT) ? VKR_METAL_TILED_DEMAND_FORMAT
                                                  : MTLPixelFormatInvalid;
+  const bool8_t surface = (variant & VKR_METAL_TILED_SURFACE_VARIANT) != 0u;
   bool8_t complete = true_v;
   for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
        ++decals) {
     for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
          ++probes) {
       for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+        if (!vkr_metal_packet_tiled_variant_has_lighting(variant, i))
+          continue;
         renderer->tiled_forward_pipelines[variant][decals][probes][i] =
             vkr_metal_packet_create_pipeline_with_targets(
                 renderer, fragment, "vkr_metal_tiled_vertex", fragment,
                 tiled_lighting[i].forward[decals][probes],
-                MTLPixelFormatRGBA16Float, sun_format, demand_format,
+                MTLPixelFormatRGBA16Float, sun_format, demand_format, surface,
                 VKR_METAL_PACKET_BLEND_NONE,
                 VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                 VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
@@ -1046,7 +1074,7 @@ vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
             vkr_metal_packet_create_pipeline_with_targets(
                 renderer, fragment, "vkr_metal_tiled_vertex", fragment,
                 tiled_lighting[i].coverage[decals][probes],
-                MTLPixelFormatRGBA16Float, sun_format, demand_format,
+                MTLPixelFormatRGBA16Float, sun_format, demand_format, surface,
                 VKR_METAL_PACKET_BLEND_COVERAGE,
                 VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                 VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
@@ -1069,7 +1097,7 @@ vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
           vkr_metal_packet_create_pipeline_with_targets(
               renderer, fragment, "vkr_metal_tiled_vertex", fragment,
               tiled_lighting[i].blend[probes], MTLPixelFormatRGBA16Float,
-              MTLPixelFormatInvalid, MTLPixelFormatInvalid,
+              MTLPixelFormatInvalid, MTLPixelFormatInvalid, false_v,
               VKR_METAL_PACKET_BLEND_BEHIND,
               VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
               VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, 1u, constants,
@@ -1160,6 +1188,7 @@ vkr_metal_packet_create_tiled_tile_pipeline(VkrMetalPacketRenderer *renderer,
                                             NSString *function_name,
                                             MTLPixelFormat sun_format,
                                             MTLPixelFormat demand_format,
+                                            bool8_t surface_target,
                                             uint32_t sample_count,
                                             NSString *label)
     API_AVAILABLE(macos(26.0)) {
@@ -1175,6 +1204,8 @@ vkr_metal_packet_create_tiled_tile_pipeline(VkrMetalPacketRenderer *renderer,
   descriptor.colorAttachments[1].pixelFormat = sun_format;
   descriptor.colorAttachments[VKR_METAL_TILED_DEMAND_ATTACHMENT].pixelFormat =
       demand_format;
+  descriptor.colorAttachments[VKR_METAL_TILED_SURFACE_ATTACHMENT].pixelFormat =
+      vkr_metal_packet_tiled_surface_format(surface_target);
   descriptor.threadgroupSizeMatchesTileSize = YES;
   NSError *error = nil;
   const uint64_t start_ns = vkr_metal_packet_now_ns();
@@ -1214,7 +1245,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
       vkr_metal_packet_create_pipeline_with_targets(
           renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
           "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float, sun_format,
-          demand_format, VKR_METAL_PACKET_BLEND_NONE,
+          demand_format, false_v, VKR_METAL_PACKET_BLEND_NONE,
           VKR_METAL_PACKET_ABI_RECORD_COUNT,
           VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v,
           renderer->tiled_sample_count, constants,
@@ -1225,7 +1256,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
   renderer->tiled_resolve_pipelines[sun][demand] =
       vkr_metal_packet_create_tiled_tile_pipeline(
           renderer, fragment, @"vkr_metal_tiled_resolve_tile", sun_format,
-          demand_format, renderer->tiled_sample_count,
+          demand_format, false_v, renderer->tiled_sample_count,
           demand ? (sun ? @"VKR tiled resolve with sun light and texture demand"
                         : @"VKR tiled resolve with texture demand")
                  : (sun ? @"VKR tiled resolve with sun light"
@@ -1233,7 +1264,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
   renderer->tiled_light_pipelines[sun][demand] =
       vkr_metal_packet_create_tiled_tile_pipeline(
           renderer, fragment, @"vkr_metal_tiled_light_tile", sun_format,
-          demand_format, renderer->tiled_sample_count,
+          demand_format, false_v, renderer->tiled_sample_count,
           demand ? (sun ? @"VKR tiled light tile with sun light and texture "
                           @"demand"
                         : @"VKR tiled light tile with texture demand")
@@ -1243,7 +1274,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
     renderer->tiled_demand_pipelines[sun] =
         vkr_metal_packet_create_tiled_tile_pipeline(
             renderer, fragment, @"vkr_metal_tiled_demand_tile", sun_format,
-            demand_format, renderer->tiled_sample_count,
+            demand_format, false_v, renderer->tiled_sample_count,
             sun ? @"VKR tiled texture demand with sun light"
                 : @"VKR tiled texture demand");
     return;
@@ -1254,7 +1285,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
       vkr_metal_packet_create_pipeline_with_targets(
           renderer, fragment, "vkr_metal_tiled_vertex", fragment,
           "vkr_metal_tiled_overdraw_fragment", MTLPixelFormatRGBA16Float,
-          sun_format, MTLPixelFormatInvalid, VKR_METAL_PACKET_BLEND_ADD,
+          sun_format, MTLPixelFormatInvalid, false_v, VKR_METAL_PACKET_BLEND_ADD,
           VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
           VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
           renderer->tiled_sample_count, constants,
@@ -1265,7 +1296,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
             renderer, fragment, "vkr_metal_tiled_vertex", fragment,
             "vkr_metal_tiled_overdraw_blend_fragment",
             MTLPixelFormatRGBA16Float, MTLPixelFormatInvalid,
-            MTLPixelFormatInvalid, VKR_METAL_PACKET_BLEND_ADD,
+            MTLPixelFormatInvalid, false_v, VKR_METAL_PACKET_BLEND_ADD,
             VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
             VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v, 1u, constants,
             @"VKR tiled blend overdraw");
@@ -1274,7 +1305,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
     renderer->tiled_blend_light_pipeline =
         vkr_metal_packet_create_tiled_tile_pipeline(
             renderer, fragment, @"vkr_metal_tiled_light_tile",
-            MTLPixelFormatInvalid, MTLPixelFormatInvalid, 1u,
+            MTLPixelFormatInvalid, MTLPixelFormatInvalid, false_v, 1u,
             @"VKR tiled blend light tile");
   for (uint32_t shafts = 0u; shafts < 2u; ++shafts) {
     renderer->tiled_atmosphere_pipelines[sun][shafts] =
@@ -1411,7 +1442,101 @@ vkr_metal_packet_tiled_frame_variant(const VkrMetalPacketRenderer *renderer) {
          (renderer->prepared_frame.tiled_texture_demand
               ? VKR_METAL_TILED_DEMAND_VARIANT
               : 0u) |
-         (renderer->tiled_no_volume ? VKR_METAL_TILED_NO_VOLUME_VARIANT : 0u);
+         (renderer->tiled_no_volume ? VKR_METAL_TILED_NO_VOLUME_VARIANT : 0u) |
+         (renderer->tiled_deferred ? VKR_METAL_TILED_SURFACE_VARIANT : 0u);
+}
+
+/* Surface set `set`'s shading variant bits: bit 0 sun, bit 1 demand, bit 2
+   no volume, with the surface variant. */
+vkr_internal uint32_t vkr_metal_packet_tiled_surface_set_variant(uint32_t set) {
+  return ((set & 1u) ? VKR_METAL_TILED_SUN_VARIANT : 0u) |
+         ((set & 2u) ? VKR_METAL_TILED_DEMAND_VARIANT : 0u) |
+         ((set & 4u) ? VKR_METAL_TILED_NO_VOLUME_VARIANT : 0u) |
+         VKR_METAL_TILED_SURFACE_VARIANT;
+}
+
+/* Creates surface set `set`'s opaque pass pipelines over the pass's targets
+   with the surface target: the sky, the resolve, the light tile kernel, in
+   demand sets the demand tile kernel, and the light draws without and with
+   local shadows (vkr_metal_tiled_deferred_lights). Returns whether every one
+   exists. */
+vkr_internal bool8_t vkr_metal_packet_create_tiled_surface_pass_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment, uint32_t set)
+    API_AVAILABLE(macos(26.0)) {
+  MTLFunctionConstantValues *constants =
+      renderer->tiled_shading_constants[vkr_metal_packet_tiled_surface_set_variant(
+          set)];
+  const bool8_t demand = (set & 2u) != 0u;
+  const MTLPixelFormat sun_format =
+      (set & 1u) ? VKR_METAL_TILED_SUN_LIGHT_FORMAT : MTLPixelFormatInvalid;
+  const MTLPixelFormat demand_format =
+      demand ? VKR_METAL_TILED_DEMAND_FORMAT : MTLPixelFormatInvalid;
+  const uint32_t samples = renderer->tiled_sample_count;
+  VkrMetalTiledSurfacePass *pass = &renderer->tiled_surface_passes[set];
+  pass->sky = vkr_metal_packet_create_pipeline_with_targets(
+      renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
+      "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float, sun_format,
+      demand_format, true_v, VKR_METAL_PACKET_BLEND_NONE,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TILED_SKY_ROOT,
+      false_v, samples, constants, @"VKR tiled sky with surface");
+  pass->resolve = vkr_metal_packet_create_tiled_tile_pipeline(
+      renderer, fragment, @"vkr_metal_tiled_resolve_tile", sun_format,
+      demand_format, true_v, samples, @"VKR tiled resolve with surface");
+  pass->light_tile = vkr_metal_packet_create_tiled_tile_pipeline(
+      renderer, fragment, @"vkr_metal_tiled_light_tile", sun_format,
+      demand_format, true_v, samples, @"VKR tiled light tile with surface");
+  if (demand)
+    pass->demand_tile = vkr_metal_packet_create_tiled_tile_pipeline(
+        renderer, fragment, @"vkr_metal_tiled_demand_tile", sun_format,
+        demand_format, true_v, samples,
+        @"VKR tiled texture demand with surface");
+  vkr_local_persist const char *const light_entries[2] = {
+      "vkr_metal_tiled_deferred_punctual_fragment",
+      "vkr_metal_tiled_deferred_shadowed_fragment",
+  };
+  vkr_local_persist NSString *const light_labels[2] = {
+      @"VKR tiled deferred lights",
+      @"VKR tiled deferred shadowed lights",
+  };
+  for (uint32_t shadowed = 0u; shadowed < 2u; ++shadowed)
+    pass->lights[shadowed] = vkr_metal_packet_create_pipeline_with_targets(
+        renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
+        light_entries[shadowed], MTLPixelFormatRGBA16Float, sun_format,
+        demand_format, true_v, VKR_METAL_PACKET_BLEND_NONE,
+        VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TILED_SKY_ROOT,
+        false_v, samples, constants, light_labels[shadowed]);
+  return pass->sky && pass->resolve && pass->light_tile &&
+         (!demand || pass->demand_tile) && pass->lights[0] && pass->lights[1];
+}
+
+/* Creates surface set `set`'s shading pipelines of both BRDF variants and
+   its opaque pass pipelines, then publishes READY or FAILED. Runs as a
+   background build (vkr_metal_packet_custom.inc). */
+vkr_internal void
+vkr_metal_packet_build_tiled_surface_pipelines(VkrMetalPacketRenderer *renderer,
+                                               uint32_t set)
+    API_AVAILABLE(macos(26.0)) {
+  @autoreleasepool {
+    const float64_t start = vkr_platform_get_absolute_time();
+    const uint32_t variant = vkr_metal_packet_tiled_surface_set_variant(set);
+    bool8_t ok = vkr_metal_packet_create_tiled_surface_pass_pipelines(
+        renderer, renderer->fragment_library, set);
+    for (uint32_t brdf = 0u; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf)
+      ok &= vkr_metal_packet_create_tiled_shading_pipelines(
+          renderer, renderer->fragment_library, brdf | variant);
+    if (ok)
+      log_info("Metal: tiled deferred light pipelines (variant %u) ready in "
+               "%.1f ms",
+               variant, (vkr_platform_get_absolute_time() - start) * 1.0e3);
+    else
+      log_warn("Metal: tiled deferred light pipelines (variant %u) failed; "
+               "frames keep shading their lights in the forward pass",
+               variant);
+    vkr_atomic_uint32_store(&renderer->tiled_surface_state[set],
+                            ok ? VKR_METAL_CUSTOM_GRAPH_READY
+                               : VKR_METAL_CUSTOM_GRAPH_FAILED,
+                            VKR_MEMORY_ORDER_RELEASE);
+  }
 }
 
 /* Creates the no-volume variants of both BRDF variants' shading pipelines in
@@ -1476,10 +1601,12 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     const bool8_t demand = (variant & VKR_METAL_TILED_DEMAND_VARIANT) != 0u;
     const bool8_t no_volume =
         (variant & VKR_METAL_TILED_NO_VOLUME_VARIANT) != 0u;
+    const bool8_t surface = (variant & VKR_METAL_TILED_SURFACE_VARIANT) != 0u;
     MTLFunctionConstantValues *constants = [MTLFunctionConstantValues new];
     [constants setConstantValue:&extension type:MTLDataTypeBool atIndex:0];
     [constants setConstantValue:&sun type:MTLDataTypeBool atIndex:1];
     [constants setConstantValue:&demand type:MTLDataTypeBool atIndex:5];
+    [constants setConstantValue:&surface type:MTLDataTypeBool atIndex:7];
     [constants setConstantValue:&no_volume type:MTLDataTypeBool atIndex:8];
     renderer->tiled_shading_constants[variant] = constants;
   }

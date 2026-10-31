@@ -193,6 +193,8 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
       for (uint32_t probes = 0;
            ok && probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT; ++probes) {
         for (uint32_t i = 0; ok && i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+          if (!vkr_metal_packet_tiled_variant_has_lighting(variant, i))
+            continue;
           char name[192];
           string_format(name, sizeof(name), "%s_%s", graph->function,
                         tiled_lighting[i].forward[decals][probes]);
@@ -200,7 +202,8 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
               vkr_metal_packet_create_pipeline_with_targets(
                   renderer, renderer->custom_library, "vkr_metal_tiled_vertex",
                   renderer->custom_library, name, MTLPixelFormatRGBA16Float,
-                  sun_format, demand_format, VKR_METAL_PACKET_BLEND_NONE,
+                  sun_format, demand_format,
+                  (variant & VKR_METAL_TILED_SURFACE_VARIANT) != 0u, VKR_METAL_PACKET_BLEND_NONE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
                   renderer->tiled_sample_count, constants, label);
@@ -210,7 +213,8 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
               vkr_metal_packet_create_pipeline_with_targets(
                   renderer, renderer->custom_library, "vkr_metal_tiled_vertex",
                   renderer->custom_library, name, MTLPixelFormatRGBA16Float,
-                  sun_format, demand_format, VKR_METAL_PACKET_BLEND_COVERAGE,
+                  sun_format, demand_format,
+                  (variant & VKR_METAL_TILED_SURFACE_VARIANT) != 0u, VKR_METAL_PACKET_BLEND_COVERAGE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
                   renderer->tiled_sample_count, constants, label);
@@ -301,6 +305,8 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
     [constants setConstantValue:&no_terrain type:MTLDataTypeBool atIndex:3];
     [constants setConstantValue:&demand type:MTLDataTypeBool atIndex:5];
     [constants setConstantValue:&detail type:MTLDataTypeBool atIndex:6];
+    const bool8_t surface = (variant & VKR_METAL_TILED_SURFACE_VARIANT) != 0u;
+    [constants setConstantValue:&surface type:MTLDataTypeBool atIndex:7];
     [constants setConstantValue:&no_volume type:MTLDataTypeBool atIndex:8];
     static NSString *const labels[VKR_METAL_STANDARD_KIND_COUNT] = {
         @"VKR tiled forward, unlightmapped kind",
@@ -314,12 +320,15 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
       for (uint32_t probes = 0;
            ok && probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT; ++probes) {
         for (uint32_t i = 0; ok && i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+          if (!vkr_metal_packet_tiled_variant_has_lighting(variant, i))
+            continue;
           graph->forward[variant][decals][probes][i] =
               vkr_metal_packet_create_pipeline_with_targets(
                   renderer, renderer->fragment_library,
                   "vkr_metal_tiled_vertex", renderer->fragment_library,
                   tiled_lighting[i].forward[decals][probes],
                   MTLPixelFormatRGBA16Float, sun_format, demand_format,
+                  (variant & VKR_METAL_TILED_SURFACE_VARIANT) != 0u,
                   VKR_METAL_PACKET_BLEND_NONE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
@@ -330,6 +339,7 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
                   "vkr_metal_tiled_vertex", renderer->fragment_library,
                   tiled_lighting[i].coverage[decals][probes],
                   MTLPixelFormatRGBA16Float, sun_format, demand_format,
+                  (variant & VKR_METAL_TILED_SURFACE_VARIANT) != 0u,
                   VKR_METAL_PACKET_BLEND_COVERAGE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
@@ -359,9 +369,10 @@ vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
    `variant`; Standard kind `slot - VKR_METAL_CUSTOM_GRAPH_SLOTS` past the
    Custom slots; or when `slot` is 0 the tiled BRDF extension variant
    (variant 1), the tiled sun variants (VKR_METAL_TILED_SUN_VARIANT), the
-   tiled demand variants of a sun variant (VKR_METAL_TILED_DEMAND_VARIANT) or
+   tiled demand variants of a sun variant (VKR_METAL_TILED_DEMAND_VARIANT),
    the no-volume variants of a sun and demand variant
-   (VKR_METAL_TILED_NO_VOLUME_VARIANT). */
+   (VKR_METAL_TILED_NO_VOLUME_VARIANT) or a surface set's pipelines
+   (VKR_METAL_TILED_SURFACE_VARIANT). */
 typedef struct VkrMetalBackgroundBuild {
   VkrMetalPacketRenderer *renderer;
   uint32_t slot;
@@ -384,6 +395,14 @@ vkr_metal_packet_background_run(const VkrMetalBackgroundBuild *build)
     vkr_metal_packet_custom_create(renderer, build->slot, build->variant);
     subject = renderer->custom_graphs[build->slot].function;
     state = &renderer->custom_graphs[build->slot].state[build->variant];
+  } else if (build->variant & VKR_METAL_TILED_SURFACE_VARIANT) {
+    const uint32_t set =
+        ((build->variant & VKR_METAL_TILED_SUN_VARIANT) != 0u ? 1u : 0u) |
+        ((build->variant & VKR_METAL_TILED_DEMAND_VARIANT) != 0u ? 2u : 0u) |
+        ((build->variant & VKR_METAL_TILED_NO_VOLUME_VARIANT) != 0u ? 4u : 0u);
+    vkr_metal_packet_build_tiled_surface_pipelines(renderer, set);
+    subject = "tiled.surface";
+    state = &renderer->tiled_surface_state[set];
   } else if (build->variant & VKR_METAL_TILED_NO_VOLUME_VARIANT) {
     const uint32_t rest =
         ((build->variant & VKR_METAL_TILED_SUN_VARIANT) != 0u ? 1u : 0u) |
@@ -480,6 +499,8 @@ vkr_metal_packet_background_wait(VkrMetalPacketRenderer *renderer)
   for (uint32_t rest = 0u; rest < 4u; ++rest)
     (void)vkr_job_wait(renderer->job_system,
                        renderer->tiled_no_volume_jobs[rest]);
+  for (uint32_t set = 0u; set < VKR_METAL_TILED_SURFACE_SET_COUNT; ++set)
+    (void)vkr_job_wait(renderer->job_system, renderer->tiled_surface_jobs[set]);
   (void)vkr_job_wait(renderer->job_system, renderer->custom_compile_job);
 }
 
@@ -607,6 +628,65 @@ vkr_internal bool8_t vkr_metal_packet_tiled_no_volume_frame(
               &renderer->custom_graphs[slot]
                    .state[brdf |
                           (variant & ~VKR_METAL_TILED_NO_VOLUME_VARIANT)],
+              VKR_MEMORY_ORDER_ACQUIRE) != VKR_METAL_CUSTOM_GRAPH_EMPTY)
+        vkr_metal_packet_custom_request_variant(renderer, slot, brdf | variant);
+    }
+  }
+  return true_v;
+}
+
+/* Defined with the tiled passes (vkr_metal_packet_frame.inc). */
+vkr_internal VkrMetalTiledLighting
+vkr_metal_packet_tiled_lighting(const VkrPreparedFrame *packet);
+
+/* Whether this frame defers its point and spot lights to a light draw at
+   the end of each opaque pass (ADR-138): one sample a pixel, point or spot
+   lights with or without local shadows and no rectangle light, the default
+   render mode, and its surface set READY. The first such frame in a surface
+   set starts creating that set in the background and asks each Custom
+   graph for its own; until it is ready frames shade their lights in the
+   forward pass. Runs after the frame's no-volume choice. The
+   VKR_TILED_DEFERRED_LIGHTS_DISABLED diagnostic keeps every frame forward. */
+vkr_internal bool8_t vkr_metal_packet_tiled_deferred_frame(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet)
+    API_AVAILABLE(macos(26.0)) {
+  static int32_t disabled = -1;
+  if (disabled < 0)
+    disabled = vkr_platform_environment_flag(
+                   "VKR_TILED_DEFERRED_LIGHTS_DISABLED")
+                   ? 1
+                   : 0;
+  const VkrMetalTiledLighting lighting =
+      vkr_metal_packet_tiled_lighting(packet);
+  if (disabled == 1 || !renderer->fragment_library ||
+      renderer->tiled_sample_count != 1u || !packet->scene_rendering ||
+      packet->input.globals.render_mode != VKR_RENDER_MODE_DEFAULT ||
+      (lighting != VKR_METAL_TILED_LIGHTING_PUNCTUAL &&
+       lighting != VKR_METAL_TILED_LIGHTING_SHADOWED))
+    return false_v;
+  const uint32_t set =
+      (renderer->prepared_frame.tiled_sun_light ? 1u : 0u) |
+      (renderer->prepared_frame.tiled_texture_demand ? 2u : 0u) |
+      (renderer->tiled_no_volume ? 4u : 0u);
+  const uint32_t variant = vkr_metal_packet_tiled_surface_set_variant(set);
+  VkrAtomicUint32 *state = &renderer->tiled_surface_state[set];
+  if (vkr_atomic_uint32_load(state, VKR_MEMORY_ORDER_ACQUIRE) ==
+      VKR_METAL_CUSTOM_GRAPH_EMPTY) {
+    vkr_atomic_uint32_store(state, VKR_METAL_CUSTOM_GRAPH_PENDING,
+                            VKR_MEMORY_ORDER_RELAXED);
+    log_info("Metal: creating the tiled deferred light pipelines");
+    vkr_metal_packet_background_build(renderer, 0u, variant,
+                                      &renderer->tiled_surface_jobs[set]);
+  }
+  if (vkr_atomic_uint32_load(state, VKR_MEMORY_ORDER_ACQUIRE) !=
+      VKR_METAL_CUSTOM_GRAPH_READY)
+    return false_v;
+  for (uint32_t slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+    for (uint32_t brdf = 0u; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT;
+         ++brdf) {
+      if (vkr_atomic_uint32_load(
+              &renderer->custom_graphs[slot]
+                   .state[brdf | (variant & ~VKR_METAL_TILED_SURFACE_VARIANT)],
               VKR_MEMORY_ORDER_ACQUIRE) != VKR_METAL_CUSTOM_GRAPH_EMPTY)
         vkr_metal_packet_custom_request_variant(renderer, slot, brdf | variant);
     }

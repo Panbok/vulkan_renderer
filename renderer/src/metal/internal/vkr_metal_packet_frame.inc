@@ -1532,6 +1532,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
                        : VKR_METAL_PACKET_VIEW_TARGET_CASCADE |
                              (cascade &
                               VKR_METAL_PACKET_VIEW_TARGET_LAYER_MASK));
+    if (view == 0u)
+      renderer->camera_frame_root_gpu = frame_root_gpu;
     draw_roots[view] = (VkrMetalPacketDrawRoot){
         .geometry_rows = upload->gpu_draw_geometry_rows_gpu,
         .visible_rows = visible->resource.gpu_address +
@@ -2546,52 +2548,74 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
   return true_v;
 }
 
-/* Makes the opaque pass's texture demand target match the pass's extent and
-   sample count. A replaced target stays alive until the last submission that
-   drew into it completes; a second resize before then waits for it. */
-vkr_internal bool8_t vkr_metal_packet_tiled_ensure_demand_target(
-    VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
-    API_AVAILABLE(macos(26.0)) {
-  if (renderer->tiled_retired_demand &&
-      vkr_metal_packet_completed(renderer) >=
-          renderer->tiled_retired_demand_submit_value) {
-    [renderer->tiled_retired_demand release];
-    renderer->tiled_retired_demand = nil;
+/* Makes one of the opaque pass's memoryless targets, `*target` of `format`,
+   match the pass's extent and sample count. A replaced target stays alive in
+   `*retired` until the last submission that drew into it,
+   `*retired_submit_value`, completes; a second resize before then waits for
+   it. */
+vkr_internal bool8_t vkr_metal_packet_tiled_ensure_memoryless_target(
+    VkrMetalPacketRenderer *renderer, id<MTLTexture> *target,
+    uint32_t *target_width, uint32_t *target_height, id<MTLTexture> *retired,
+    uint64_t *retired_submit_value, MTLPixelFormat format, uint32_t width,
+    uint32_t height, const char *name) API_AVAILABLE(macos(26.0)) {
+  if (*retired &&
+      vkr_metal_packet_completed(renderer) >= *retired_submit_value) {
+    [*retired release];
+    *retired = nil;
   }
-  if (renderer->tiled_demand_target && renderer->tiled_demand_width == width &&
-      renderer->tiled_demand_height == height)
+  if (*target && *target_width == width && *target_height == height)
     return true_v;
-  if (renderer->tiled_demand_target) {
-    if (renderer->tiled_retired_demand) {
-      if (!vkr_metal_packet_wait(renderer,
-                                 renderer->tiled_retired_demand_submit_value))
+  if (*target) {
+    if (*retired) {
+      if (!vkr_metal_packet_wait(renderer, *retired_submit_value))
         return false_v;
-      [renderer->tiled_retired_demand release];
+      [*retired release];
     }
-    renderer->tiled_retired_demand = renderer->tiled_demand_target;
-    renderer->tiled_retired_demand_submit_value = renderer->submit_value;
-    renderer->tiled_demand_target = nil;
+    *retired = *target;
+    *retired_submit_value = renderer->submit_value;
+    *target = nil;
   }
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
   descriptor.textureType = renderer->tiled_sample_count > 1u
                                ? MTLTextureType2DMultisample
                                : MTLTextureType2D;
-  descriptor.pixelFormat = VKR_METAL_TILED_DEMAND_FORMAT;
+  descriptor.pixelFormat = format;
   descriptor.width = width;
   descriptor.height = height;
   descriptor.sampleCount = renderer->tiled_sample_count;
   descriptor.usage = MTLTextureUsageRenderTarget;
   descriptor.storageMode = MTLStorageModeMemoryless;
-  renderer->tiled_demand_target =
-      [renderer->device newTextureWithDescriptor:descriptor];
+  *target = [renderer->device newTextureWithDescriptor:descriptor];
   [descriptor release];
-  if (!renderer->tiled_demand_target) {
-    log_error("Metal tiled texture demand target unavailable");
+  if (!*target) {
+    log_error("Metal tiled %s target unavailable", name);
     return false_v;
   }
-  renderer->tiled_demand_width = width;
-  renderer->tiled_demand_height = height;
+  *target_width = width;
+  *target_height = height;
   return true_v;
+}
+
+/* The opaque pass's texture demand target (ADR-024). */
+vkr_internal bool8_t vkr_metal_packet_tiled_ensure_demand_target(
+    VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
+    API_AVAILABLE(macos(26.0)) {
+  return vkr_metal_packet_tiled_ensure_memoryless_target(
+      renderer, &renderer->tiled_demand_target, &renderer->tiled_demand_width,
+      &renderer->tiled_demand_height, &renderer->tiled_retired_demand,
+      &renderer->tiled_retired_demand_submit_value,
+      VKR_METAL_TILED_DEMAND_FORMAT, width, height, "texture demand");
+}
+
+/* The opaque pass's surface target in deferred light frames (ADR-138). */
+vkr_internal bool8_t vkr_metal_packet_tiled_ensure_surface_target(
+    VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
+    API_AVAILABLE(macos(26.0)) {
+  return vkr_metal_packet_tiled_ensure_memoryless_target(
+      renderer, &renderer->tiled_surface_target, &renderer->tiled_surface_width,
+      &renderer->tiled_surface_height, &renderer->tiled_retired_surface,
+      &renderer->tiled_retired_surface_submit_value,
+      VKR_METAL_TILED_SURFACE_FORMAT, width, height, "surface");
 }
 
 /* The sky draws' root: the frame, the sky-view lookup at `sky_view_binding`
@@ -2800,15 +2824,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   const bool8_t multisampled = renderer->tiled_sample_count > 1u;
   if (late && (!two_phase || multisampled))
     return false_v;
+  /* Deferred light frames draw the base model without its point and spot
+     lights, which a light draw at the end of each pass shades over the
+     surface the draws wrote (ADR-138). */
+  const bool8_t deferred = (sun & VKR_METAL_TILED_SURFACE_VARIANT) != 0u;
+  const VkrMetalTiledLighting draw_lighting =
+      deferred ? VKR_METAL_TILED_LIGHTING_NONE : lighting;
   if ((overdraw && !overdraw_pipeline) ||
       !vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, prepared,
           overdraw ? overdraw_pipeline
                    : renderer->tiled_coverage_pipelines[sun][decals][probes]
-                                                       [lighting],
+                                                       [draw_lighting],
           overdraw ? overdraw_pipeline
                    : renderer->tiled_forward_pipelines[sun][decals][probes]
-                                                      [lighting],
+                                                      [draw_lighting],
           late ? vkr_render_graph_late_view(&renderer->prepared_frame) : 0u)) {
     return false_v;
   }
@@ -2824,6 +2854,25 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
                      renderer, pass, packet, upload, width, height, 15u, nil,
                      &sky_root, NULL)))
     return false_v;
+  /* The light draw places each surface with the jittered camera and reads
+     the lights through the camera draws' frame root, whose light window the
+     light tile kernel listed by. */
+  uint64_t deferred_root = 0u;
+  if (deferred) {
+    VkrMetalTiledSkyRoot *root =
+        vkr_metal_packet_next_root(upload, sizeof(*root), &deferred_root);
+    if (!root || renderer->camera_frame_root_gpu == 0u)
+      return false_v;
+    const Mat4 view_projection = vkr_metal_packet_clip_matrix(
+        renderer->convert_vulkan_clip_y,
+        mat4_mul(packet->temporal.jittered_projection,
+                 packet->input.globals.view));
+    *root = (VkrMetalTiledSkyRoot){
+        .frame = renderer->camera_frame_root_gpu,
+        .inverse_view_projection = mat4_inverse(view_projection),
+        .extent = {width, height},
+    };
+  }
   MTL4RenderPassDescriptor *descriptor =
       renderer->render_passes[prepared->index];
   /* One sample draws straight into the graph's colour and depth. */
@@ -2869,6 +2918,19 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
       *root = (VkrMetalTiledDemandRoot){.words = upload->texture_demand_gpu};
     }
   }
+  /* Deferred light frames' draws write their surface into a memoryless
+     target the light draw reads; other frames' passes have no such target. */
+  MTLRenderPassColorAttachmentDescriptor *surface_target =
+      descriptor.colorAttachments[VKR_METAL_TILED_SURFACE_ATTACHMENT];
+  surface_target.texture = nil;
+  if (deferred) {
+    if (!vkr_metal_packet_tiled_ensure_surface_target(renderer, width, height))
+      return false_v;
+    surface_target.texture = renderer->tiled_surface_target;
+    surface_target.loadAction = MTLLoadActionClear;
+    surface_target.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    surface_target.storeAction = MTLStoreActionDontCare;
+  }
   uint64_t light_root = 0u;
   if (!overdraw &&
       !vkr_metal_packet_prepare_tiled_light_tile(
@@ -2886,7 +2948,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   prepared->tiled.light_tile = !overdraw;
   prepared->tiled.decals = decals;
   prepared->tiled.probes = probes;
-  prepared->tiled.lighting = lighting;
+  prepared->tiled.lighting = draw_lighting;
+  prepared->tiled.deferred =
+      deferred ? (lighting == VKR_METAL_TILED_LIGHTING_SHADOWED ? 2u : 1u)
+               : 0u;
+  prepared->tiled.deferred_root = deferred_root;
+  prepared->tiled.surface = sun & VKR_METAL_TILED_SURFACE_VARIANT;
   prepared->tiled.sun = sun & VKR_METAL_TILED_SUN_VARIANT;
   prepared->tiled.demand = demand ? VKR_METAL_TILED_DEMAND_VARIANT : 0u;
   prepared->tiled.no_volume = sun & VKR_METAL_TILED_NO_VOLUME_VARIANT;

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-30
+updated: 2026-10-31
 authority: adr
 ---
 
@@ -12,9 +12,11 @@ Accepted. The tiled pipeline's forward fragment shading
 ([tiled.metal](../../renderer/src/shaders/metal/msl/world/tiled.metal),
 [lighting.metalh](../../renderer/src/shaders/metal/msl/world/lighting.metalh),
 [sampling.metalh](../../renderer/src/shaders/metal/msl/shadow/sampling.metalh))
-is ordered and typed to bound its register count, and frames without a
-diffuse volume take shading variants that compile its lookup out. Metal
-only; the desktop pipeline (ADR-087) does not run this code.
+is ordered and typed to bound its register count, frames without a
+diffuse volume take shading variants that compile its lookup out, and
+frames with point and spot lights shade them in a light draw of their own
+at the end of each opaque pass (decision 9). Metal only; the desktop
+pipeline (ADR-087) does not run this code.
 
 ## Context
 
@@ -79,6 +81,33 @@ fragment occupancy down to about 80: 104 registers 19.5%, 88 22.8%, 80
    albedo with unit weight and no metalness. Extension variants keep the
    separate values: their back-lit diffuse uses another weight.
 
+9. **Deferred point and spot lights.** In frames with one sample a pixel,
+   the default render mode and point or spot lights with or without local
+   shadows, but no rectangle light
+   (`vkr_metal_packet_tiled_deferred_frame`), the base model's opaque draws
+   take the variants without dynamic lights with function constant 7
+   (`VKR_METAL_TILED_SURFACE_VARIANT`). Those also write the surface to a
+   memoryless `RGBA32Uint` target at attachment 3: the depth, the
+   octahedral shading normal at 12 bits a component under the roughness
+   after specular anti-aliasing at 8 bits, the octahedral geometric normal
+   at 8 bits a component under the material row, and the base colour's
+   square roots at 8 bits a channel under the metalness. A full-screen draw
+   at the end of each opaque pass (`vkr_metal_tiled_deferred_lights`, both
+   passes of a two-phase frame) reads that target and the colour through
+   programmable blending, rebuilds f0, the BRDF energy and the folded
+   albedo from the material row, and adds the point and spot lights with
+   the tile's light list in threadgroup memory; it reads the lights through
+   the camera draws' frame root. A pixel whose target is clear holds no
+   surface of the pass. A SIMD-group no light of its tile reaches returns
+   before the decode. The BRDF extensions' draws keep their lights in the
+   forward pass and write a clear surface. Each sun, demand and no-volume
+   variant's surface pipelines are created in the background the first time
+   a frame can defer its lights; until they are ready, and under the
+   `VKR_TILED_DEFERRED_LIGHTS_DISABLED` diagnostic, frames shade their
+   lights in the forward pass. The shader packs the octahedral words with
+   integer arithmetic: `pack_float_to_snorm2x16` wrote zero for one of the
+   two normals (Metal toolchain 32023, M1 Pro, 2026-10-31).
+
 A change to the forward shading counts the registers of its affected
 variants before and after, and keeps a change that raises them only with a
 measured gain.
@@ -131,6 +160,33 @@ shadowed, from a capture whose forward pass wrote those counts to
 pixel, near the ALU limit. On M1 16-bit arithmetic runs at the 32-bit rate,
 so half precision helps only where it frees registers.
 
+Decision 9 (2026-10-31, Release on `0e5cf485` plus the change, per-pass
+GPU timestamps with `local-offscreen-gpu-single`, 2560×1440, MetalFX at
+0.6, `Tiled.Opaque` plus `Tiled.Opaque.Late` p50, then `Tiled.Opaque` p95,
+in ms, runs alternating with `VKR_TILED_DEFERRED_LIGHTS_DISABLED`):
+
+| View | Forward lights | Light draw |
+|---|---|---|
+| Bistro with dynamic lamps, street | 5.83 / 5.86 | 5.08 / 5.08 |
+| Bistro with dynamic lamps, orbit, p50 | 3.95 / 3.97 | 4.28 / 4.27 |
+| Bistro with dynamic lamps, orbit, p95 | 8.03 / 8.50 / 8.36 | 6.29 / 6.33 / 6.28 |
+| Lightmapped Bistro, orbit (no dynamic lights) | 2.81 / 2.81 | 2.82 / 2.83 |
+
+The light draw costs a frame about 0.1 to 0.4 ms whatever its lights: the
+surface target (one written memoryless target cost about 0.11 ms, measured
+with the sun's light target) and a full-screen draw in each opaque pass.
+Where few lights reach the pixels, as on the orbit's median frame, that
+outweighs the occupancy it buys; where many do, as on the street and the
+orbit's heaviest frames, the light loop runs faster. Offline registers: the
+shadowed no-volume forward variant 76 against 60 for the surface variant
+and 72 for the light draw with local shadows (64 without); the probe
+surface variant stays at 76, its peak in the probe environment. Captures
+of `final_color` on the street view with manual exposure: light draw
+against forward 60.5 dB, 0.06% of pixels more than 2 of 255 apart, at most
+12 of 255, from the 8-bit roughness and base colour; two forward runs
+differ by 63 to 65 dB. With sun contact shadows 60.5 dB, and in the editor
+63.0 dB.
+
 Vulkan does not run this code; no desktop evidence applies.
 
 ## Alternatives considered
@@ -138,13 +194,18 @@ Vulkan does not run this code; no desktop evidence applies.
 Each was built or compiled on 2026-10-29 or 2026-10-30 with the same
 measurement and not kept:
 
-- **Deferred local lights.** A full-screen draw at the end of each opaque
-  pass reading the surface from four memoryless targets. The forward draws
-  without lights still took 92 registers, the light draw 64 with unshadowed
-  lights, 80 with shadowed ones and 116 with rectangle lights. That would
-  raise occupancy by about a seventh for the lights' 3.6 ms, against four
-  more targets (the texture demand target alone costs about 1 ms) and a
-  costlier draw for rectangle lights.
+- **Deferred local lights with four surface targets** (2026-10-30). The
+  forward draws without lights then took 92 registers, the light draw 64
+  with unshadowed lights, 80 with shadowed ones and 116 with rectangle
+  lights, against four more targets; the texture demand target's 1 ms was
+  taken for a target's cost, though most of it is the demand words'
+  computation. Decision 9 keeps one target. Two targets holding the albedo
+  and f0 in half precision (63 dB against forward) measured 5.75 ms on the
+  street and 4.61 ms on the orbit's median against 4.90 and 4.40 ms with
+  one, in the same prototype session.
+- **Rectangle lights in the light draw.** Not built: their code took the
+  four-target light draw to 116 registers; frames with them keep forward
+  lights.
 - **Sun cascade taps shared across each 2×2 quad.** Each fragment read the
   quarter of the 16 grid taps and 8 blocker taps toward its corner of the
   quad, 6 taps instead of 24. Time stayed inside the spread (1.96 to 2.26
@@ -204,5 +265,6 @@ measurement and not kept:
 A shading change adds a part that is live across the light loop or the
 volume tail; the number of shaded lights per pixel rises past the Bistro
 street's 7; a GPU family with a faster 16-bit rate or a different register
-file becomes a tiled target; or the owner accepts an image change that
-bounds the lights shaded per pixel.
+file becomes a tiled target; the owner accepts an image change that
+bounds the lights shaded per pixel; or a frame can tell before its opaque
+pass whether its lights are dense enough for the light draw to pay.

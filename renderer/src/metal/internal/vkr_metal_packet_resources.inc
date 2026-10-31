@@ -2661,6 +2661,10 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
        follows. */
     renderer->tiled_no_volume =
         vkr_metal_packet_tiled_no_volume_frame(renderer, packet);
+    /* Frames with point and spot lights shade them in a light draw at the
+       end of each opaque pass once those pipelines are ready (ADR-138). */
+    renderer->tiled_deferred =
+        vkr_metal_packet_tiled_deferred_frame(renderer, packet);
     /* The Standard kinds take their ranges there too (ADR-129), the detail
        kinds while the scene has a material with detail maps (ADR-136). */
     const VkrWorldPassPayload *world = packet->input.world;
@@ -2733,6 +2737,12 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
       /* The sky draws and the cloud passes read one lit frame root. */
       ++frame_root_count;
     }
+    /* A deferred light frame's opaque passes each add their light draw's
+       root (ADR-138). */
+    if (renderer->tiled_deferred &&
+        (vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_TILED_OPAQUE) ||
+         vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_TILED_OPAQUE_LATE)))
+      ++plan->root_count;
   }
   const uint64_t frame_root_extra_cells =
       (uint64_t)VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT - 1u + 1u;
@@ -3922,6 +3932,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   renderer->custom_compaction_gpu = 0u;
   renderer->late_custom_compaction_gpu = 0u;
   renderer->gpu_draw_roots_gpu = 0u;
+  renderer->camera_frame_root_gpu = 0u;
   upload->overlay_draw_count = plan.overlay_count;
   if (plan.overlay_count > 0u &&
       !vkr_metal_packet_prepare_editor_draws(

@@ -68,6 +68,19 @@ constant bool vkr_tiled_no_volume =
     is_function_constant_defined(vkr_tiled_no_volume_constant) &&
     vkr_tiled_no_volume_constant;
 
+// Deferred light frames (vkr_metal_packet_tiled_deferred_frame, ADR-138)
+// draw the base model's opaque surfaces with the variants without dynamic
+// lights and this constant set: they also write the surface the lights need
+// to a memoryless target, and a full-screen draw at the end of each opaque
+// pass (vkr_metal_tiled_deferred_lights) shades the point and spot lights
+// over it. The light loop and its shadow lookups then share their shader
+// with no other shading term, and run once per pixel in screen-aligned
+// SIMD-groups.
+constant bool vkr_tiled_surface_output_constant [[function_constant(7)]];
+constant bool vkr_tiled_surface_output =
+    is_function_constant_defined(vkr_tiled_surface_output_constant) &&
+    vkr_tiled_surface_output_constant;
+
 // The opaque pass's outputs: the lit colour and, in sun contact frames, the
 // sun's light within it, after its cascades and cloud shadow.
 // Texture demand (ADR-024) leaves the opaque pass as a colour target, a
@@ -83,6 +96,8 @@ struct VkrMetalTiledForwardOutput {
   float4 color [[color(0)]];
   half4 sun_light [[color(1), function_constant(vkr_tiled_sun_output)]];
   uint texture_demand [[color(2), function_constant(vkr_tiled_demand_output)]];
+  // Deferred light frames' surface (VkrMetalTiledSurfaceLight.surface).
+  uint4 surface [[color(3), function_constant(vkr_tiled_surface_output)]];
 };
 
 // The forward vertex. It transforms like the Slang vkr_metal_packet_vertex,
@@ -843,6 +858,13 @@ struct VkrMetalTiledSurfaceLight {
   float3 base;
   float3 reflectance;
   float metallic;
+  // The deferred lights' surface (vkr_tiled_surface_output) but its depth
+  // and material row: the octahedral shading normal at 12 bits a component
+  // under the roughness after specular anti-aliasing at 8; the octahedral
+  // geometric normal at 8 bits a component; the base colour's square roots
+  // at 8 bits a channel under the metalness at 8
+  // (vkr_metal_tiled_deferred_lights reads them back).
+  uint3 surface;
 };
 
 // The shading variants by the dynamic lights a frame has (ADR-087); mirrors
@@ -1099,6 +1121,27 @@ static void vkr_metal_tiled_light_sun(
   }
 }
 
+// A unit direction's octahedral coordinates as two signed `bits`-bit
+// integers, x in the low bits, and their inverse. The packing is spelled
+// out: pack_float_to_snorm2x16 wrote zero for one of the two normals of a
+// deferred light frame's surface (Metal toolchain 32023, M1 Pro,
+// 2026-10-31).
+static uint vkr_metal_tiled_pack_octahedral(float3 direction, uint bits) {
+  const float scale = float((1u << (bits - 1u)) - 1u);
+  const int2 quantized = int2(
+      rint(clamp(vkr_diffuse_volume_octahedral(direction), -1.0f, 1.0f) *
+           scale));
+  const uint mask = (1u << bits) - 1u;
+  return (uint(quantized.x) & mask) | ((uint(quantized.y) & mask) << bits);
+}
+
+static float3 vkr_metal_tiled_unpack_octahedral(uint word, uint bits) {
+  const float scale = float((1u << (bits - 1u)) - 1u);
+  const int2 quantized = int2(int(word << (32u - bits)) >> (32u - bits),
+                              int(word << (32u - 2u * bits)) >> (32u - bits));
+  return vkr_octahedral_decode(float2(quantized) / scale);
+}
+
 // Shades a forward-drawn surface: the sun with its cascades and cloud shadow,
 // the dynamic local lights that Lighting includes, diffuse light from its
 // lightmap, the diffuse volume or the environment, and environment specular.
@@ -1185,6 +1228,16 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   light.base = base;
   light.reflectance = energy.reflectance;
   light.metallic = metallic;
+  if (vkr_tiled_surface_output) {
+    const uint4 base_bytes =
+        uint4(rint(float4(sqrt(saturate(base)), saturate(metallic)) * 255.0f));
+    light.surface = uint3(
+        vkr_metal_tiled_pack_octahedral(normal, 12u) |
+            (uint(rint(saturate(roughness) * 255.0f)) << 24u),
+        vkr_metal_tiled_pack_octahedral(geometric_normal, 8u),
+        base_bytes.x | (base_bytes.y << 8u) | (base_bytes.z << 16u) |
+            (base_bytes.w << 24u));
+  }
 
   // The sun, shadowed by its cascades and the cloud layer as sampled before
   // the material (vkr_metal_tiled_early_sun_visibility), first: lit later,
@@ -1763,12 +1816,31 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, surface, front_facing, probe,
       visible.instance_index, light_tile, sun_visibility);
-  return {
-      float4(float3(light.diffuse + light.specular + light.emissive), coverage),
-      vkr_metal_tiled_unpack_sun(light.sun),
+  VkrMetalTiledForwardOutput output;
+  output.color =
+      float4(float3(light.diffuse + light.specular + light.emissive), coverage);
+  output.sun_light = vkr_metal_tiled_unpack_sun(light.sun);
+  output.texture_demand =
       Coverage || !vkr_tiled_demand_output
           ? early_demand
-          : vkr_metal_tiled_demand_word(input, frame, visible)};
+          : vkr_metal_tiled_demand_word(input, frame, visible);
+  // Variants that shade their own lights, such as the BRDF extensions',
+  // leave the light draw no surface.
+  if (vkr_tiled_surface_output) {
+    if (Lighting == VKR_METAL_TILED_LIGHTING_NONE &&
+        !vkr_tiled_brdf_extension) {
+      // The surface a deferred light frame's light draw shades, after its
+      // depth; a depth of zero, the far plane, is a pixel no surface of the
+      // pass covers.
+      output.surface =
+          uint4(as_type<uint>(input.position.z), light.surface.x,
+                light.surface.y | (visible.material_index << 16u),
+                light.surface.z);
+    } else {
+      output.surface = uint4(0u);
+    }
+  }
+  return output;
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_fragment(
@@ -2086,6 +2158,94 @@ fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_coverage_probes_
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, true, true>(
       input, root, front_facing, float3(0.0f), light_tile);
+}
+
+// A deferred light frame's light draw (vkr_tiled_surface_output): a
+// full-screen draw at the end of each opaque pass that adds the point and
+// spot lights to the surfaces the pass drew, from the target they wrote,
+// through programmable blending. It shades as vkr_metal_tiled_shade does,
+// with the tile's light list the pass's tile kernel built. A pixel whose
+// surface target is still clear holds no surface of this pass: the sky, or
+// in a two-phase frame's late pass a surface the early pass already lit.
+template <VkrMetalTiledLighting Lighting>
+static float4 vkr_metal_tiled_deferred_lights(
+    float4 color, uint4 surface, float2 pixel_center,
+    constant VkrMetalTiledSkyRoot &root,
+    threadgroup const VkrMetalTiledLightTile &light_tile) {
+  if (surface.x == 0u || light_tile.count == 0u)
+    return color;
+  constant VkrMetalPacketFrameRoot *frame = root.frame;
+  const float3 world = vkr_metal_tiled_resolved_world(
+      root, pixel_center, as_type<float>(surface.x));
+  // A SIMD-group no light of the tile reaches skips the surface's decode,
+  // its material row and its BRDF preparation.
+  if (light_tile.unbounded == 0u) {
+    const uint2 window = vkr_metal_tiled_light_window(frame, world);
+    const uint first = vkr_metal_tiled_light_first(light_tile, window.x);
+    if (first >= light_tile.count ||
+        (light_tile.entries[first] >> 16u) > window.y)
+      return color;
+  }
+  const float3 normal = vkr_metal_tiled_unpack_octahedral(surface.y, 12u);
+  const float roughness = float(surface.y >> 24u) / 255.0f;
+  const float3 geometric_normal =
+      vkr_metal_tiled_unpack_octahedral(surface.z & 0xFFFFu, 8u);
+  const device VkrMetalPacketMaterial &material =
+      frame->materials[surface.z >> 16u];
+  const float4 base_bytes =
+      float4(uint4(surface.w, surface.w >> 8u, surface.w >> 16u,
+                   surface.w >> 24u) &
+             0xFFu) /
+      255.0f;
+  const float3 base = base_bytes.rgb * base_bytes.rgb;
+  const float metallic = base_bytes.a;
+  // The forward shading's f0, energy and folded albedo
+  // (vkr_metal_tiled_shade) for the base model.
+  const float3 f0 = mix(saturate(material.material_dielectric_specular.rgb),
+                        base, metallic);
+  const float3 view = vkr_metal_packet_view_direction(frame, world);
+  VkrGgxMaterialEnergy energy = vkr_metal_packet_prepare_brdf(
+      frame, max(dot(normal, view), 0.0f), roughness, f0);
+  const float3 lit_albedo = energy.diffuse_weight * (1.0f - metallic) * base;
+  energy.diffuse_weight = 1.0f;
+  VkrClearcoatLayer no_coat = {};
+  VkrSheenLayer no_sheen = {};
+  float3 irradiance = float3(0.0f);
+  half3 diffuse = half3(0.0h);
+  half3 specular = half3(0.0h);
+  float3 coat_unused = float3(0.0f);
+  float3 sheen_unused = float3(0.0f);
+  if (Lighting == VKR_METAL_TILED_LIGHTING_PUNCTUAL) {
+    vkr_metal_packet_punctual_layered<true>(
+        frame, world, normal, view, lit_albedo, 0.0f, roughness, f0, energy,
+        false, no_coat, false, no_sheen, 0.0f, irradiance, diffuse, specular,
+        coat_unused, sheen_unused, VkrMetalTiledNoLocalShadow{}, light_tile);
+  } else {
+    vkr_metal_packet_punctual_layered<true>(
+        frame, world, normal, view, lit_albedo, 0.0f, roughness, f0, energy,
+        false, no_coat, false, no_sheen, 0.0f, irradiance, diffuse, specular,
+        coat_unused, sheen_unused, VkrMetalTiledLocalShadow{geometric_normal},
+        light_tile);
+  }
+  return float4(color.rgb + float3(diffuse + specular), color.a);
+}
+
+fragment float4 vkr_metal_tiled_deferred_punctual_fragment(
+    VkrMetalTiledSkyOutput input [[stage_in]], float4 color [[color(0)]],
+    uint4 surface [[color(3)]],
+    constant VkrMetalTiledSkyRoot &root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]]) {
+  return vkr_metal_tiled_deferred_lights<VKR_METAL_TILED_LIGHTING_PUNCTUAL>(
+      color, surface, input.position.xy, root, light_tile);
+}
+
+fragment float4 vkr_metal_tiled_deferred_shadowed_fragment(
+    VkrMetalTiledSkyOutput input [[stage_in]], float4 color [[color(0)]],
+    uint4 surface [[color(3)]],
+    constant VkrMetalTiledSkyRoot &root [[buffer(1)]],
+    threadgroup const VkrMetalTiledLightTile &light_tile [[threadgroup(0)]]) {
+  return vkr_metal_tiled_deferred_lights<VKR_METAL_TILED_LIGHTING_SHADOWED>(
+      color, surface, input.position.xy, root, light_tile);
 }
 
 // The overdraw view (ADR-127): the opaque pass draws every opaque and
