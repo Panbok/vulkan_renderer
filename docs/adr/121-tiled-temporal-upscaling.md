@@ -191,6 +191,13 @@ like clouds and froxel fog.
   Revisit if its black-box history cannot handle a later effect.
 - **Recreating the scaler on every scale step.** Rejected: each step waited
   on the GPU and reset history.
+- **RG11B10F for MetalFX's input and output** in place of RGBA16F.
+  Declined (2026-10-31, plain Bistro orbit): MetalFX's post-processing
+  0.97 to 0.93 ms and the final draw 0.24 to 0.18 ms, pre- and
+  mid-processing unchanged (0.61, 1.32 ms), about 0.1 ms in all, for a
+  5-bit blue mantissa on the displayed image.
+- **MetalFX without input content properties** (input content equal to the
+  input texture). Rejected: each stage 0.06 to 0.10 ms slower.
 - **`Tiled.Stabilize` writing the display-linear transform of its mean.**
   Shipped on 2026-10-30 for still frames (1.85 to 1.69 ms of post passes)
   and replaced the same day by decision 11, which removes the transform at

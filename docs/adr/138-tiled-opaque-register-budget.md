@@ -188,6 +188,11 @@ measurement and not kept:
   save): 5.36 ms at 6 against 5.20 to 5.37 ms uncapped, and 5.08 ms at 4,
   while dropping half the lights the median fragment shades; the SIMD-group
   walks on until its last fragment reaches the cap.
+- **The normal, tangent and vertex colour varyings in half precision**
+  (2026-10-31, 108 to 86 bytes a vertex): Bistro with dynamic lamps 4.02 /
+  4.03 to 3.91 / 3.97 ms, but lightmapped Bistro 2.82 / 2.94 to 3.04 /
+  3.11 ms (`Tiled.Opaque` p50, orbit, alternating runs); registers unchanged
+  but one variant +4.
 
 ## Revisit when
 
