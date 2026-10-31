@@ -280,8 +280,13 @@ the GPU between frames.
   street captures byte-identical. Heap storage and bounded selection
   heaps followed (56bada3c), then the 65,535-row table (5dcc6178), over
   the desktop's row cap (ADR-135, decision 3). The tiled drawn-row list
-  was dropped: the 64-row compaction already bounds tiled updates. Change
-  detection follows.
+  was dropped: the 64-row compaction already bounds tiled updates. On
+  2026-10-31 the offers stopped ranking lights while the table has room
+  (ADR-019), which took the scene synchronization of 20,000 lights from
+  1.43 to 0.85 ms. Change detection (item 4) is not built (owner decision,
+  2026-10-31): it would skip the rest only on frames with no moving light
+  and a still camera, and 1,024 movers on the 20,000-light street keep it
+  off. Phase 2 is complete.
 - **2c** Metal table and scatter pass (Mac, landed 2026-10-30). **2d**
   Vulkan table and scatter pass (Windows, landed 2026-10-29).
 
