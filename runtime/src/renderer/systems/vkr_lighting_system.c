@@ -990,6 +990,33 @@ void vkr_lighting_system_begin_point_lights(VkrLightingSystem *system,
            : Min(delta_seconds / VKR_POINT_LIGHT_LIMIT_FADE_SECONDS, 1.0f);
 }
 
+/* The previous frame's entry for `light`: none for a light without a render
+   id or when the frame snaps. */
+vkr_internal VkrPointLightLimitEntry point_light_candidate_previous(
+    const VkrLightingSystem *system, const VkrPointLight *light) {
+  return system->point_light_candidates.snap || light->render_id == 0u
+             ? (VkrPointLightLimitEntry){0}
+             : point_light_selection_find(&system->point_light_selection,
+                                          light->render_id);
+}
+
+/* Ranks the candidates offered while the best had room, which joined them
+   unranked, and makes the best a heap whose root ranks worst. */
+vkr_internal void point_light_candidates_rank(VkrLightingSystem *system) {
+  VkrPointLightCandidates *candidates = &system->point_light_candidates;
+  for (uint32_t i = 0u; i < candidates->count; ++i) {
+    const VkrPointLightLimitEntry previous =
+        point_light_candidate_previous(system, &candidates->lights[i]);
+    candidates->keys[i] = point_light_rank_key(
+        &candidates->lights[i], candidates->camera, previous.selected);
+    candidates->showing[i] = previous.weight > 0.0f;
+  }
+  for (uint32_t at = candidates->best_count / 2u; at-- > 0u;) {
+    point_light_heap_sift_down(candidates->best, candidates->best_count, at,
+                               candidates->lights, candidates->keys);
+  }
+}
+
 void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
                                            const VkrPointLight *light) {
   if (!system || !light) {
@@ -997,24 +1024,34 @@ void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
   }
   VkrPointLightCandidates *candidates = &system->point_light_candidates;
   candidates->offered++;
+  /* While the best have room every light joins them, unranked: a table
+     that holds every light ranks none of them here, and the selection
+     ranks them. The best are ranked once, when they fill. */
+  if (candidates->best_count < VKR_MAX_SCENE_POINT_LIGHTS) {
+    if (!point_light_candidates_reserve(candidates)) {
+      return;
+    }
+    const uint32_t slot = candidates->count++;
+    candidates->lights[slot] = *light;
+    candidates->in_best[slot] = true_v;
+    candidates->best[candidates->best_count++] = slot;
+    if (candidates->best_count == VKR_MAX_SCENE_POINT_LIGHTS) {
+      point_light_candidates_rank(system);
+    }
+    return;
+  }
+
   const VkrPointLightLimitEntry previous =
-      candidates->snap || light->render_id == 0u
-          ? (VkrPointLightLimitEntry){0}
-          : point_light_selection_find(&system->point_light_selection,
-                                       light->render_id);
+      point_light_candidate_previous(system, light);
   const VkrPointLightRankKey key =
       point_light_rank_key(light, candidates->camera, previous.selected);
   const bool8_t showing = previous.weight > 0.0f;
-
-  /* It joins the best offered so far while they have room or it ranks
-     before the worst of them, which it evicts; past them it stays only
-     while it still shows, to fade out in its slot. */
-  bool8_t best = candidates->best_count < VKR_MAX_SCENE_POINT_LIGHTS;
-  if (!best) {
-    const uint32_t worst = candidates->best[0];
-    best = point_light_key_precedes(light, key, &candidates->lights[worst],
-                                    candidates->keys[worst]);
-  }
+  /* It joins the best when it ranks before the worst of them, which it
+     evicts; past them it stays only while it still shows, to fade out in
+     its slot. */
+  const uint32_t worst = candidates->best[0];
+  const bool8_t best = point_light_key_precedes(
+      light, key, &candidates->lights[worst], candidates->keys[worst]);
   if (!best && !showing) {
     return;
   }
@@ -1028,13 +1065,6 @@ void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
   candidates->showing[slot] = showing;
   candidates->in_best[slot] = best;
   if (!best) {
-    return;
-  }
-  if (candidates->best_count < VKR_MAX_SCENE_POINT_LIGHTS) {
-    candidates->best[candidates->best_count] = slot;
-    point_light_heap_sift_up(candidates->best, candidates->best_count,
-                             candidates->lights, candidates->keys);
-    candidates->best_count++;
     return;
   }
   const uint32_t evicted = candidates->best[0];

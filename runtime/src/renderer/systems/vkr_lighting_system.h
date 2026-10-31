@@ -108,16 +108,18 @@ typedef struct VkrPointLightRanking {
  * however many lights the scenes hold. */
 typedef struct VkrPointLightCandidates {
   VkrPointLight *lights;
+  /** Each candidate's rank key, set once the best fill (`best`). */
   VkrPointLightRankKey *keys;
   /** The light was drawn in the previous frame, so it keeps a candidate
-   * place while it fades out, whatever its rank. */
+   * place while it fades out, whatever its rank; set once the best fill. */
   bool8_t *showing;
   /** The light is among the best offered so far, in `best`. */
   bool8_t *in_best;
   uint32_t count;
   uint32_t capacity;
   /** Candidate indices of the best-ranked lights offered so far, at most
-   * VKR_MAX_SCENE_POINT_LIGHTS, as a heap whose root ranks worst. */
+   * VKR_MAX_SCENE_POINT_LIGHTS: in offer order until they number that many,
+   * then a heap whose root ranks worst. */
   uint32_t *best;
   uint32_t best_count;
   /** Candidates the best evicted that do not show, kept until the next

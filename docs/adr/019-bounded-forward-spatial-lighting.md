@@ -71,7 +71,7 @@ stress, dense and street captures stayed byte-identical. Since 2026-10-30
 the lighting system and the renderer's light table keep their per-light
 storage on the heap, grown with the lights offered and released at
 shutdown, not in arrays sized by the table's capacity. The offers keep the
-best in a bounded heap, the selections find the previous frame's state by
+best in a bounded heap once the table fills, the selections find the previous frame's state by
 render id in a hash index, and the head, the tiled limit and its shadows
 take the best few with bounded heaps, so no step sorts every light unless
 more compete than can draw; the same captures stayed byte-identical. With
@@ -80,7 +80,14 @@ pipelines) a scene's lights all fit, and the selection, the tiled limit and
 the offers together cost 1.35 ms a frame for 20,000 lights on an M1 Pro
 (Release CPU benchmark of the lighting system alone, against 0.73 ms with
 1024 rows and 2.6 ms before the heaps); the tiled captures stayed
-byte-identical. CPU scene synchronization owns membership; shaders perform exact range and
+byte-identical. Since 2026-10-31 the offers rank nothing while the table
+has room: a light joins the best unranked, and the rank keys, the showing
+state and the heap are built once, when the best fill. The scene
+synchronization of 20,000 lights (the scene walk, the offers and the
+selection) went from 1.43 to 0.85 ms a frame, with the lights still or
+1,024 of them moving, and the tiled limit takes 0.21 ms (Release CPU
+benchmark on an M1 Pro, 25% casters over 400 m by 400 m); which lights
+the table keeps does not depend on the heap's order. CPU scene synchronization owns membership; shaders perform exact range and
 spot-cone rejection.
 Four-vector, 64-byte light rows share position/range, direction/cone,
 color/intensity and type semantics across Metal and Vulkan shading paths.
