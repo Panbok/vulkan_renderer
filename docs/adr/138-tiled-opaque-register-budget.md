@@ -188,6 +188,11 @@ measurement and not kept:
   save): 5.36 ms at 6 against 5.20 to 5.37 ms uncapped, and 5.08 ms at 4,
   while dropping half the lights the median fragment shades; the SIMD-group
   walks on until its last fragment reaches the cap.
+- **The next light's row loaded while the current light shades**, to hide
+  the dependent entry, index and row loads (2026-10-31): the prefetched row
+  stays in each lane's registers, 76 → 92 for the shadowed no-volume
+  variant, and Bistro with dynamic lamps (street view, `Tiled.Opaque` p50)
+  went from 5.95 / 5.97 to 7.34 / 7.35 ms.
 - **The normal, tangent and vertex colour varyings in half precision**
   (2026-10-31, 108 to 86 bytes a vertex): Bistro with dynamic lamps 4.02 /
   4.03 to 3.91 / 3.97 ms, but lightmapped Bistro 2.82 / 2.94 to 3.04 /
