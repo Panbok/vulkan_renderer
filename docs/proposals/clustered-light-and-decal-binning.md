@@ -49,8 +49,11 @@ clustered culling. What decals write stays in
   (owner decision, 2026-10-30): on the 20,000-light street at 1280x720 on
   the M1 Pro the light loop costs about 10.2 ms of `Tiled.Opaque` at 64
   lights and about 0.010 ms for each further light. The same
-  kernel lists the 64 nearest decals per tile in table order
-  ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision 11).
+  kernel lists the 64 nearest decals per tile in table order, also a
+  budget (owner decision, 2026-10-31): each further decal costs about
+  0.005 ms there, and depth tests on the walk saved at most 0.28 ms at
+  512 decals ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
+  decision 11; [ADR-092](../adr/092-projected-decals.md), decision 4).
 - **Measured on Vulkan** (orbit, `Lighting.Deferred` p50, shader-only
   A/Bs, 2026-10-26 and 2026-10-27): the old CPU grid 3.65 ms; an index
   list for every light 3.82 ms; tile bitfields 3.71 to 3.72 ms. Per-pixel

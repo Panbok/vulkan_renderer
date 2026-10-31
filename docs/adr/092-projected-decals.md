@@ -98,7 +98,21 @@ it lights them, so the surface's own material model shades the result.
    the lanes' divergent branches. Opaque, alpha-tested and terrain surfaces
    take decals; glass, blended surfaces and world text do not. On
    2026-10-28 the tile lists replaced the grid with the decal, clustered
-   and stress tiled captures byte-identical.
+   and stress tiled captures byte-identical. The 64 decals are a budget
+   (owner decision, 2026-10-31). On the 2,000-decal street
+   (`bistro_clustered_m3_tiled_timing`, 1280x720, M1 Pro,
+   `local-windowed-gpu`, not authoritative) `Tiled.Opaque` p50 took 14.72,
+   15.17, 15.99 and 17.46 ms with 64, 128, 256 and 512 decals; with the
+   fragments walking no decal, 14.23 and 14.78 ms at 64 and 512, so the
+   per-pixel walk costs about 0.005 ms for each further decal and the
+   kernel's listing about 0.001 ms. Narrowing the walk by depth paid
+   little: testing each decal's view-depth interval against the
+   SIMD-group's depths before reading its row took 14.78 and 17.16 ms at
+   64 and 512 against 14.71 and 17.44 ms in the same session (captures
+   byte-identical), and a tile bitmask of decals ANDed with view-depth bin
+   masks took 14.86 and 17.93 ms, its bit walk alone 1.4 ms slower than the
+   list at 512. Neither landed: the depth test removed little of the walk,
+   so most of its cost lies in decals whose depth overlaps the fragments'.
 5. **Variants.** Decal shading would cost the opaque pass registers on every
    pixel, as probe and light code does (ADR-087, decision 11), so the opaque
    and alpha-tested pipelines gain a decal variant axis
